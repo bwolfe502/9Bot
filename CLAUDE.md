@@ -8,7 +8,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | File | Purpose | Key exports |
 |------|---------|-------------|
 | `run_web.py` | Web-only entry point (primary) | `main` (pywebview + browser fallback) |
-| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_auto_upload`, `stop_auto_upload`, `upload_status` |
+| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status` |
 | `main.py` | Legacy GUI entry point (deprecated) | Tkinter app, `create_gui()` |
 | `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
 | `settings.py` | Settings persistence | `DEFAULTS`, `load_settings`, `save_settings`, `SETTINGS_FILE` |
@@ -374,6 +374,8 @@ banner displays the LAN URL for mobile remote control.
 - `POST /api/quit` — graceful process termination (`os._exit(0)`)
 - `GET /api/logs` — last 150 log lines as JSON
 - `POST /api/bug-report` — generate and download bug report ZIP
+- `POST /api/upload-logs` — start bug report upload in background, returns immediately
+- `GET /api/upload-progress` — poll upload progress (`{"phase", "percent", "message"}`)
 - `GET /api/screenshot?device=<id>&download=1` — live device screenshot as PNG (download=1 forces file save)
 - `GET /api/stream?device=<id>&fps=5&quality=30` — MJPEG live video stream (`multipart/x-mixed-replace`)
 - `GET /api/qr?url=<encoded>` — generate QR code PNG (box_size=12, border=2) for dashboard modal
@@ -450,6 +452,11 @@ Opt-in periodic upload of bug report ZIPs to the relay droplet via direct HTTPS 
 **Client** (`startup.py`):
 - `upload_bug_report(settings=None)` — creates zip via `create_bug_report_zip(clear_debug=False)`,
   POSTs to `https://1453.life/_upload?bot={bot_name}` with Bearer auth. Returns `(ok, message)`.
+  Uses `_ProgressReader` wrapper to track upload bytes sent for progress reporting.
+- `start_manual_upload(notes=None)` — starts `upload_bug_report` in a background daemon thread,
+  returns immediately. Updates `_upload_progress` dict through each phase.
+- `get_upload_progress()` — returns `{"phase", "percent", "message"}`. Phases: `"idle"` →
+  `"starting"` → `"zipping"` → `"uploading"` → `"done"` / `"error"`.
 - `start_auto_upload(settings)` / `stop_auto_upload()` — daemon thread, sleeps for interval then uploads.
 - `upload_status()` — returns `{"enabled", "interval_hours", "last_upload", "error", "next_upload_in_s"}`.
 - `create_bug_report_zip(clear_debug=True)` — zips logs, all debug screenshots (failures, click
@@ -459,16 +466,18 @@ Opt-in periodic upload of bug report ZIPs to the relay droplet via direct HTTPS 
 **Server** (`relay/relay_server.py`):
 - `POST /_upload?bot={name}` — multipart file upload, Bearer auth, 500MB limit, saves to
   `UPLOAD_DIR/{bot_name}/bugreport_{timestamp}.zip`. Prunes to keep last 10 per bot.
+  Cleans up partial files on any failure (client disconnect, network error).
 - `GET /_admin?secret=XXX` — HTML admin page listing all bots with uploads, download/delete buttons.
 - `GET/DELETE /_admin/uploads/{bot}/{file}` — download or delete a specific upload.
 - `DELETE /_admin/uploads/{bot}` — delete all uploads for a bot.
 - Env var `UPLOAD_DIR` (default `/opt/9bot-relay/uploads`).
 
 **Dashboard**:
-- `POST /api/upload-logs` — manual trigger, returns `{"ok", "message"}`.
+- `POST /api/upload-logs` — starts upload in background thread, returns immediately.
+- `GET /api/upload-progress` — poll upload progress (phase, percent, message). JS polls at 500ms.
 - Upload status included in `GET /api/status` response (`upload` field).
 - Settings page: toggle + interval in Remote Access card.
-- Debug page: "Upload Logs" button with feedback.
+- Debug page: "Upload Logs" button with real-time progress (Generating... → Uploading X% → Uploaded!).
 
 ### Per-Device Access Control (startup.py + web/dashboard.py)
 Token-based shareable URLs that give others access to a specific device.
