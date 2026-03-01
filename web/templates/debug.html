@@ -124,26 +124,57 @@ function downloadBugReport() {
         });
 }
 
+var _uploadPollId = null;
+
 function uploadLogs() {
     var btn = document.getElementById('upload-logs-btn');
-    btn.textContent = 'Uploading...';
+    btn.textContent = 'Starting...';
     btn.disabled = true;
     fetch(RELAY_PREFIX + '/api/upload-logs', {method: 'POST'})
         .then(function(r) { return r.json(); })
-        .then(function(data) {
-            btn.textContent = data.ok ? 'Uploaded!' : 'Failed';
-            btn.style.borderColor = data.ok ? '#4cff8e' : '#ff6464';
-            setTimeout(function() {
-                btn.textContent = 'Upload Logs';
-                btn.disabled = false;
-                btn.style.borderColor = '';
-            }, 3000);
-        })
+        .then(function() { _pollUploadProgress(); })
         .catch(function() {
             btn.textContent = 'Error';
             btn.disabled = false;
             setTimeout(function() { btn.textContent = 'Upload Logs'; }, 3000);
         });
+}
+
+function _pollUploadProgress() {
+    var btn = document.getElementById('upload-logs-btn');
+    if (_uploadPollId) clearInterval(_uploadPollId);
+    _uploadPollId = setInterval(function() {
+        fetch(RELAY_PREFIX + '/api/upload-progress')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.phase === 'zipping') {
+                    btn.textContent = 'Generating...';
+                } else if (data.phase === 'uploading') {
+                    btn.textContent = data.percent > 0 ? 'Uploading ' + data.percent + '%' : 'Uploading...';
+                } else if (data.phase === 'done') {
+                    clearInterval(_uploadPollId);
+                    _uploadPollId = null;
+                    btn.textContent = 'Uploaded!';
+                    btn.style.borderColor = '#4cff8e';
+                    setTimeout(function() {
+                        btn.textContent = 'Upload Logs';
+                        btn.disabled = false;
+                        btn.style.borderColor = '';
+                    }, 3000);
+                } else if (data.phase === 'error') {
+                    clearInterval(_uploadPollId);
+                    _uploadPollId = null;
+                    btn.textContent = 'Failed';
+                    btn.style.borderColor = '#ff6464';
+                    setTimeout(function() {
+                        btn.textContent = 'Upload Logs';
+                        btn.disabled = false;
+                        btn.style.borderColor = '';
+                    }, 3000);
+                }
+            })
+            .catch(function() {});
+    }, 500);
 }
 
 var logViewer = document.getElementById('log-viewer');

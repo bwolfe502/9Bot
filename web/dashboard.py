@@ -49,9 +49,12 @@ except ImportError:
 
 try:
     from startup import upload_status as _upload_status
+    from startup import get_upload_progress as _get_upload_progress
 except ImportError:
     def _upload_status():
         return {"enabled": False}
+    def _get_upload_progress():
+        return {"phase": "idle", "percent": 0, "message": ""}
 
 _log = get_logger("web")
 
@@ -743,11 +746,16 @@ def create_app():
 
     @app.route("/api/upload-logs", methods=["POST"])
     def api_upload_logs():
-        """Manually upload a bug report to the relay server."""
-        from startup import upload_bug_report
+        """Start a bug report upload in the background."""
+        from startup import start_manual_upload
         notes = request.form.get("notes", "").strip() or None
-        ok, msg = upload_bug_report(notes=notes)
-        return jsonify({"ok": ok, "message": msg})
+        start_manual_upload(notes=notes)
+        return jsonify({"ok": True, "message": "Upload started"})
+
+    @app.route("/api/upload-progress")
+    def api_upload_progress():
+        """Poll upload progress (phase, percent, message)."""
+        return jsonify(_get_upload_progress())
 
     @app.route("/api/quit", methods=["POST"])
     def api_quit():

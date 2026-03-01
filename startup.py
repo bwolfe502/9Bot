@@ -3,6 +3,7 @@
 Used by both ``run_web.py`` (web-only) and ``main.py`` (legacy tkinter GUI).
 """
 
+import io
 import os
 import sys
 import json
@@ -389,6 +390,28 @@ _last_upload_time = None      # datetime or None
 _last_upload_error = None     # str or None
 _upload_interval_hours = 24
 
+# Manual upload progress tracking (for UI polling)
+_upload_progress = {"phase": "idle", "percent": 0, "message": ""}
+_manual_upload_thread = None
+
+
+class _ProgressReader:
+    """File-like wrapper that tracks read progress for requests uploads."""
+
+    def __init__(self, data, callback):
+        self._buf = io.BytesIO(data)
+        self._total = len(data)
+        self._callback = callback
+
+    def read(self, size=-1):
+        chunk = self._buf.read(size)
+        if chunk:
+            self._callback(self._buf.tell(), self._total)
+        return chunk
+
+    def __len__(self):
+        return self._total
+
 
 def upload_bug_report(settings=None, notes=None):
     """Upload a bug report ZIP to the relay server.
@@ -404,34 +427,82 @@ def upload_bug_report(settings=None, notes=None):
         settings = load_settings()
     relay_cfg = get_relay_config(settings)
     if not relay_cfg:
+        _upload_progress.update(phase="idle", percent=0, message="")
         return False, "Relay not configured (no license or remote access disabled)"
 
     relay_url, relay_secret, bot_name = relay_cfg
     host = relay_url.replace("wss://", "").replace("ws://", "").split("/")[0]
     upload_url = f"https://{host}/_upload?bot={bot_name}"
 
+    _upload_progress.update(phase="zipping", percent=0, message="Generating report...")
     zip_bytes, filename = create_bug_report_zip(clear_debug=False, notes=notes)
+
+    _upload_progress.update(phase="uploading", percent=0, message="Uploading...")
+
+    def _on_progress(sent, total):
+        pct = int(sent * 100 / total) if total else 0
+        _upload_progress.update(percent=pct, message=f"Uploading... {pct}%")
+
+    # Build multipart body manually so we can track upload progress
+    boundary = "----9BotUploadBoundary"
+    prefix = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: application/zip\r\n\r\n"
+    ).encode()
+    suffix = f"\r\n--{boundary}--\r\n".encode()
+    body = prefix + zip_bytes + suffix
 
     import requests as _req
     try:
         resp = _req.post(
             upload_url,
-            files={"file": (filename, zip_bytes, "application/zip")},
-            headers={"Authorization": f"Bearer {relay_secret}"},
-            timeout=120,
+            data=_ProgressReader(body, _on_progress),
+            headers={
+                "Authorization": f"Bearer {relay_secret}",
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+            timeout=300,
         )
     except Exception as e:
         _last_upload_error = str(e)
+        _upload_progress.update(phase="error", percent=0, message=str(e))
         return False, f"Upload failed: {e}"
 
     if resp.status_code == 200:
         from datetime import datetime
         _last_upload_time = datetime.now()
         _last_upload_error = None
+        _upload_progress.update(phase="done", percent=100, message="Uploaded!")
         return True, "Upload successful"
 
     _last_upload_error = f"HTTP {resp.status_code}"
+    _upload_progress.update(phase="error", percent=0,
+                            message=f"HTTP {resp.status_code}")
     return False, f"Upload failed: HTTP {resp.status_code}"
+
+
+def start_manual_upload(notes=None):
+    """Start a manual upload in a background thread. Returns immediately."""
+    global _manual_upload_thread
+    if _manual_upload_thread is not None and _manual_upload_thread.is_alive():
+        return  # already running
+    _upload_progress.update(phase="starting", percent=0, message="Starting...")
+
+    def _run():
+        try:
+            upload_bug_report(notes=notes)
+        except Exception as e:
+            _upload_progress.update(phase="error", percent=0, message=str(e))
+
+    _manual_upload_thread = threading.Thread(target=_run, daemon=True,
+                                             name="manual-upload")
+    _manual_upload_thread.start()
+
+
+def get_upload_progress():
+    """Return current manual upload progress dict."""
+    return dict(_upload_progress)
 
 
 def start_auto_upload(settings):
