@@ -292,12 +292,16 @@ def create_bug_report_zip(clear_debug=True, notes=None):
             if os.path.isfile(logfile):
                 zf.write(logfile, f"logs/9bot.log{suffix}")
 
-        # Failure screenshots
-        failures_dir = os.path.join(SCRIPT_DIR, "debug", "failures")
-        if os.path.isdir(failures_dir):
-            for f in os.listdir(failures_dir):
-                if f.endswith(".png"):
-                    zf.write(os.path.join(failures_dir, f), f"debug/failures/{f}")
+        # Debug screenshots (failures, click trails, general debug)
+        debug_dir = os.path.join(SCRIPT_DIR, "debug")
+        for subdir in ["failures", "clicks", ""]:
+            scan_dir = os.path.join(debug_dir, subdir) if subdir else debug_dir
+            zip_prefix = f"debug/{subdir}/" if subdir else "debug/"
+            if os.path.isdir(scan_dir):
+                for f in os.listdir(scan_dir):
+                    fpath = os.path.join(scan_dir, f)
+                    if os.path.isfile(fpath) and f.endswith(".png"):
+                        zf.write(fpath, zip_prefix + f)
 
         # Session stats
         if os.path.isdir(STATS_DIR):

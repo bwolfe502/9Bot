@@ -43,7 +43,7 @@ RELAY_PORT = int(os.environ.get("RELAY_PORT", "80"))
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/opt/9bot-relay/uploads")
 REQUEST_TIMEOUT = 30  # seconds
 STREAM_CHUNK_TIMEOUT = 10  # seconds between stream chunks before giving up
-MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150 MB
+MAX_UPLOAD_SIZE = 500 * 1024 * 1024  # 500 MB
 MAX_UPLOADS_PER_BOT = 10  # keep last N per bot
 
 # ---------------------------------------------------------------------------
