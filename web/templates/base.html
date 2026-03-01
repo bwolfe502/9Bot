@@ -23,9 +23,9 @@
         </a>
         {% if not (device_filter is defined and device_filter) %}
         <div class="nav-links">
-            <a href="/" class="{% if request.path == '/' %}active{% endif %}" data-relay-href>Dashboard</a>
-            <a href="/settings" class="{% if request.path == '/settings' or request.path == '/territory' %}active{% endif %}" data-relay-href>Settings</a>
-            <a href="/guide" class="{% if request.path == '/guide' %}active{% endif %}" data-relay-href>Guide</a>
+            <a href="/" class="{% if request.path == '/' %}active{% endif %}">Dashboard</a>
+            <a href="/settings" class="{% if request.path == '/settings' or request.path == '/territory' %}active{% endif %}">Settings</a>
+            <a href="/guide" class="{% if request.path == '/guide' %}active{% endif %}">Guide</a>
         </div>
         {% endif %}
     </nav>
@@ -34,7 +34,7 @@
     </main>
     {% if not (device_filter is defined and device_filter) %}
     <footer class="page-footer">
-        <a href="/debug" class="footer-debug-link" data-relay-href>Debug</a>
+        <a href="/debug" class="footer-debug-link">Debug</a>
         <a href="https://ko-fi.com/ninebot" target="_blank" class="footer-kofi">&#9749; If 9Bot saves you time, consider buying me a coffee</a>
     </footer>
     {% endif %}
@@ -103,20 +103,9 @@
         });
     }
     {% endif %}
-    // Prefix relay-aware links and forms on load
-    if (RELAY_PREFIX) {
-        document.addEventListener('DOMContentLoaded', function() {
-            document.querySelectorAll('[data-relay-href]').forEach(function(el) {
-                el.href = RELAY_PREFIX + el.getAttribute('href');
-            });
-            document.querySelectorAll('form[action]').forEach(function(form) {
-                var action = form.getAttribute('action');
-                if (action && action.startsWith('/')) {
-                    form.action = RELAY_PREFIX + action;
-                }
-            });
-        });
-    }
+    // Note: relay_server.py already rewrites href/src/action/fetch URLs in HTML
+    // responses, so no client-side rewriting needed for static links or forms.
+    // RELAY_PREFIX is still used by dynamic JS (fetch calls, location assigns).
     </script>
     {% block scripts %}{% endblock %}
 </body>

@@ -733,6 +733,7 @@ def check_quests(device, stop_check=None):
             # Gold fallback: use visual OCR counters, not pending rally tracking
             if config.get_device_config(device, "gather_enabled") and _all_quests_visually_complete(device, quests):
                 log.info("All quests visually complete — gathering gold as fallback")
+                config.set_device_status(device, "All Quests Complete, Mining Gold...")
                 if navigate(Screen.MAP, device):
                     gather_gold_loop(device, stop_check)
             else:

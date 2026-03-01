@@ -43,7 +43,7 @@ RELAY_PORT = int(os.environ.get("RELAY_PORT", "80"))
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/opt/9bot-relay/uploads")
 REQUEST_TIMEOUT = 30  # seconds
 STREAM_CHUNK_TIMEOUT = 10  # seconds between stream chunks before giving up
-MAX_UPLOAD_SIZE = 150 * 1024 * 1024  # 150 MB
+MAX_UPLOAD_SIZE = 500 * 1024 * 1024  # 500 MB
 MAX_UPLOADS_PER_BOT = 10  # keep last N per bot
 
 # ---------------------------------------------------------------------------
@@ -445,6 +445,7 @@ async def handle_upload(request: web.Request) -> web.Response:
     dest = os.path.join(bot_dir, f"bugreport_{timestamp}.zip")
 
     size = 0
+    ok = False
     try:
         with open(dest, "wb") as f:
             while True:
@@ -456,12 +457,13 @@ async def handle_upload(request: web.Request) -> web.Response:
                     raise web.HTTPRequestEntityTooLarge(
                         text=f"Upload exceeds {MAX_UPLOAD_SIZE // (1024*1024)} MB limit")
                 f.write(chunk)
-    except web.HTTPRequestEntityTooLarge:
-        try:
-            os.remove(dest)
-        except OSError:
-            pass
-        raise
+        ok = True
+    finally:
+        if not ok:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
 
     _prune_uploads(bot_dir)
     log.info("Upload from '%s': %s (%s)", bot_name,

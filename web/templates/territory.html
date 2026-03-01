@@ -117,7 +117,7 @@ function applyState(attackList, ignoreList) {
 }
 
 function loadGrid() {
-    fetch('/api/territory/grid')
+    fetch(RELAY_PREFIX + '/api/territory/grid')
         .then(function(r) { return r.json(); })
         .then(function(data) {
             applyState(data.attack || [], data.ignore || []);
@@ -137,7 +137,7 @@ function saveGrid() {
         else if (cellStates[key] === 'ignore') ignore.push(rc);
     });
 
-    fetch('/api/territory/grid', {
+    fetch(RELAY_PREFIX + '/api/territory/grid', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({attack: attack, ignore: ignore})

@@ -151,8 +151,10 @@ def mine_mithril(device, stop_check=None):
 
     # Step 6: Deploy to mines — scan for safe mines, deploy what we can,
     # then SEARCH to refresh and deploy remaining troops if needed.
+    # Always deploy all troops — plundered troops return home automatically,
+    # so even if we recalled fewer, all troops should be available.
     total = config.DEVICE_TOTAL_TROOPS.get(device, 5)
-    max_deploys = min(recalled_count if recalled_count > 0 else total, total)
+    max_deploys = total
     deployed_count = 0
 
     for page in range(_MAX_SEARCH_REFRESHES + 1):  # 0 = initial, 1..N = refreshes

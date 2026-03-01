@@ -755,20 +755,23 @@ class TestAutoUploadThread:
 class TestUploadLogsApi:
     """Test /api/upload-logs route."""
 
-    @patch("startup.upload_bug_report", return_value=(True, "Upload successful"))
-    def test_upload_success(self, mock_upload, client):
+    @patch("startup.start_manual_upload")
+    def test_upload_starts(self, mock_start, client):
         resp = client.post("/api/upload-logs")
         assert resp.status_code == 200
         data = json.loads(resp.data)
         assert data["ok"] is True
-        assert "successful" in data["message"].lower()
+        assert "started" in data["message"].lower()
+        mock_start.assert_called_once_with(notes=None)
 
-    @patch("startup.upload_bug_report",
-           return_value=(False, "Relay not configured"))
-    def test_upload_failure(self, mock_upload, client):
-        resp = client.post("/api/upload-logs")
+    @patch("web.dashboard._get_upload_progress",
+           return_value={"phase": "uploading", "percent": 42, "message": "Uploading... 42%"})
+    def test_upload_progress(self, mock_progress, client):
+        resp = client.get("/api/upload-progress")
+        assert resp.status_code == 200
         data = json.loads(resp.data)
-        assert data["ok"] is False
+        assert data["phase"] == "uploading"
+        assert data["percent"] == 42
 
 
 class TestApiStatusUpload:
