@@ -81,14 +81,14 @@ function updateDeviceForms() {
 }
 
 function takeScreenshot(device) {
-    window.location.href = '/api/screenshot?device=' + encodeURIComponent(device) + '&download=1';
+    window.location.href = RELAY_PREFIX + '/api/screenshot?device=' + encodeURIComponent(device) + '&download=1';
 }
 
 function downloadBugReport() {
     var btn = document.getElementById('bug-report-btn');
     btn.textContent = 'Generating...';
     btn.disabled = true;
-    fetch('/api/bug-report', {method: 'POST'})
+    fetch(RELAY_PREFIX + '/api/bug-report', {method: 'POST'})
         .then(function(r) {
             if (!r.ok) throw new Error('Failed');
             var filename = 'bug_report.zip';
@@ -128,7 +128,7 @@ function uploadLogs() {
     var btn = document.getElementById('upload-logs-btn');
     btn.textContent = 'Uploading...';
     btn.disabled = true;
-    fetch('/api/upload-logs', {method: 'POST'})
+    fetch(RELAY_PREFIX + '/api/upload-logs', {method: 'POST'})
         .then(function(r) { return r.json(); })
         .then(function(data) {
             btn.textContent = data.ok ? 'Uploaded!' : 'Failed';
@@ -155,7 +155,7 @@ function scrollToBottom() {
 }
 
 function refreshLogs() {
-    fetch('/api/logs')
+    fetch(RELAY_PREFIX + '/api/logs')
         .then(function(r) { return r.json(); })
         .then(function(data) {
             logViewer.textContent = '';

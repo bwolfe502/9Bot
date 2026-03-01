@@ -30,7 +30,7 @@ function scrollToBottom() {
 }
 
 function refreshLogs() {
-    fetch('/api/logs')
+    fetch(RELAY_PREFIX + '/api/logs')
         .then(r => r.json())
         .then(data => {
             logViewer.innerHTML = '';
