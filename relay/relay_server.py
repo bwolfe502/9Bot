@@ -445,6 +445,7 @@ async def handle_upload(request: web.Request) -> web.Response:
     dest = os.path.join(bot_dir, f"bugreport_{timestamp}.zip")
 
     size = 0
+    ok = False
     try:
         with open(dest, "wb") as f:
             while True:
@@ -456,12 +457,13 @@ async def handle_upload(request: web.Request) -> web.Response:
                     raise web.HTTPRequestEntityTooLarge(
                         text=f"Upload exceeds {MAX_UPLOAD_SIZE // (1024*1024)} MB limit")
                 f.write(chunk)
-    except web.HTTPRequestEntityTooLarge:
-        try:
-            os.remove(dest)
-        except OSError:
-            pass
-        raise
+        ok = True
+    finally:
+        if not ok:
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
 
     _prune_uploads(bot_dir)
     log.info("Upload from '%s': %s (%s)", bot_name,

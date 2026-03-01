@@ -452,11 +452,12 @@ Opt-in periodic upload of bug report ZIPs to the relay droplet via direct HTTPS 
   POSTs to `https://1453.life/_upload?bot={bot_name}` with Bearer auth. Returns `(ok, message)`.
 - `start_auto_upload(settings)` / `stop_auto_upload()` — daemon thread, sleeps for interval then uploads.
 - `upload_status()` — returns `{"enabled", "interval_hours", "last_upload", "error", "next_upload_in_s"}`.
-- `create_bug_report_zip(clear_debug=True)` — `clear_debug=False` skips debug file cleanup (used by
-  periodic uploads to keep files intact for continued debugging).
+- `create_bug_report_zip(clear_debug=True)` — zips logs, all debug screenshots (failures, click
+  trails, general debug PNGs), stats, and settings. `clear_debug=False` skips debug file cleanup
+  (used by periodic uploads to keep files intact for continued debugging).
 
 **Server** (`relay/relay_server.py`):
-- `POST /_upload?bot={name}` — multipart file upload, Bearer auth, 150MB limit, saves to
+- `POST /_upload?bot={name}` — multipart file upload, Bearer auth, 500MB limit, saves to
   `UPLOAD_DIR/{bot_name}/bugreport_{timestamp}.zip`. Prunes to keep last 10 per bot.
 - `GET /_admin?secret=XXX` — HTML admin page listing all bots with uploads, download/delete buttons.
 - `GET/DELETE /_admin/uploads/{bot}/{file}` — download or delete a specific upload.
