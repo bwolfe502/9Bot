@@ -406,32 +406,14 @@ def rally_titan(device):
                 log.warning("Failed to dismiss popup and return to map")
                 return False
 
-        # Select titan on map — tap repeatedly and verify popup appeared
-        titan_popup_found = False
-        titan_select_start = time.time()
-        tap_attempt = 0
-        while time.time() - titan_select_start < 8:
-            tap_attempt += 1
-            logged_tap(device, 540, 900, f"titan_on_map_{tap_attempt}")
-            # Poll for rally_button.png (titan popup button) for ~1.5s
-            popup_found = timed_wait(
-                device,
-                lambda: find_image(load_screenshot(device),
-                                   "rally_button.png", threshold=0.65) is not None,
-                1.5, "titan_popup_check")
-            if popup_found:
-                if tap_image("rally_button.png", device, threshold=0.65):
-                    log.debug("Titan popup rally button tapped (attempt %d)", tap_attempt)
-                    titan_popup_found = True
-                    break
-                log.debug("rally_button.png vanished between check and tap, retrying")
-                continue
-            log.debug("No titan popup after tap %d, retrying...", tap_attempt)
+        # Select titan on map and confirm
+        logged_tap(device, 540, 900, "titan_on_map")
+        timed_wait(device, lambda: False, 1.5, "titan_on_map_select")
+        logged_tap(device, 420, 1400, "titan_confirm")
 
         # Wait for deployment panel — poll for depart button
         depart_start = time.time()
-        depart_budget = 8 if titan_popup_found else 2  # short budget if popup never appeared
-        while time.time() - depart_start < depart_budget:
+        while time.time() - depart_start < 8:
             s = load_screenshot(device)
             if s is not None:
                 match = find_image(s, "depart.png", threshold=0.6)
@@ -449,7 +431,7 @@ def rally_titan(device):
 
     if depart_match is not None:
         # Let the deployment panel fully settle before interacting
-        time.sleep(1)
+        timed_wait(device, lambda: False, 1, "titan_depart_settle")
         try:
             portrait_result = capture_departing_portrait(device, screen=depart_screen)
             if portrait_result:
