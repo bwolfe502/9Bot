@@ -453,7 +453,7 @@ def rally_eg(device, stop_check=None):
                     last_summary = summary
                 if snapshot.any_doing(TroopAction.STATIONING):
                     elapsed = time.time() - start_time
-                    log.debug("P%d: stationed detected via panel after %.1fs", priest_num, elapsed)
+                    log.info("P%d: stationed detected via panel after %.1fs", priest_num, elapsed)
                     return True
                 # Track rally-specific states (ignores permanent Defending troops)
                 has_rally_troop = any(t.action in _RALLY_STATES for t in snapshot.troops)
@@ -569,7 +569,7 @@ def rally_eg(device, stop_check=None):
         if not click_depart_with_fallback(1):
             return False
         config.set_device_status(device, "Marching to Dark Priest (1/5)...")
-        if not poll_troop_ready(240, 1):
+        if not poll_troop_ready(300, 1):
             return False
         log.info("P1: rally completed")
         attacks_completed += 1
@@ -608,8 +608,12 @@ def rally_eg(device, stop_check=None):
                 continue
             timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                        1, "eg_depart_to_map")
-            config.set_device_status(device, f"Killing Dark Priest ({pnum}/5)...")
-            if not poll_troop_ready(60, pnum):
+            # First priest we attack gets the long-march budget (240s) since
+            # dead priests shift the long march to whichever is first alive.
+            march_budget = 300 if attacks_completed == 0 else 60
+            status_verb = "Marching to" if march_budget > 60 else "Killing"
+            config.set_device_status(device, f"{status_verb} Dark Priest ({pnum}/5)...")
+            if not poll_troop_ready(march_budget, pnum):
                 # Check if the troop is still marching — if so, the castle is
                 # far from the EG and continuing would waste more troops on
                 # multi-minute marches that all time out.
@@ -697,8 +701,10 @@ def rally_eg(device, stop_check=None):
                 continue
             timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                        1, "eg_depart_to_map")
-            config.set_device_status(device, f"Killing Dark Priest ({pnum}/5)...")
-            if not poll_troop_ready(60, pnum):
+            march_budget = 300 if attacks_completed == 0 else 60
+            status_verb = "Marching to" if march_budget > 60 else "Killing"
+            config.set_device_status(device, f"{status_verb} Dark Priest ({pnum}/5)...")
+            if not poll_troop_ready(march_budget, pnum):
                 snapshot = read_panel_statuses(device)
                 if snapshot and snapshot.any_doing(TroopAction.MARCHING):
                     log.warning("P%d retry: stationed timeout with troop still marching "
