@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,wght@1,700&text=9&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=65">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=66">
 </head>
 <body class="{% block body_class %}{% endblock %}">
     <nav>
@@ -35,6 +35,8 @@
     {% if not (device_filter is defined and device_filter) %}
     <footer class="page-footer">
         <a href="/debug" class="footer-debug-link">Debug</a>
+        <span style="color:#333;margin:0 6px">|</span>
+        <a href="/calibrate" class="footer-debug-link">Calibrate</a>
         <a href="https://ko-fi.com/ninebot" target="_blank" class="footer-kofi">&#9749; If 9Bot saves you time, consider buying me a coffee</a>
     </footer>
     {% endif %}
