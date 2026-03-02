@@ -43,7 +43,7 @@ Build confidence that everything works before shipping updates.
 - [ ] Actionable test data — coverage reports, structured failure output, clear pass/fail signals
 - [ ] Keep CLAUDE.md current — ensure AI has full codebase context for efficient development
 - [x] Better debug data collection — failure screenshots added to join_rally (`jr_detail_load_fail`, `jr_slot_to_depart_fail`) and rally_titan (`titan_depart_miss_{N}`). Remaining: read_ap None returns
-- [ ] Automatic log/stats/debug uploading to droplet
+- [x] Automatic log/stats/debug uploading to droplet — manual upload from dashboard with real progress feedback (Zipping → Uploading X% → Sent!/error). Auto-upload on interval via settings.
 - [ ] Telemetry consent prompt — explicit opt-in dialog on first run (never silent, never pre-checked)
 - [ ] Data scrubbing — strip device IPs, file paths, player names before upload
 - [ ] Screenshot masking — black out chat area and name regions before staging
