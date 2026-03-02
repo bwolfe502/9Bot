@@ -74,6 +74,7 @@ log = logging.getLogger(__name__)
 
 _CHAT_MAXLEN = 200
 _BATTLE_MAXLEN = 50
+_AP_ASSET_ID = 11171002  # AssetNtf recover ID for Action Points
 
 # Categories for freshness tracking.
 CATEGORIES = (
@@ -125,9 +126,23 @@ class GameState:
 
     @property
     def ap(self) -> Optional[Tuple[int, int]]:
-        """(current, max) AP or None if never received. AP is cfgID=1."""
+        """(current, max) AP or None if never received.
+
+        Checks PowerNtf (cfgID=1) first, then falls back to AssetNtf
+        (recover asset ID 11171002) which carries AP with grow metadata.
+        """
         with self._lock:
-            return self._powers.get(1)
+            # Prefer PowerNtf data if available.
+            power = self._powers.get(1)
+            if power is not None:
+                return power
+            # Fall back to AssetNtf recover data.
+            asset = self._resources.get(_AP_ASSET_ID)
+            if asset is not None:
+                grow = asset.grow or {}
+                max_ap = grow.get("growMax", 0)
+                return (asset.val, max_ap) if max_ap > 0 else None
+            return None
 
     @property
     def powers(self) -> Dict[int, Tuple[int, int]]:
@@ -346,6 +361,8 @@ class GameState:
                 self._resources.clear()
             for a in msg.assets:
                 self._resources[a.ID] = a
+                if a.ID == _AP_ASSET_ID:
+                    self._touch("ap")
             self._touch("resources")
 
     def _on_chat_message(self, msg: Any) -> None:

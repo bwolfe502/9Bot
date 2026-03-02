@@ -110,6 +110,30 @@ _protocol_bus = None
 _game_state = None
 
 
+def _setup_gadget_forward(port=27042):
+    """Ensure ADB forward for Frida Gadget port on all connected devices."""
+    import subprocess
+    from botlog import get_logger
+    log = get_logger("startup")
+    try:
+        result = subprocess.run(
+            [config.adb_path, "devices"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                dev_id = parts[0]
+                subprocess.run(
+                    [config.adb_path, "-s", dev_id, "forward",
+                     f"tcp:{port}", f"tcp:{port}"],
+                    capture_output=True, timeout=5,
+                )
+                log.info("ADB forward tcp:%d set for %s", port, dev_id)
+    except Exception:
+        log.warning("Failed to set ADB forward for Frida Gadget", exc_info=True)
+
+
 def _start_protocol():
     """Start the protocol interceptor if not already running."""
     global _interceptor_thread, _protocol_bus, _game_state
@@ -125,7 +149,9 @@ def _start_protocol():
         return
     _protocol_bus = EventBus()
     _game_state = GameState("default", _protocol_bus)
-    _interceptor_thread = InterceptorThread(event_bus=_protocol_bus)
+    _interceptor_thread = InterceptorThread(
+        event_bus=_protocol_bus, pre_connect=_setup_gadget_forward,
+    )
     _interceptor_thread.start()
     from botlog import get_logger
     get_logger("startup").info("Protocol interceptor started")

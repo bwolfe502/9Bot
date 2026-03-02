@@ -200,12 +200,19 @@ class ProtocolInterceptor:
             self._frida_device = self._get_frida_device()
 
             if self._gadget_port > 0:
-                # Gadget mode: attach to the Gadget process name
+                # Gadget mode: enumerate to find the host process PID
                 log.info(
                     "Attaching to Frida Gadget on port %d",
                     self._gadget_port,
                 )
-                self._frida_session = self._frida_device.attach("Gadget")
+                procs = self._frida_device.enumerate_processes()
+                if procs:
+                    pid = procs[0].pid
+                    log.info("Gadget host process: PID=%d name=%s", pid, procs[0].name)
+                    self._frida_session = self._frida_device.attach(pid)
+                else:
+                    log.warning("No processes found on Gadget device")
+                    return False
             else:
                 # Legacy frida-server mode
                 pid = self._find_game_pid()
@@ -649,6 +656,7 @@ class InterceptorThread(threading.Thread):
         event_bus: EventBus,
         gadget_port: int = _GADGET_PORT,
         device_id: Optional[str] = None,
+        pre_connect=None,
     ) -> None:
         label = (
             f"gadget:{gadget_port}"
@@ -661,12 +669,19 @@ class InterceptorThread(threading.Thread):
         self.event_bus = event_bus
         self._stop_event = threading.Event()
         self._interceptor: Optional[ProtocolInterceptor] = None
+        self._pre_connect = pre_connect
 
     def run(self) -> None:
         """Main loop: connect, handle disconnects, auto-reconnect."""
         log.info("InterceptorThread started (%s)", self.name)
 
         while not self._stop_event.is_set():
+            if self._pre_connect is not None:
+                try:
+                    self._pre_connect()
+                except Exception:
+                    log.debug("pre_connect callback failed", exc_info=True)
+
             self._interceptor = ProtocolInterceptor(
                 gadget_port=self.gadget_port,
                 device_id=self.device_id,

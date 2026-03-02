@@ -372,7 +372,8 @@ def create_app():
         if os.path.isfile(log_file):
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()[-150:]
+                    all_lines = f.readlines()
+                lines = [l for l in all_lines if " DEBUG " not in l][-150:]
             except Exception as e:
                 _log.warning("Failed to read log file: %s", e)
                 lines = ["(Could not read log file)"]
@@ -396,7 +397,7 @@ def create_app():
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                     all_lines = f.readlines()
-                    lines = all_lines[-150:]
+                lines = [l for l in all_lines if " DEBUG " not in l][-150:]
             except Exception as e:
                 _log.warning("Failed to read log file: %s", e)
                 lines = ["(Could not read log file)"]
@@ -800,7 +801,9 @@ def create_app():
         if os.path.isfile(log_file):
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()[-150:]
+                    all_lines = f.readlines()
+                # Filter out DEBUG lines for the human-facing viewer
+                lines = [l for l in all_lines if " DEBUG " not in l][-150:]
             except Exception as e:
                 _log.warning("Failed to read log file: %s", e)
         return jsonify({"lines": [l.rstrip() for l in lines]})

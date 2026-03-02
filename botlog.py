@@ -135,6 +135,8 @@ def setup_logging(verbose=False):
     logging.getLogger("easyocr").setLevel(logging.ERROR)
     logging.getLogger("PIL").setLevel(logging.WARNING)
     logging.getLogger("torch").setLevel(logging.WARNING)
+    # Protocol interceptor: per-message debug lines are very noisy
+    logging.getLogger("protocol.interceptor").setLevel(logging.INFO)
 
     # Session start banner — makes each run easy to find in rotating log
     import platform as _plat

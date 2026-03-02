@@ -300,6 +300,7 @@ class Asset:
     cap: int = 0
     safe: int = 0
     protect: int = 0
+    grow: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> Asset:
@@ -312,6 +313,7 @@ class Asset:
             cap=d.get("cap", 0),
             safe=d.get("safe", 0),
             protect=d.get("protect", 0),
+            grow=d.get("grow"),
         )
 
 
