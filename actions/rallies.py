@@ -422,16 +422,29 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                     h, w = join_btn.shape[:2]
                     log.debug("Clicking join at (%d, %d)", join_x + w // 2, join_y + h // 2)
                     adb_tap(device, join_x + w // 2, join_y + h // 2)
-                    timed_wait(device, lambda: False, 1, "jr_detail_load")
 
-                    # Wait for rally detail screen to load — check for depart.png
-                    # as the definitive signal, then look for slot or full indicators
+                    # Wait for detail screen to load — depart.png confirms it
+                    detail_loaded = timed_wait(
+                        device,
+                        lambda: find_image(load_screenshot(device),
+                                           "depart.png", threshold=0.75) is not None,
+                        3, "jr_detail_load")
+
+                    if not detail_loaded:
+                        log.warning("Rally detail screen did not load after join tap "
+                                    "(depart.png not found within 3s)")
+                        if not _backout_to_war_screen():
+                            return "lost"
+                        retries_left -= 1
+                        should_rescan = True
+                        break  # Break rally_locs loop, rescan
+
+                    # Detail screen confirmed — find an open slot
                     slot_found = False
                     rally_full = False
-                    detail_loaded = False
                     last_screen = None
                     start_time = time.time()
-                    while time.time() - start_time < 6:
+                    while time.time() - start_time < 4:
                         if stop_check and stop_check():
                             return False
                         s = load_screenshot(device)
@@ -439,10 +452,6 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                             time.sleep(0.5)
                             continue
                         last_screen = s
-
-                        # Check for depart button — confirms detail screen loaded
-                        if not detail_loaded and find_image(s, "depart.png", threshold=0.75):
-                            detail_loaded = True
 
                         # Check for empty slot BEFORE full_rally — a rally can
                         # show full_rally.png while still having an open slot
@@ -504,7 +513,12 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 if not slot_found:
                     continue  # No slot for this type → try next rally_type
 
-                timed_wait(device, lambda: False, 1, "jr_slot_to_depart")
+                # Wait for depart button to be ready after slot tap
+                timed_wait(
+                    device,
+                    lambda: find_image(load_screenshot(device),
+                                       "depart.png", threshold=0.75) is not None,
+                    2, "jr_slot_to_depart")
                 # Capture which troop is selected before depart for slot tracking
                 try:
                     portrait_result = capture_departing_portrait(device)
@@ -625,7 +639,8 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
 
     # Scroll up to top (scroll position persists between visits)
     adb_swipe(device, 560, 300, 560, 1400, 500)
-    timed_wait(device, lambda: False, 1.5, "jr_scroll_up_settle")
+    timed_wait(device, lambda: False, 1.5, "jr_scroll_up_settle",
+               stop_check=stop_check)
 
     # Scroll down and check 5 times
     for attempt in range(5):
@@ -634,7 +649,8 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
             return False
         log.debug("Scroll down attempt %d/5", attempt + 1)
         adb_swipe(device, 560, 948, 560, 245, 500)
-        timed_wait(device, lambda: False, 1.5, "jr_scroll_down_settle")
+        timed_wait(device, lambda: False, 1.5, "jr_scroll_down_settle",
+                   stop_check=stop_check)
 
         # If no join buttons in the bottom quarter of the screen, we've
         # scrolled past all rallies into the marches section — stop early

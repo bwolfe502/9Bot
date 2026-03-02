@@ -386,6 +386,14 @@ No fixtures require a running emulator — all use mocked ADB/vision.
 - Test names: `test_<function>_<scenario>` (e.g. `test_find_image_returns_none_below_threshold`)
 - Use `@pytest.mark.parametrize` for related test cases that vary only by input/expected values
 
+## Diagnostic Analysis
+
+Run `/analyze` to process all session data (stats, logs, debug screenshots), document
+findings, and clean up. Findings are stored in `.claude/analysis/` (tracked in git).
+
+See `.claude/analysis/MEMORY.md` for the index of known issues and patterns.
+When investigating bugs or making changes, check the analysis files first for prior data.
+
 ## Git Workflow
 
 - `master` — tagged releases only (v1.1.0, ..., v2.0.0)

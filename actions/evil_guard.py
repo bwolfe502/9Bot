@@ -306,9 +306,9 @@ def rally_eg(device, stop_check=None):
     logged_tap(device, EG_PRIEST_POSITIONS[0][0], EG_PRIEST_POSITIONS[0][1], "eg_boss_on_map")
     timed_wait(device, _dialog_visible, 2.0, "eg_boss_dialog_open")
 
-    # Region constraint for stationed.png: only search center-right of screen
-    # to avoid false positives on the hero portrait list (left side, x < 300).
-    _STATIONED_REGION = (300, 500, 1080, 1300)
+    # Region constraint for stationed.png: avoid hero portrait list (left side).
+    # Widened from (300,500,1080,1300) — stationed icon observed at x=155 on Windows.
+    _STATIONED_REGION = (100, 450, 1080, 1400)
 
     def check_and_proceed(priest_num):
         """Find the checkbox (checked/unchecked) and tap Proceed.

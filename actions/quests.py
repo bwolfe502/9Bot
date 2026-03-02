@@ -14,6 +14,7 @@ import cv2
 import time
 import os
 import re
+import sys
 
 import config
 from config import QuestType, Screen
@@ -212,7 +213,18 @@ def reset_quest_tracking(device=None):
 # ---- Quest OCR helpers ----
 
 def _classify_quest_text(text):
-    """Classify quest type from OCR text."""
+    """Classify quest type from OCR text.
+
+    When Apple Vision drops an opening '(' on a quest counter, the regex
+    captures a very long name spanning multiple quest rows.  Real quest
+    names are always short (< 20 chars), so if the captured text is long
+    we only classify based on the tail — the actual quest name is always
+    the last few words before the '('.
+    """
+    if sys.platform == "darwin" and len(text) > 30:
+        log = get_logger("actions")
+        log.debug("Quest name trimmed for classification: %r → %r", text, text[-30:])
+        text = text[-30:]
     t = text.lower()
     if "titan" in t:
         return QuestType.TITAN
@@ -251,6 +263,21 @@ def _ocr_quest_rows(device):
     results = ocr_read(gray, detail=0)
     raw_text = " ".join(results)
     log.debug("Quest OCR raw: %s", raw_text)
+
+    # macOS only: fix missing '(' before quest counters — Apple Vision sometimes
+    # drops it, producing "Defeat Titans 14/15)" instead of "Defeat Titans(14/15)".
+    # Pattern: 3+ alpha chars, whitespace, then digits/digits) with no opening '('.
+    # Safe: won't match timestamps (digits), "Limit: 3/9)" (colon blocks \s+),
+    # or already-correct "Gather(0/200,000)" ('(' is not \s+).
+    if sys.platform == "darwin":
+        fixed_text = re.sub(
+            r'([A-Za-z]{3,})\s+(\d[\doO, ]*/\s*\d[\doO, ]*?\s*\))',
+            r'\1(\2',
+            raw_text,
+        )
+        if fixed_text != raw_text:
+            log.debug("Quest OCR fixed parens: %s", fixed_text)
+            raw_text = fixed_text
 
     if not raw_text.strip():
         log.warning("Quest OCR: no text detected")
