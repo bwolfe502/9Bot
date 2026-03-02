@@ -1,0 +1,10 @@
+# Exclude dev-only files from release archives (git archive)
+.claude/ export-ignore
+CLAUDE.md export-ignore
+README.md export-ignore
+ROADMAP.md export-ignore
+TESTING.md export-ignore
+tests/ export-ignore
+relay/ export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore
