@@ -23,6 +23,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `vision.py` | Screenshots, template matching, OCR, ADB input | `load_screenshot`, `find_image`, `find_all_matches`, `tap_image`, `wait_for_image_and_tap`, `read_text`, `read_number`, `read_ap`, `adb_tap`, `adb_swipe`, `adb_keyevent`, `timed_wait`, `tap`, `logged_tap`, `get_last_best`, `save_failure_screenshot`, `tap_tower_until_attack_menu`, `warmup_ocr` |
 | `navigation.py` | Screen detection + state-machine navigation | `check_screen`, `navigate` |
 | `troops.py` | Troop counting (pixel), status model (OCR), healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
+| `training.py` | Training data collector (JSONL + images) | `configure`, `log_template`, `log_ocr`, `log_screen`, `save_training_image`, `get_training_stats`, `shutdown` |
 | `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
 | `config.py` | Global mutable state, enums, constants | `QuestType`, `RallyType`, `Screen`, ADB path, thresholds, team colors, `alert_queue` |
 | `devices.py` | ADB device detection + emulator window mapping | `auto_connect_emulators`, `get_devices`, `get_emulator_instances` |
@@ -346,6 +347,18 @@ Opt-in periodic upload of bug report ZIPs via direct HTTPS POST to `https://1453
 Settings: `auto_upload_logs` (bool), `upload_interval_hours` (int, 1-168). Key functions:
 `upload_bug_report()`, `start_manual_upload()`, `get_upload_progress()` (phases: idle→zipping→uploading→done).
 Server: `POST /_upload?bot={name}` (500MB limit, keeps last 10), `GET /_admin?secret=XXX` for admin.
+
+### Training Data Collector (training.py)
+Opt-in JSONL logger for template match, OCR, and screen detection decisions. Selective image
+capture for near-misses (confidence 0.65-0.79), low-confidence OCR (avg < 0.7), unknown screens,
+and region drift. Setting: `collect_training_data` (default `False`).
+
+- JSONL: one file per session (`training_data/td_{timestamp}.jsonl`), capped at 10 files
+- Images: JPEG to `training_data/images/`, rolling cap of 200
+- Hooked into `find_image()`, `read_text()`, `check_screen()`
+- Included in bug report ZIPs, cleared after export
+- Stats shown on `/debug` page, toggle on `/settings` page
+- `configure(enabled)`, `shutdown()` called from `startup.py`
 
 ### Per-Device Access Control (startup.py + web/dashboard.py)
 Token-based shareable URLs: `https://1453.life/{bot_name}/d/{device_hash}?token={token}`
