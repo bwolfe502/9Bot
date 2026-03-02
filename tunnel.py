@@ -239,11 +239,12 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
                 ping_timeout=10,
                 close_timeout=5,
                 additional_headers={"Authorization": f"Bearer {relay_secret}"},
+                proxy=None,
             ) as ws:
                 with _status_lock:
                     _status = "connected"
                 _log.info("Tunnel connected to relay (bot=%s)", bot_name)
-                backoff = RECONNECT_BASE  # reset on success
+                connected_at = asyncio.get_event_loop().time()
 
                 async for raw_msg in ws:
                     if _stop_event.is_set():
@@ -265,6 +266,15 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
         with _status_lock:
             _status = "disconnected"
 
+        # Only reset backoff if we stayed connected for a meaningful duration
+        # (prevents rapid reconnect loop when server keeps closing immediately)
+        try:
+            uptime = asyncio.get_event_loop().time() - connected_at
+            if uptime > 30:
+                backoff = RECONNECT_BASE
+        except NameError:
+            pass  # never connected
+
         # Wait before reconnecting (check stop_event every second)
         for _ in range(backoff):
             if _stop_event.is_set():
@@ -284,8 +294,11 @@ def start_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
     """Start the tunnel client in a daemon thread. Safe to call multiple times."""
     global _thread
     if _thread is not None and _thread.is_alive():
-        _log.debug("Tunnel already running, ignoring start_tunnel()")
-        return
+        # Signal old thread to stop and wait for it
+        _stop_event.set()
+        _thread.join(timeout=5)
+        if _thread.is_alive():
+            _log.warning("Old tunnel thread still alive after 5s, starting new one anyway")
 
     _stop_event.clear()
 
