@@ -45,6 +45,27 @@
 </div>
 {% endif %}
 
+<!-- Training Data -->
+<div class="section-header" style="margin-top:24px">Training Data</div>
+<div class="status-grid">
+<div class="setting-row" style="border:none; padding:4px 0">
+    <span>Status</span>
+    <span style="color:{% if training_stats.enabled %}#4cff8e{% else %}#888{% endif %}">{{ "Enabled" if training_stats.enabled else "Disabled" }}</span>
+</div>
+<div class="setting-row" style="border:none; padding:4px 0">
+    <span>Session entries</span>
+    <span>{{ training_stats.session_entries }}</span>
+</div>
+<div class="setting-row" style="border:none; padding:4px 0">
+    <span>Training images</span>
+    <span>{{ training_stats.total_images }}</span>
+</div>
+<div class="setting-row" style="border:none; padding:4px 0">
+    <span>Total size</span>
+    <span>{{ training_stats.total_size }}</span>
+</div>
+</div>
+
 <!-- Logs -->
 <div class="section-header" style="margin-top:24px">Logs</div>
 <div class="log-controls">

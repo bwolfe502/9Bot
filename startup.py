@@ -126,6 +126,8 @@ def apply_settings(settings):
             pass
     from botlog import set_console_verbose
     set_console_verbose(settings.get("verbose_logging", False))
+    import training
+    training.configure(settings.get("collect_training_data", False))
     set_gather_options(
         settings.get("gather_enabled", True),
         settings.get("gather_mine_level", 4),
@@ -251,6 +253,13 @@ def shutdown():
     except Exception as e:
         print(f"Failed to save mithril timers: {e}")
 
+    # Close training data file
+    try:
+        import training
+        training.shutdown()
+    except Exception:
+        pass
+
     # Save session stats
     try:
         from botlog import stats
@@ -319,6 +328,20 @@ def create_bug_report_zip(clear_debug=True, notes=None):
                     if os.path.isfile(fpath) and f.endswith(".png"):
                         zf.write(fpath, zip_prefix + f)
 
+        # Training data (JSONL logs + selective images)
+        training_dir = os.path.join(SCRIPT_DIR, "training_data")
+        if os.path.isdir(training_dir):
+            for f in os.listdir(training_dir):
+                fpath = os.path.join(training_dir, f)
+                if os.path.isfile(fpath) and f.endswith(".jsonl"):
+                    zf.write(fpath, f"training_data/{f}")
+            images_dir = os.path.join(training_dir, "images")
+            if os.path.isdir(images_dir):
+                for f in os.listdir(images_dir):
+                    fpath = os.path.join(images_dir, f)
+                    if os.path.isfile(fpath) and f.endswith(".jpg"):
+                        zf.write(fpath, f"training_data/images/{f}")
+
         # Session stats
         if os.path.isdir(STATS_DIR):
             for f in os.listdir(STATS_DIR):
@@ -381,7 +404,7 @@ def create_bug_report_zip(clear_debug=True, notes=None):
 
 
 def _clear_debug_files(script_dir):
-    """Remove debug screenshots and click trails after bug report export."""
+    """Remove debug screenshots, click trails, and training data after export."""
     for subdir in ["debug/failures", "debug/clicks", "debug"]:
         dirpath = os.path.join(script_dir, subdir)
         if not os.path.isdir(dirpath):
@@ -389,6 +412,18 @@ def _clear_debug_files(script_dir):
         for f in os.listdir(dirpath):
             fpath = os.path.join(dirpath, f)
             if os.path.isfile(fpath) and f.endswith(".png"):
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+    # Clear training data (JSONL + images)
+    for subdir, ext in [("training_data", ".jsonl"), ("training_data/images", ".jpg")]:
+        dirpath = os.path.join(script_dir, subdir)
+        if not os.path.isdir(dirpath):
+            continue
+        for f in os.listdir(dirpath):
+            fpath = os.path.join(dirpath, f)
+            if os.path.isfile(fpath) and f.endswith(ext):
                 try:
                     os.remove(fpath)
                 except Exception:

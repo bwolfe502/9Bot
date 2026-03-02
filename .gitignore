@@ -17,6 +17,9 @@ platform-tools/*
 # Debug output
 debug/
 
+# Training data (generated at runtime, uploaded via bug reports)
+training_data/
+
 # Logs and stats
 logs/
 stats/
@@ -31,5 +34,10 @@ settings.json
 # Reports (generated locally, sent directly to testers)
 reports/
 
+# Bug report inbox (drop ZIPs here for /analyze)
+inbox/*.zip
+
 # IDE
 .claude/
+!.claude/commands/
+!.claude/analysis/

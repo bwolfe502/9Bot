@@ -376,11 +376,14 @@ def create_app():
             except Exception as e:
                 _log.warning("Failed to read log file: %s", e)
                 lines = ["(Could not read log file)"]
+        import training
+        training_stats = training.get_training_stats()
         return render_template("debug.html",
                                devices=device_info,
                                tasks=active_tasks,
                                debug_actions=ONESHOT_DEBUG,
-                               log_lines=lines)
+                               log_lines=lines,
+                               training_stats=training_stats)
 
     @app.route("/logs")
     def logs_page():
@@ -573,7 +576,8 @@ def create_app():
         for key in ["auto_heal", "auto_restore_ap", "ap_use_free", "ap_use_potions",
                      "ap_allow_large_potions", "ap_use_gems", "verbose_logging",
                      "eg_rally_own", "titan_rally_own", "web_dashboard", "gather_enabled",
-                     "tower_quest_enabled", "remote_access", "auto_upload_logs"]:
+                     "tower_quest_enabled", "remote_access", "auto_upload_logs",
+                     "collect_training_data"]:
             settings[key] = key in request.form
 
         for key in ["ap_gem_limit", "min_troops", "variation", "titan_interval",
