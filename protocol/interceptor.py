@@ -200,36 +200,34 @@ class ProtocolInterceptor:
             self._frida_device = self._get_frida_device()
 
             if self._gadget_port > 0:
-                # Gadget mode: enumerate to find the host process PID
                 log.info(
-                    "Attaching to Frida Gadget on port %d",
+                    "Connecting to Frida on port %d",
                     self._gadget_port,
                 )
+
+            # Try to find the game process by package name first
+            # (works for both gadget and frida-server modes).
+            pid = self._find_game_pid()
+            if pid is not None:
+                log.info("Attaching to %s (PID %d)", _GAME_PACKAGE, pid)
+                self._frida_session = self._frida_device.attach(pid)
+            elif self._gadget_port > 0:
+                # Pure gadget fallback: only one process on the device
                 procs = self._frida_device.enumerate_processes()
                 if procs:
                     pid = procs[0].pid
                     log.info("Gadget host process: PID=%d name=%s", pid, procs[0].name)
                     self._frida_session = self._frida_device.attach(pid)
                 else:
-                    log.warning("No processes found on Gadget device")
+                    log.warning("No processes found on Frida device")
                     return False
             else:
-                # Legacy frida-server mode
-                pid = self._find_game_pid()
-                if pid is None:
-                    log.info(
-                        "Game process %s not found on device %s",
-                        _GAME_PACKAGE,
-                        self._device_id or "(USB)",
-                    )
-                    return False
-
                 log.info(
-                    "Attaching to PID %d (%s)",
-                    pid,
+                    "Game process %s not found on device %s",
                     _GAME_PACKAGE,
+                    self._device_id or "(USB)",
                 )
-                self._frida_session = self._frida_device.attach(pid)
+                return False
 
             self._frida_session.on("detached", self._on_session_detached)
 

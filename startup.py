@@ -111,8 +111,8 @@ _protocol_bus = None
 _game_state = None
 
 
-def _setup_gadget_forward(port=27042):
-    """Ensure ADB forward for Frida Gadget port on all connected devices."""
+def _setup_frida_forward(port=27042):
+    """Ensure ADB forward for Frida port on all connected devices."""
     import subprocess
     from botlog import get_logger
     log = get_logger("startup")
@@ -151,7 +151,7 @@ def _start_protocol():
     _protocol_bus = EventBus()
     _game_state = GameState("default", _protocol_bus)
     _interceptor_thread = InterceptorThread(
-        event_bus=_protocol_bus, pre_connect=_setup_gadget_forward,
+        event_bus=_protocol_bus, pre_connect=_setup_frida_forward,
     )
     _interceptor_thread.start()
     from botlog import get_logger

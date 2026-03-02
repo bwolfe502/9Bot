@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 export PYTHONIOENCODING=utf-8
 
 echo "============================"
-echo "PACbot - Setup + Run"
+echo "9Bot - Setup + Run"
 echo "============================"
 
 # Download ADB if missing (fallback for source installs without bundled binaries)
@@ -72,16 +72,16 @@ echo ""
 echo "Activating venv..."
 source .venv/bin/activate
 
-# Check if first-time setup (easyocr not installed yet)
+# Check if first-time setup (flask not installed yet)
 FIRST_RUN=0
-python -c "import easyocr" > /dev/null 2>&1
+python -c "import flask" > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     FIRST_RUN=1
 fi
 
 if [ "$FIRST_RUN" -eq 1 ]; then
     echo ""
-    echo "First-time setup: downloading OCR engine."
+    echo "First-time setup: installing dependencies."
     echo "This only happens once and may take a few minutes."
     echo ""
     python -m pip install --upgrade pip -q
@@ -126,7 +126,7 @@ python run_web.py
 if [ $? -ne 0 ]; then
     echo ""
     echo "=========================================="
-    echo "PACbot crashed! See error message above."
+    echo "9Bot crashed! See error message above."
     echo "=========================================="
     read -p "Press Enter to close..."
     exit 1

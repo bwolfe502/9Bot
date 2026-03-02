@@ -468,9 +468,78 @@ When investigating bugs or making changes, check the analysis files first for pr
 
 ## Git Workflow
 
-- `master` — tagged releases only (v1.1.0, ..., v2.0.0)
-- `dev` — integration branch, always working
-- Feature branches: `feature/*`, `fix/*`, `cleanup/*` → PR into dev
-- Conventional commits: `feat:`, `fix:`, `refactor:`, `test:` prefix
-- Current version: see `version.txt`
+Current version: see `version.txt`
+
+### Branches
+
+| Branch | Purpose | Rules |
+|--------|---------|-------|
+| `master` | Release branch — tagged releases only | Never commit directly. Only receives merges from `dev`. |
+| `dev` | Integration branch — always working | Day-to-day commits go here. Must stay buildable. |
+| `feature/*` | Experimental/risky work | Optional. Use when a change might be thrown away. Merge or delete when done. |
+
+### Commits
+
+- **One logical change per commit.** Don't bundle unrelated fixes.
+- **Conventional prefix:** `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`, `revert:`
+- **Meaningful messages** that explain *why*, not just *what*:
+  - Good: `fix: tower recall failing due to stale detail_button position`
+  - Bad: `fix: stuff`
+
+### Releasing to master
+
+```bash
+# 1. On dev: bump version and commit
+#    Edit version.txt → X.Y.Z
+git add version.txt
+git commit -m "chore: bump version to X.Y.Z"
+
+# 2. Merge into master with a release message
+git checkout master
+git merge --no-ff dev -m "release: vX.Y.Z"
+
+# 3. Tag and push
+git tag vX.Y.Z
+git push origin master --tags
+
+# 4. Return to dev
+git checkout dev
+```
+
+Master log should read like a changelog — one `release: vX.Y.Z` entry per release.
+
+### Rules
+
+- **No hotfixes on master.** Fix on `dev`, then release.
+- **No `Merge branch 'dev'` messages.** Always use `--no-ff` with an explicit `release:` message.
+- **Delete stale branches** after merging. Don't let old `feature/*` branches accumulate.
+- **Don't rewrite published history.** No force-push to `master` or `dev`.
+
+### Claude Enforcement (MANDATORY)
+
+Claude MUST actively enforce this workflow. The user works on many things in parallel and
+needs Claude to be the gatekeeper.
+
+**Before any commit:**
+- If the working tree has unrelated staged changes, STOP and ask the user to separate them.
+- If a commit message bundles multiple unrelated changes, refuse and suggest splitting it.
+- If on `master`, refuse the commit entirely — redirect to `dev`.
+
+**When the user says "release", "push to master", "merge to master", or similar:**
+1. Run `git status` and `git log --oneline dev` to audit what's on dev.
+2. Present a clear list of ALL uncommitted changes AND all commits since the last release.
+3. Ask the user to explicitly confirm which changes are release-ready vs. not ready.
+4. If anything is WIP/experimental (e.g. protocol features, phantom clash), flag it and
+   ask whether it should be included. Do NOT silently merge everything.
+5. If WIP changes need to be excluded, help the user isolate them (stash, branch, revert)
+   BEFORE merging to master.
+6. Only proceed with the release steps after the user has approved the exact scope.
+
+**During normal work:**
+- If the user asks to commit a large batch of changes touching unrelated areas, push back
+  and suggest breaking it into separate commits.
+- If unstaged/uncommitted changes are piling up across many files, proactively remind the
+  user to commit or stash before context is lost.
+- When starting a new session, check `git status` — if there are uncommitted changes,
+  surface them early so nothing gets forgotten.
 

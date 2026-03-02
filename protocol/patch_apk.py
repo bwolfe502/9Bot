@@ -15,7 +15,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import glob
+import hashlib
 import io
 import json
 import lzma
@@ -29,8 +31,15 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# Pure Python signing (when Java/Android SDK build-tools are not installed)
+try:
+    import cryptography as _cryptography  # noqa: F401
+    _HAVE_CRYPTOGRAPHY = True
+except ImportError:
+    _HAVE_CRYPTOGRAPHY = False
 
 # ---------------------------------------------------------------------------
 # ANSI helpers (disabled on Windows unless modern terminal detected)
@@ -267,6 +276,201 @@ def _resolve_directory(dir_path: str, output_dir: str | None,
 
 
 # ---------------------------------------------------------------------------
+# Pure Python APK signing (v1 / JAR signing)
+# ---------------------------------------------------------------------------
+# Used automatically when Java JDK and Android SDK build-tools are not
+# installed.  Requires: pip install cryptography
+#
+# Implements: MANIFEST.MF + CERT.SF + CERT.RSA (PKCS#7) + zipalign.
+# Produces APK Signature Scheme v1 signatures — sufficient for all
+# Android versions (v2/v3 improve install speed but are not required).
+
+
+def _generate_debug_key(key_dir: str):
+    """Generate or load RSA-2048 debug signing key + self-signed certificate."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key_path = os.path.join(key_dir, "debug.key")
+    cert_path = os.path.join(key_dir, "debug.cert")
+
+    if os.path.isfile(key_path) and os.path.isfile(cert_path):
+        with open(key_path, "rb") as f:
+            key = serialization.load_pem_private_key(f.read(), password=None)
+        with open(cert_path, "rb") as f:
+            cert = x509.load_pem_x509_certificate(f.read())
+        print(f"  {OK} Using existing debug key")
+        return key, cert
+
+    os.makedirs(key_dir, exist_ok=True)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = datetime.now(timezone.utc)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COMMON_NAME, "Debug"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Debug"),
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+    ])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=10000))
+        .sign(key, hashes.SHA256())
+    )
+    with open(key_path, "wb") as f:
+        f.write(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ))
+    with open(cert_path, "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+    print(f"  {OK} Generated debug signing key")
+    return key, cert
+
+
+def _build_manifest_mf(entries: list[tuple[str, bytes]]) -> bytes:
+    """Build MANIFEST.MF content for JAR/APK v1 signing.
+
+    *entries* is a list of ``(zip_entry_name, uncompressed_data)`` tuples.
+    """
+    mf = b"Manifest-Version: 1.0\r\nCreated-By: 1.0 (Android SignApk)\r\n\r\n"
+    for name, data in entries:
+        digest = base64.b64encode(hashlib.sha256(data).digest()).decode("ascii")
+        mf += f"Name: {name}\r\nSHA-256-Digest: {digest}\r\n\r\n".encode("utf-8")
+    return mf
+
+
+def _build_cert_sf(manifest_mf: bytes) -> bytes:
+    """Build CERT.SF — per-entry digests of MANIFEST.MF sections."""
+    whole_digest = base64.b64encode(
+        hashlib.sha256(manifest_mf).digest()
+    ).decode("ascii")
+    sf = (
+        f"Signature-Version: 1.0\r\n"
+        f"SHA-256-Digest-Manifest: {whole_digest}\r\n"
+        f"Created-By: 1.0 (Android SignApk)\r\n\r\n"
+    ).encode("utf-8")
+
+    # Each per-entry section in MANIFEST.MF is hashed individually.
+    # Sections are separated by \r\n\r\n.  The hash covers the section
+    # text *including* its trailing \r\n\r\n.
+    parts = manifest_mf.split(b"\r\n\r\n")
+    # parts[0] = main attributes, parts[1..n-1] = per-entry, parts[-1] = ""
+    for part in parts[1:]:
+        if not part.strip():
+            continue
+        section_bytes = part + b"\r\n\r\n"
+        digest = base64.b64encode(
+            hashlib.sha256(section_bytes).digest()
+        ).decode("ascii")
+        for line in part.split(b"\r\n"):
+            if line.startswith(b"Name: "):
+                sf += line + b"\r\n"
+                break
+        sf += f"SHA-256-Digest: {digest}\r\n\r\n".encode("utf-8")
+    return sf
+
+
+def _build_cert_rsa(cert_sf: bytes, private_key, certificate) -> bytes:
+    """Build CERT.RSA — PKCS#7 detached signature over CERT.SF."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.serialization import Encoding
+    from cryptography.hazmat.primitives.serialization.pkcs7 import (
+        PKCS7Options,
+        PKCS7SignatureBuilder,
+    )
+    return (
+        PKCS7SignatureBuilder()
+        .set_data(cert_sf)
+        .add_signer(certificate, private_key, hashes.SHA256())
+        .sign(Encoding.DER, [PKCS7Options.DetachedSignature])
+    )
+
+
+def _sign_and_align_apk(apk_path: str, private_key, certificate,
+                         alignment: int = 4) -> None:
+    """Sign (APK v1 / JAR) and zipalign an APK using pure Python.
+
+    Combines signing and alignment in a single rewrite pass.
+    """
+    # Read all entries (drop old signatures)
+    entries: list[tuple[zipfile.ZipInfo, bytes]] = []
+    with zipfile.ZipFile(apk_path, "r") as zf:
+        for info in zf.infolist():
+            if info.filename.startswith("META-INF/"):
+                continue
+            entries.append((info, zf.read(info.filename)))
+
+    # Build signing artifacts from uncompressed entry data
+    manifest_entries = [(info.filename, data) for info, data in entries]
+    manifest_mf = _build_manifest_mf(manifest_entries)
+    cert_sf = _build_cert_sf(manifest_mf)
+    cert_rsa = _build_cert_rsa(cert_sf, private_key, certificate)
+
+    # Rewrite APK: META-INF first, then content entries with alignment
+    tmp_path = apk_path + ".signed"
+    with open(tmp_path, "wb") as raw_f:
+        with zipfile.ZipFile(raw_f, "w") as zf:
+            # Signing metadata (compressed, alignment irrelevant)
+            zf.writestr("META-INF/MANIFEST.MF", manifest_mf)
+            zf.writestr("META-INF/CERT.SF", cert_sf)
+            zf.writestr("META-INF/CERT.RSA", cert_rsa)
+
+            for info, data in entries:
+                out = zipfile.ZipInfo(info.filename, date_time=info.date_time)
+                out.compress_type = info.compress_type
+                out.external_attr = info.external_attr
+                if info.compress_type == zipfile.ZIP_STORED and alignment > 1:
+                    # Pad extra field so file data starts at aligned offset.
+                    # Local header = 30 + len(filename) + len(extra).
+                    header_base = 30 + len(out.filename.encode("utf-8"))
+                    data_start = raw_f.tell() + header_base
+                    pad = (alignment - (data_start % alignment)) % alignment
+                    out.extra = b"\x00" * pad
+                zf.writestr(out, data)
+
+    shutil.move(tmp_path, apk_path)
+
+
+def _sign_splits_python(splits: dict[str, str], patched_arm64: str,
+                         output_dir: str) -> list[str]:
+    """Zipalign and sign all APK splits using pure Python (v1 signing)."""
+    print(f"\n{INFO} Signing APK splits (pure Python v1) ...")
+
+    os.makedirs(output_dir, exist_ok=True)
+    private_key, certificate = _generate_debug_key(output_dir)
+
+    _CANONICAL = {
+        "base": "base.apk",
+        "arm64": "split_config.arm64_v8a.apk",
+        "unity": "split_UnityDataAssetPack.apk",
+    }
+
+    signed_paths: list[str] = []
+    for role, source in splits.items():
+        if role == "arm64":
+            source = patched_arm64
+        name = _CANONICAL.get(role, os.path.basename(source))
+        dest = os.path.join(output_dir, name)
+        shutil.copy2(source, dest)
+        size_mb = os.path.getsize(dest) / (1024 * 1024)
+        print(f"  Signing + aligning {name} ({size_mb:.1f} MB) ...")
+
+        _sign_and_align_apk(dest, private_key, certificate)
+
+        signed_paths.append(dest)
+        print(f"  {OK} {name}: {os.path.getsize(dest) / (1024 * 1024):.1f} MB (v1 signed)")
+
+    return signed_paths
+
+
+# ---------------------------------------------------------------------------
 # Step 2: Discover tools
 # ---------------------------------------------------------------------------
 
@@ -364,23 +568,29 @@ def discover_tools() -> dict[str, str]:
 
     missing = [n for n in ("zipalign", "apksigner", "keytool") if n not in tools]
     if missing:
-        print()
-        system = platform.system()
-        if system == "Darwin":
-            print(yellow("  Install Android command-line tools:"))
-            print("    brew install --cask android-commandlinetools")
-            print("    sdkmanager 'build-tools;35.0.0'")
-            print("    brew install openjdk  (for keytool)")
-        elif system == "Windows":
-            print(yellow("  Install Android SDK Build Tools:"))
-            print("    1. Install Android Studio or SDK command-line tools")
-            print("    2. sdkmanager 'build-tools;35.0.0'")
-            print("    3. Ensure Java JDK is installed (for keytool)")
+        if _HAVE_CRYPTOGRAPHY:
+            print(f"  {INFO} Not found: {', '.join(missing)}")
+            print(f"  {OK} Will use pure Python signing (v1 / JAR)")
+            tools["_python_signing"] = True
         else:
-            print(yellow("  Install Android SDK Build Tools:"))
-            print("    sdkmanager 'build-tools;35.0.0'")
-            print("    sudo apt install default-jdk  (for keytool)")
-        _abort(f"Missing tools: {', '.join(missing)}")
+            print()
+            system = platform.system()
+            if system == "Darwin":
+                print(yellow("  Install Android command-line tools:"))
+                print("    brew install --cask android-commandlinetools")
+                print("    sdkmanager 'build-tools;35.0.0'")
+                print("    brew install openjdk  (for keytool)")
+            elif system == "Windows":
+                print(yellow("  Install Android SDK Build Tools:"))
+                print("    1. Install Android Studio or SDK command-line tools")
+                print("    2. sdkmanager 'build-tools;35.0.0'")
+                print("    3. Ensure Java JDK is installed (for keytool)")
+            else:
+                print(yellow("  Install Android SDK Build Tools:"))
+                print("    sdkmanager 'build-tools;35.0.0'")
+                print("    sudo apt install default-jdk  (for keytool)")
+            _abort(f"Missing tools: {', '.join(missing)}\n"
+                   "  Or: pip install cryptography  (for pure Python signing)")
 
     return tools
 
@@ -682,10 +892,10 @@ def _make_env(tools: dict[str, str]) -> dict[str, str]:
     apksigner = tools.get("apksigner", "")
     if apksigner:
         bt_dir = os.path.dirname(apksigner)
-        extra_path = f"{bt_dir}:{extra_path}" if extra_path else bt_dir
+        extra_path = f"{bt_dir}{os.pathsep}{extra_path}" if extra_path else bt_dir
 
     if extra_path:
-        env["PATH"] = f"{extra_path}:{env.get('PATH', '')}"
+        env["PATH"] = f"{extra_path}{os.pathsep}{env.get('PATH', '')}"
 
     return env
 
@@ -693,6 +903,9 @@ def _make_env(tools: dict[str, str]) -> dict[str, str]:
 def sign_splits(splits: dict[str, str], patched_arm64: str,
                 output_dir: str, tools: dict[str, str]) -> list[str]:
     """Zipalign and sign all APK splits. Returns list of signed APK paths."""
+    if tools.get("_python_signing"):
+        return _sign_splits_python(splits, patched_arm64, output_dir)
+
     print(f"\n{INFO} Signing APK splits ...")
 
     os.makedirs(output_dir, exist_ok=True)
@@ -791,30 +1004,99 @@ def sign_splits(splits: dict[str, str], patched_arm64: str,
 # Step 9 (optional): Install
 # ---------------------------------------------------------------------------
 
-def install_splits(signed_paths: list[str]) -> None:
+def _find_adb() -> str:
+    """Find ADB binary: bundled platform-tools first, then PATH."""
+    # Bundled ADB next to the project root
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bundled = os.path.join(project_root, "platform-tools", "adb.exe" if os.name == "nt" else "adb")
+    if os.path.isfile(bundled):
+        return bundled
+    # Fall back to PATH
+    found = shutil.which("adb")
+    if found:
+        return found
+    _abort("adb not found. Expected at platform-tools/adb or on PATH.")
+    return ""  # unreachable
+
+
+def pull_from_device(device: str | None, output_dir: str) -> dict[str, str]:
+    """Pull APK splits from a connected device via ADB.
+
+    Returns a dict of {role: local_apk_path}.
+    """
+    print(f"\n{INFO} Pulling APK splits from device ...")
+    adb = _find_adb()
+
+    adb_cmd = [adb]
+    if device:
+        adb_cmd += ["-s", device]
+
+    # Get APK paths on device
+    result = _run(adb_cmd + ["shell", "pm", "path", PACKAGE])
+    if result.returncode != 0 or not result.stdout:
+        _abort(f"Could not find {PACKAGE} on device.\n"
+               "  Is the game installed?")
+
+    remote_paths: list[str] = []
+    for line in result.stdout.strip().splitlines():
+        if line.startswith("package:"):
+            remote_paths.append(line[len("package:"):])
+
+    if not remote_paths:
+        _abort(f"No APK paths found for {PACKAGE}")
+
+    print(f"  Found {len(remote_paths)} split(s) on device")
+
+    # Pull each APK
+    os.makedirs(output_dir, exist_ok=True)
+    splits: dict[str, str] = {}
+    for remote in remote_paths:
+        filename = os.path.basename(remote)
+        local = os.path.join(output_dir, filename)
+        print(f"  Pulling {filename} ...")
+        result = _run(adb_cmd + ["pull", remote, local], timeout=120)
+        if result.returncode != 0:
+            _abort(f"Failed to pull {remote}")
+
+        role = _classify_apk(filename)
+        if role:
+            splits[role] = local
+            size_mb = os.path.getsize(local) / (1024 * 1024)
+            print(f"  {OK} {role}: {filename} ({size_mb:.1f} MB)")
+        else:
+            print(f"  {WARN} Skipping unrecognized: {filename}")
+
+    if "arm64" not in splits:
+        _abort("arm64 split not found on device")
+
+    return splits
+
+
+def install_splits(signed_paths: list[str], device: str | None = None) -> None:
     """Install the signed splits via adb install-multiple."""
     print(f"\n{INFO} Installing on device ...")
 
-    adb = shutil.which("adb")
-    if not adb:
-        _abort("adb not found on PATH. Cannot install.")
+    adb = _find_adb()
+    adb_cmd = [adb]
+    if device:
+        adb_cmd += ["-s", device]
 
     print(f"  {WARN} Signature has changed — must uninstall first.")
     print(f"  {WARN} Game data will be lost — log in via account to recover!")
     print()
 
     # Force stop
-    _run(["adb", "shell", "am", "force-stop", PACKAGE])
+    _run(adb_cmd + ["shell", "am", "force-stop", PACKAGE])
     time.sleep(1)
 
     # Uninstall
     print("  Uninstalling existing app ...")
-    _run(["adb", "uninstall", PACKAGE])
+    _run(adb_cmd + ["uninstall", PACKAGE])
     time.sleep(1)
 
     # Install
     print("  Installing split APKs ...")
-    cmd = ["adb", "install-multiple", "-r", "-d", "-t"] + signed_paths
+    cmd = adb_cmd + ["install-multiple", "-r", "-d", "-t"] + signed_paths
     result = _run(cmd, timeout=300)
 
     if result.returncode != 0:
@@ -858,6 +1140,7 @@ def main(argv: list[str] | None = None) -> None:
         prog="patch_apk",
         description="Patch Kingdom Guard APK with Frida Gadget for protocol interception.",
         epilog="Examples:\n"
+               "  python -m protocol.patch_apk --device emulator-5554 --install\n"
                "  python -m protocol.patch_apk KingdomGuard.xapk\n"
                "  python -m protocol.patch_apk ./splits/\n"
                "  python -m protocol.patch_apk base.apk split_arm64.apk split_unity.apk\n"
@@ -865,8 +1148,12 @@ def main(argv: list[str] | None = None) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
-        "input", nargs="+",
+        "input", nargs="*",
         help="XAPK file, directory with split APKs, or individual APK files",
+    )
+    parser.add_argument(
+        "--device", metavar="ID",
+        help="Pull APK splits from connected device (e.g. emulator-5554)",
     )
     parser.add_argument(
         "--install", action="store_true",
@@ -883,17 +1170,33 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parser.parse_args(argv)
 
+    if not args.device and not args.input:
+        parser.error("either positional input or --device is required")
+
     print(bold("APK Patcher — Kingdom Guard Protocol Interception"))
     print(bold("=" * 52))
 
-    total_steps = 9 if args.install else 8
+    total_steps = (10 if args.device else 8) + (1 if args.install else 0)
+    cur_step = 0
+
+    # Step: Pull from device (if --device)
+    if args.device:
+        cur_step += 1
+        _step(cur_step, total_steps, "Pull APK splits from device")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        pull_dir = os.path.join(os.path.dirname(script_dir), "apk-pulled")
+        device_splits = pull_from_device(args.device, pull_dir)
+        # Use pulled splits as input
+        args.input = list(device_splits.values())
 
     # Step 1: Resolve input
-    _step(1, total_steps, "Resolve input")
+    cur_step += 1
+    _step(cur_step, total_steps, "Resolve input")
     splits, output_dir = resolve_input(args.input, args.output)
 
-    # Step 2: Discover tools
-    _step(2, total_steps, "Discover build tools")
+    # Step: Discover tools
+    cur_step += 1
+    _step(cur_step, total_steps, "Discover build tools")
     tools = discover_tools()
 
     # Check LIEF early
@@ -903,37 +1206,42 @@ def main(argv: list[str] | None = None) -> None:
     except ImportError:
         _abort("LIEF not installed.\n  Fix: pip install lief")
 
-    # Step 3: Download Frida Gadget
-    _step(3, total_steps, "Download Frida Gadget")
-    # Cache dir: sibling of the protocol/ package
+    # Step: Download Frida Gadget
+    cur_step += 1
+    _step(cur_step, total_steps, "Download Frida Gadget")
     script_dir = os.path.dirname(os.path.abspath(__file__))
     cache_dir = os.path.join(os.path.dirname(script_dir), "frida-gadget-cache")
     gadget_so, gadget_version = download_gadget(args.gadget_version, cache_dir)
 
-    # Step 4: Unpack arm64 split
-    _step(4, total_steps, "Unpack arm64 split")
+    # Step: Unpack arm64 split
+    cur_step += 1
+    _step(cur_step, total_steps, "Unpack arm64 split")
     work_dir = os.path.join(output_dir, "_arm64_work")
     il2cpp_path = unpack_arm64(splits["arm64"], work_dir)
     lib_dir = os.path.dirname(il2cpp_path)
 
-    # Step 5: LIEF patch
-    _step(5, total_steps, "Patch libil2cpp.so")
+    # Step: LIEF patch
+    cur_step += 1
+    _step(cur_step, total_steps, "Patch libil2cpp.so")
     lief_delta = patch_libil2cpp(il2cpp_path)
 
-    # Step 6: Inject gadget
-    _step(6, total_steps, "Inject Frida Gadget")
+    # Step: Inject gadget
+    cur_step += 1
+    _step(cur_step, total_steps, "Inject Frida Gadget")
     inject_gadget(lib_dir, gadget_so)
 
-    # Step 7: Repack arm64 split
-    _step(7, total_steps, "Repack arm64 split")
+    # Step: Repack arm64 split
+    cur_step += 1
+    _step(cur_step, total_steps, "Repack arm64 split")
     patched_arm64 = os.path.join(output_dir, "_arm64_patched.apk")
     repack_arm64(work_dir, patched_arm64)
 
     # Clean up work dir
     shutil.rmtree(work_dir, ignore_errors=True)
 
-    # Step 8: Sign all splits
-    _step(8, total_steps, "Sign all splits")
+    # Step: Sign all splits
+    cur_step += 1
+    _step(cur_step, total_steps, "Sign all splits")
     signed_paths = sign_splits(splits, patched_arm64, output_dir, tools)
 
     # Clean up intermediate patched APK
@@ -943,10 +1251,11 @@ def main(argv: list[str] | None = None) -> None:
     # Write metadata
     write_patch_info(output_dir, gadget_version, lief_delta, splits, signed_paths)
 
-    # Step 9 (optional): Install
+    # Step (optional): Install
     if args.install:
-        _step(9, total_steps, "Install on device")
-        install_splits(signed_paths)
+        cur_step += 1
+        _step(cur_step, total_steps, "Install on device")
+        install_splits(signed_paths, device=args.device)
 
     # Summary
     print()
@@ -958,7 +1267,10 @@ def main(argv: list[str] | None = None) -> None:
         size_mb = os.path.getsize(p) / (1024 * 1024)
         print(f"              {os.path.basename(p)} ({size_mb:.1f} MB)")
     print(f"  Gadget:     v{gadget_version} (listen 0.0.0.0:27042)")
-    print(f"  Signed:     apksigner v1+v2+v3")
+    if tools.get("_python_signing"):
+        print(f"  Signed:     Python v1 (JAR signing)")
+    else:
+        print(f"  Signed:     apksigner v1+v2+v3")
     print()
     if not args.install:
         print("  To install:")
