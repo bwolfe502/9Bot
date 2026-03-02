@@ -1,56 +1,102 @@
 # Template Matching Issues
 
-## rally_button.png — Never matched titan popup [REVERTED]
-- **Platform**: macOS (likely cross-platform)
-- **Sessions**: 2026-03-02 (all 4 latest sessions)
-- **Introduced**: Commit 1502f45 replaced blind tap at (420,1400) with rally_button.png polling
-- **Stats**: `titan_popup_check` 0/7 met — template NEVER matches on titan on-map popup
-- **Root cause**: rally_button.png (golden "RALLY" button) was captured from a dialog context, not the titan map popup. The on-map popup likely has a different button style/size.
-- **Resolution**: Reverted to pre-1502f45 blind tap. See [lessons.md](lessons.md) #001.
-- **Note**: rally_button.png still exists in elements/ — used in runners.py for pass rally (threshold 0.7)
-
-## rally_titan_select.png — Intermittent failure [CONFIRMED, WORSENED]
-- **Platform**: macOS
-- **Sessions**: 2026-03-01 (3 hits at 0.866), 2026-03-02 (2 hits at 0.866 + **12 misses** at 0.418-0.423)
-- **Used with**: threshold 0.5 (timed_wait) and 0.65 (wait_for_image_and_tap)
-- **Risk**: 12/14 attempts are misses. The 0.42 scores are far below even the 0.5 threshold.
-- **Possible cause**: Search menu opens but titan tab not visible, or rendering difference causes mismatch
-- **Action needed**: Re-capture template; investigate why scores swing between 0.42 and 0.87
-
-## stationed.png — Region miss [CONFIRMED]
-- **Platform**: Windows (103x region misses in single session)
-- **Session**: 2026-03-01 (inbox bugreport_191135)
-- **Found at**: y=630, y=987, y=1344 (all at x=155)
-- **Impact**: Every EG priest probe triggers full-screen fallback search. Performance waste.
-- **Action needed**: Widen `IMAGE_REGIONS["stationed.png"]` to cover y-range 600-1400
-
-## search.png — Low confidence match [CONFIRMED]
-- **Platform**: macOS only
-- **Sessions**: 2026-03-01, 2026-03-02 (consistent)
-- **Score**: 0.666 (all hits at position (654, 1395))
+## search.png -- Low confidence match [CONFIRMED, CROSS-PLATFORM]
+- **Platforms**: macOS (0.666), Windows (0.665)
+- **Sessions**: 2026-03-01 (macOS), 2026-03-02 (Windows)
+- **Score**: Consistently 66% on both platforms (13 hits on Windows, all at 0.665)
+- **Position**: Always at (654, 1395), region [0,960,1080,1920]
 - **Used in**: Titan rally flow (titan_select_to_search), AP restore flow
-- **Uses custom threshold**: 0.65 in titans.py `wait_for_image_and_tap("search.png", ..., threshold=0.65)`
-- **Risk**: Barely above 0.65 threshold. Template needs re-capture for macOS.
+- **Custom threshold**: 0.65 in titans.py `wait_for_image_and_tap("search.png", ..., threshold=0.65)`
+- **Risk**: Only 1.5% headroom above threshold. One of the lowest-confidence templates in the system.
+- **Action needed**: Re-capture search.png with a tighter crop or from a cleaner state. The template
+  likely includes too much surrounding UI context that varies slightly.
 
-## mithril_depart.png — Region miss [CONFIRMED]
-- **Platform**: macOS
-- **Session**: 2026-03-01
-- **Found at**: Y=894 and Y=715 (outside IMAGE_REGIONS)
-- **Action needed**: Widen IMAGE_REGIONS for mithril_depart.png to cover Y 700-1450
+## stationed.png -- Region miss [CONFIRMED]
+- **Platform**: Windows (65x region misses in current session, 103x in previous)
+- **Sessions**: 2026-03-01, 2026-03-02
+- **Found at**: Various Y positions outside IMAGE_REGIONS
+- **Impact**: Every EG priest probe triggers full-screen fallback search. Performance waste.
+- **Action needed**: Widen `IMAGE_REGIONS["stationed.png"]` to cover actual hit range
 
-## war_screen.png — Lower than peers [LOW]
-- **Platform**: macOS (0.950-0.965), Windows (0.965+)
-- **Risk**: Stable but notably lower than other screen templates (0.99+). Not at risk of threshold failure.
+## mithril_return.png -- Borderline misses [NEW]
+- **Platform**: Windows
+- **Session**: 2026-03-02
+- **Stats**: 3 misses at 0.693, 3 hits at 1.0
+- **Pattern**: Misses when checking if mithril is ready for return (isn't ready), hits when actually ready
+- **Risk**: Low -- the 0.693 score is a true negative (template not present, correct behavior)
 
-## aq_screen.png — Occasional dip [LOW]
-- **Platform**: macOS
-- **Score**: Usually 0.988-0.999, one dip to 0.842 in latest session
-- **Risk**: Single outlier, likely transient overlay. Monitor.
+## mithril_depart.png -- Region miss [CONFIRMED]
+- **Platform**: macOS (previously), Windows (13x this session)
+- **Session**: 2026-03-02
+- **Found at**: Y range 715-1250 (4 hits across full range)
+- **Position varies**: (493,715), (493,894), (493,1072), (493,1250)
+- **Action needed**: IMAGE_REGIONS needs to cover full Y range 700-1300
 
-## Unknown screen popups [CONFIRMED]
-- **Platform**: Windows (89x in single session)
-- **Popups identified from debug screenshots**:
-  - Expedition Gold quest popup (blue screen with coin icon, no close X)
-  - Shop/rewards screen (item icons at top, back arrow at bottom-left)
-- **Impact**: Triggers recovery sequences, wastes 5-15s per occurrence
-- **Action needed**: Consider adding templates for common game event popups
+## rally_button.png -- Never matched titan popup [REVERTED]
+- **Platform**: macOS (likely cross-platform)
+- **Sessions**: 2026-03-02 (macOS sessions)
+- **Introduced**: Commit 1502f45 replaced blind tap at (420,1400) with rally_button.png polling
+- **Stats**: `titan_popup_check` 0/7 met -- template NEVER matches on titan on-map popup
+- **Root cause**: rally_button.png was captured from a dialog context, not the titan map popup
+- **Resolution**: Reverted to pre-1502f45 blind tap. See [lessons.md](lessons.md) #001.
+
+## rally_titan_select.png -- Platform-dependent [WATCH]
+- **Windows**: Stable at 0.865 (10/10 hits, 0 misses in 2026-03-02 session)
+- **macOS**: Intermittent (2 hits at 0.866 + 12 misses at 0.418-0.423 in previous sessions)
+- **Used with**: threshold 0.5 (timed_wait) and 0.65 (wait_for_image_and_tap)
+- **Status**: Reliable on Windows, needs investigation on macOS
+
+## aq_claim.png -- Always misses [LOW]
+- **Platform**: Windows
+- **Session**: 2026-03-02
+- **Stats**: 5 misses, best score 0.442 (far below 0.8 threshold)
+- **Context**: Quest claim button check -- template simply not present (quests not ready to claim)
+- **Risk**: None -- this is expected behavior (checking for claimable quests)
+
+## heal.png -- Expected misses [NORMAL]
+- **Platform**: Windows
+- **Session**: 2026-03-02
+- **Stats**: 19 misses (best 0.462-0.476), 2 hits at 1.0
+- **Context**: heal_all checks for heal button; 19 misses are when no injured troops exist
+- **Risk**: None -- working as designed. 100% confidence when button is present.
+
+## close_x.png -- One miss, stable hits [NORMAL]
+- **Platform**: Windows
+- **Session**: 2026-03-02
+- **Stats**: 1 miss at 0.534, 8 hits at 0.997-1.0
+- **Positions**: Two distinct positions: (1005,499) and (991,450) -- two different close buttons
+- **Risk**: None -- single miss is likely a transient overlay or wrong screen state
+
+## war_screen.png -- Bimodal scores [LOW]
+- **Platform**: Windows
+- **Session**: 2026-03-02
+- **Stats**: 44 hits, scores bimodal at 0.94 and 1.0
+- **Risk**: Low -- 0.94 is well above threshold. The bimodal pattern suggests minor UI variation
+  (e.g., war screen with/without active rallies changes layout slightly).
+
+## Dimensional Treasure (mithril) screen -- UNKNOWN [NEW]
+- **Platform**: Windows
+- **Session**: 2026-03-02
+- **Debug screenshot**: `20260302_143838_127.0.0.1_5635_unknown_screen.png`
+- **Issue**: The "Dimensional Treasure" / mithril mining zone selector has no screen template.
+  Detected as UNKNOWN, triggering recovery attempts during mithril mining.
+- **Action needed**: Consider adding a screen template for this screen, or handle it as
+  an expected intermediate state in mine_mithril flow.
+
+## verify_fail_war_screen -- MAP during nav to WAR [NEW]
+- **Platform**: Windows
+- **Session**: 2026-03-02
+- **Debug screenshot**: `20260302_143442_127.0.0.1_5635_verify_fail_war_screen.png`
+- **Issue**: During navigation MAP->WAR, verification found MAP screen instead of WAR.
+  Screenshot shows the map with active rally troops, AP use banner visible.
+  The AP banner may be blocking the alliance button tap that should navigate to WAR.
+- **Stats**: 1 `map_screen->war_screen` nav failure in this session.
+
+## Screen detection stability [GOOD]
+- **map_screen.png**: 162 hits, 100% at (911,1817), scores 0.964-1.0 -- excellent
+- **alliance_screen.png**: 44 hits, all at (186,1220), score 1.0 -- perfect
+- **aq_screen.png**: 20 hits, all at (540,478), 0.973-1.0 -- excellent
+- **bl_screen.png**: 25 hits, all at (251,1186), 0.934-1.0 -- solid
+- **td_screen.png**: 22 hits, all at (540,1893), score 1.0 -- perfect
+- **back_arrow.png**: 34 hits, positions (73,73)-(74,74), score 1.0 -- perfect
+- **kingdom_screen.png**: 5 hits, all at (107,1882), score 1.0 -- perfect
