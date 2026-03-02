@@ -720,7 +720,7 @@ IMAGE_REGIONS = {
     "statuses/battling.png":      (0, 0, 360, 1920),       # left third
     "statuses/marching.png":      (0, 0, 360, 1920),       # left third
     "statuses/returning.png":     (0, 0, 360, 1920),       # left third
-    "stationed.png":              (0, 0, 360, 1920),       # left third
+    "stationed.png":              (0, 0, 1080, 1920),      # full screen (used on map, EG dialog, and panel)
     "defending.png":              (0, 0, 360, 1920),       # left third
 
     # Tower popup
@@ -728,7 +728,7 @@ IMAGE_REGIONS = {
 
     # Deploy screen
     "depart.png":                 (0, 800, 1080, 1650),       # mid-to-lower; hits at y:873-1586
-    "mithril_depart.png":         (0, 600, 1080, 1650),       # similar to depart; hits at y:715-894
+    "mithril_depart.png":         (0, 500, 1080, 1700),       # depart variant; hits at y:715-1250
 
     # Back arrow (top-left corner)
     "back_arrow.png":             (0, 9, 145, 137),          # tight: 104x88 tpl @ fixed (73,73)
