@@ -340,7 +340,9 @@ class TestRunTowerQuest:
             {"quest_type": QuestType.TOWER, "current": 30, "target": 30, "completed": True},
         ]
         with patch("actions.quests._is_troop_defending_relaxed", return_value=True), \
-             patch("actions.quests.recall_tower_troop") as mock_recall:
+             patch("actions.quests.recall_tower_troop") as mock_recall, \
+             patch("actions.quests.config") as mock_config:
+            mock_config.get_device_config.return_value = True
             _run_tower_quest(mock_device, quests)
             mock_recall.assert_called_once()
 
@@ -383,7 +385,9 @@ class TestRunTowerQuest:
         ]
         with patch("actions.quests._is_troop_defending_relaxed", return_value=True), \
              patch("actions.quests.occupy_tower") as mock_occ, \
-             patch("actions.quests.recall_tower_troop") as mock_recall:
+             patch("actions.quests.recall_tower_troop") as mock_recall, \
+             patch("actions.quests.config") as mock_config:
+            mock_config.get_device_config.return_value = True
             _run_tower_quest(mock_device, quests)
             mock_occ.assert_not_called()
             mock_recall.assert_called_once_with(mock_device, None)

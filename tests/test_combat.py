@@ -206,38 +206,20 @@ class TestTarget:
              patch("actions.combat.time.time", return_value=0.0):
             assert target(mock_device) == "duplicate_markers"
 
-    def test_single_marker_taps_position(self, mock_device):
-        """1 marker → taps at marker Y position, returns True."""
-        tmpl = np.zeros((40, 60, 3), dtype=np.uint8)
+    def test_single_marker_taps_coord_link(self, mock_device):
+        """1 marker → taps coordinate link in entry row, returns True."""
         with patch("actions.combat.check_screen", return_value=Screen.MAP), \
              patch("actions.combat.heal_all"), \
              patch("actions.combat.tap_image", return_value=True), \
              patch("actions.combat.logged_tap") as mock_tap, \
              patch("actions.combat.load_screenshot", return_value=MagicMock()), \
              patch("actions.combat.find_all_matches", return_value=[(100, 450)]), \
-             patch("actions.combat.get_template", return_value=tmpl), \
              patch("actions.combat.time.sleep"), \
              patch("actions.combat.time.time", return_value=0.0):
             result = target(mock_device)
             assert result is True
-            # Should tap at y = 450 + 40//2 = 470 (marker center)
-            mock_tap.assert_any_call(mock_device, 350, 470, "target_coords")
-
-    def test_taps_actual_marker_y_not_hardcoded(self, mock_device):
-        """Verify tap uses actual marker Y, not the old hardcoded 476."""
-        tmpl = np.zeros((50, 60, 3), dtype=np.uint8)
-        with patch("actions.combat.check_screen", return_value=Screen.MAP), \
-             patch("actions.combat.heal_all"), \
-             patch("actions.combat.tap_image", return_value=True), \
-             patch("actions.combat.logged_tap") as mock_tap, \
-             patch("actions.combat.load_screenshot", return_value=MagicMock()), \
-             patch("actions.combat.find_all_matches", return_value=[(100, 300)]), \
-             patch("actions.combat.get_template", return_value=tmpl), \
-             patch("actions.combat.time.sleep"), \
-             patch("actions.combat.time.time", return_value=0.0):
-            target(mock_device)
-            # y = 300 + 50//2 = 325, definitely not 476
-            mock_tap.assert_any_call(mock_device, 350, 325, "target_coords")
+            # Coordinate link in first entry row of RECORD dialog
+            mock_tap.assert_any_call(mock_device, 270, 300, "target_coords")
 
 
 # ============================================================

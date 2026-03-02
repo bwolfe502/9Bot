@@ -241,10 +241,21 @@ def mine_mithril(device, stop_check=None):
     tap_image("back_arrow.png", device, threshold=0.7)  # Back from Dimensional Treasure
     navigate(Screen.MAP, device)
 
-    # Step 8: Record timestamp
+    # Step 8: Record timestamp and persist to settings so it survives restarts
     config.LAST_MITHRIL_TIME[device] = time.time()
+    _save_mithril_times()
 
     return deployed_count > 0
+
+
+def _save_mithril_times():
+    """Persist LAST_MITHRIL_TIME to settings.json."""
+    from settings import load_settings, save_settings
+    settings = load_settings()
+    settings["last_mithril_time"] = {
+        dev: ts for dev, ts in config.LAST_MITHRIL_TIME.items()
+    }
+    save_settings(settings)
 
 
 def mine_mithril_if_due(device, stop_check=None):

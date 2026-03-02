@@ -228,12 +228,8 @@ def target(device):
         log.error("Multiple target markers found (%d) — remove duplicates!", len(matches))
         return "duplicate_markers"
 
-    # Tap at the actual marker position (x=350, y from match)
-    marker_x, marker_y = matches[0]
-    tmpl = get_template("elements/target_marker.png")
-    h = tmpl.shape[0] if tmpl is not None else 50
-    tap_y = marker_y + h // 2
-    logged_tap(device, 350, tap_y, "target_coords")
+    # Tap the coordinate link in the first entry row to navigate
+    logged_tap(device, 270, 300, "target_coords")
     time.sleep(1)
 
     log.info("Target sequence complete!")

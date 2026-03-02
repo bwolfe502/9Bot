@@ -119,6 +119,11 @@ def apply_settings(settings):
     set_titan_rally_own(settings.get("titan_rally_own", True))
     set_territory_config(settings.get("my_team", "yellow"))
     config.MITHRIL_INTERVAL = settings.get("mithril_interval", 19)
+    for dev_id, ts in settings.get("last_mithril_time", {}).items():
+        try:
+            config.LAST_MITHRIL_TIME[dev_id] = float(ts)
+        except (ValueError, TypeError):
+            pass
     from botlog import set_console_verbose
     set_console_verbose(settings.get("verbose_logging", False))
     set_gather_options(
@@ -235,6 +240,16 @@ def shutdown():
         stop_tunnel()
     except Exception:
         pass
+
+    # Persist mithril timers so they survive restarts
+    try:
+        if config.LAST_MITHRIL_TIME:
+            settings = load_settings()
+            settings["last_mithril_time"] = dict(config.LAST_MITHRIL_TIME)
+            save_settings(settings)
+            log.info("Mithril timers saved (%d devices)", len(config.LAST_MITHRIL_TIME))
+    except Exception as e:
+        print(f"Failed to save mithril timers: {e}")
 
     # Save session stats
     try:
