@@ -115,10 +115,12 @@ def check_screen(device):
             _, max_val, _, _ = cv2.minMaxLoc(result)
             if max_val > 0.8:
                 log.error("LOGGED OUT — 'ATTENTION' popup detected")
-                log.info("Stopping all tasks...")
-                # Stop all running tasks by setting their stop events
+                log.info("Stopping tasks for device %s...", device)
+                config.set_device_status(device, "Logged Out — Restart Game")
+                # Stop tasks for THIS device only (other devices keep running)
+                prefix = f"{device}_"
                 for key, info in list(config.running_tasks.items()):
-                    if isinstance(info, dict) and "stop_event" in info:
+                    if key.startswith(prefix) and isinstance(info, dict) and "stop_event" in info:
                         info["stop_event"].set()
                 return Screen.LOGGED_OUT
 

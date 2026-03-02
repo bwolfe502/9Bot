@@ -483,6 +483,46 @@ class TestAutoModeExclusivity:
         assert ev_quest.is_set()
         t.join(timeout=1)
 
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={})
+    def test_auto_quest_stops_auto_titan(self, mock_inst, mock_devs, client):
+        """Starting auto_quest should stop conflicting auto_titan."""
+        ev_titan = threading.Event()
+        t = threading.Thread(target=lambda: ev_titan.wait(), daemon=True)
+        t.start()
+        config.running_tasks["127.0.0.1:9999_auto_titan"] = {
+            "thread": t, "stop_event": ev_titan
+        }
+        mock_runner = MagicMock()
+        with patch.dict(AUTO_RUNNERS, {"auto_quest": mock_runner}):
+            client.post("/tasks/start", data={
+                "device": "127.0.0.1:9999",
+                "task_name": "auto_quest",
+                "task_type": "auto",
+            })
+        assert ev_titan.is_set()
+        t.join(timeout=1)
+
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={})
+    def test_auto_titan_stops_auto_quest(self, mock_inst, mock_devs, client):
+        """Starting auto_titan should stop conflicting auto_quest."""
+        ev_quest = threading.Event()
+        t = threading.Thread(target=lambda: ev_quest.wait(), daemon=True)
+        t.start()
+        config.running_tasks["127.0.0.1:9999_auto_quest"] = {
+            "thread": t, "stop_event": ev_quest
+        }
+        mock_runner = MagicMock()
+        with patch.dict(AUTO_RUNNERS, {"auto_titan": mock_runner}):
+            client.post("/tasks/start", data={
+                "device": "127.0.0.1:9999",
+                "task_name": "auto_titan",
+                "task_type": "auto",
+            })
+        assert ev_quest.is_set()
+        t.join(timeout=1)
+
 
 # ---------------------------------------------------------------------------
 # Territory grid API tests
@@ -866,7 +906,7 @@ class TestDeviceScopedRoutes:
         dhash, token = self._get_hash_and_token(self.DEVICE)
         resp = client.get(f"/d/{dhash}?token={token}")
         assert b"/settings" not in resp.data
-        assert b"Restart" not in resp.data
+        assert b"confirmRestart" not in resp.data
 
     @patch("license.get_license_key", return_value="test-key-xyz")
     @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])

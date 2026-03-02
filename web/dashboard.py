@@ -28,7 +28,7 @@ import config
 from config import (running_tasks, QuestType, RallyType)
 from devices import get_devices, get_emulator_instances, auto_connect_emulators
 from navigation import check_screen
-from vision import load_screenshot
+from vision import load_screenshot, restart_game
 from troops import troops_avail, heal_all, get_troop_status
 from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      check_quests, teleport, teleport_benchmark,
@@ -350,7 +350,8 @@ def create_app():
                        for d in detected]
         return render_template("settings.html", settings=settings,
                                device_troops=device_troops,
-                               all_devices=all_devices)
+                               all_devices=all_devices,
+                               device_names=instances)
 
     @app.route("/guide")
     def guide_page():
@@ -372,7 +373,8 @@ def create_app():
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()[-150:]
-            except Exception:
+            except Exception as e:
+                _log.warning("Failed to read log file: %s", e)
                 lines = ["(Could not read log file)"]
         return render_template("debug.html",
                                devices=device_info,
@@ -390,7 +392,8 @@ def create_app():
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                     all_lines = f.readlines()
                     lines = all_lines[-150:]
-            except Exception:
+            except Exception as e:
+                _log.warning("Failed to read log file: %s", e)
                 lines = ["(Could not read log file)"]
         return render_template("logs.html", lines=lines)
 
@@ -408,47 +411,42 @@ def create_app():
             _device_cache["ts"] = now
         return _device_cache["devices"], _device_cache["instances"]
 
+    def _device_status_info(d, instances):
+        """Build status dict for a single device."""
+        snapshot = get_troop_status(d)
+        troops_list = []
+        snapshot_age = None
+        if snapshot:
+            snapshot_age = round(snapshot.age_seconds)
+            for t in snapshot.troops:
+                troops_list.append({
+                    "action": t.action.value,
+                    "time_left": t.time_left,
+                })
+        mithril_next = None
+        mithril_anchor = (config.MITHRIL_DEPLOY_TIME.get(d)
+                          or config.LAST_MITHRIL_TIME.get(d))
+        if mithril_anchor:
+            interval = config.get_device_config(d, "mithril_interval")
+            elapsed = time.time() - mithril_anchor
+            remaining = interval * 60 - elapsed
+            mithril_next = max(0, int(remaining))
+        return {
+            "id": d,
+            "name": instances.get(d, d),
+            "status": config.DEVICE_STATUS.get(d, "Idle"),
+            "troops": troops_list,
+            "snapshot_age": snapshot_age,
+            "quests": get_quest_tracking_state(d),
+            "quest_age": get_quest_last_checked(d),
+            "mithril_next": mithril_next,
+        }
+
     @app.route("/api/status")
     def api_status():
         cleanup_dead_tasks()
         devs, instances = _cached_devices()
-        device_info = []
-        for d in devs:
-            # Troop snapshot (cached, no ADB call)
-            snapshot = get_troop_status(d)
-            troops_list = []
-            snapshot_age = None
-            if snapshot:
-                snapshot_age = round(snapshot.age_seconds)
-                for t in snapshot.troops:
-                    troops_list.append({
-                        "action": t.action.value,
-                        "time_left": t.time_left,
-                    })
-            # Mithril timer: seconds until next cycle (None if never mined)
-            # Prefer MITHRIL_DEPLOY_TIME (set when first troop reaches a mine)
-            # so the timer appears immediately on deployment, not after the
-            # full cycle completes.  Fall back to LAST_MITHRIL_TIME for the
-            # case where deploy time was cleared but a previous cycle exists.
-            mithril_next = None
-            mithril_anchor = (config.MITHRIL_DEPLOY_TIME.get(d)
-                              or config.LAST_MITHRIL_TIME.get(d))
-            if mithril_anchor:
-                interval = config.get_device_config(d, "mithril_interval")
-                elapsed = time.time() - mithril_anchor
-                remaining = interval * 60 - elapsed
-                mithril_next = max(0, int(remaining))
-
-            device_info.append({
-                "id": d,
-                "name": instances.get(d, d),
-                "status": config.DEVICE_STATUS.get(d, "Idle"),
-                "troops": troops_list,
-                "snapshot_age": snapshot_age,
-                "quests": get_quest_tracking_state(d),
-                "quest_age": get_quest_last_checked(d),
-                "mithril_next": mithril_next,
-            })
+        device_info = [_device_status_info(d, instances) for d in devs]
         active = []
         for key, info in list(running_tasks.items()):
             if isinstance(info, dict):
@@ -497,8 +495,8 @@ def create_app():
 
                 # Exclusivity: stop conflicting modes before starting
                 EXCLUSIVE = {
-                    "auto_quest": ["auto_gold"],
-                    "auto_titan": ["auto_gold"],
+                    "auto_quest": ["auto_gold", "auto_titan"],
+                    "auto_titan": ["auto_gold", "auto_quest"],
                     "auto_gold":  ["auto_quest", "auto_titan"],
                 }
                 for conflict in EXCLUSIVE.get(mode_key, []):
@@ -788,8 +786,8 @@ def create_app():
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()[-150:]
-            except Exception:
-                pass
+            except Exception as e:
+                _log.warning("Failed to read log file: %s", e)
         return jsonify({"lines": [l.rstrip() for l in lines]})
 
     # --- Territory grid manager ---
@@ -833,7 +831,10 @@ def create_app():
         quality = request.args.get("quality")
         as_attachment = bool(request.args.get("download"))
         if quality and not as_attachment:
-            q = max(10, min(95, int(quality)))
+            try:
+                q = max(10, min(95, int(quality)))
+            except (ValueError, TypeError):
+                q = 30
             _, buf = cv2.imencode(".jpg", screen, [cv2.IMWRITE_JPEG_QUALITY, q])
             return send_file(io.BytesIO(buf.tobytes()), mimetype="image/jpeg")
         _, buf = cv2.imencode(".png", screen)
@@ -852,8 +853,14 @@ def create_app():
             return "Unknown device", 404
         import cv2
         from flask import Response
-        fps = max(1, min(10, int(request.args.get("fps", "5"))))
-        quality = max(10, min(95, int(request.args.get("quality", "30"))))
+        try:
+            fps = max(1, min(10, int(request.args.get("fps", "5"))))
+        except (ValueError, TypeError):
+            fps = 5
+        try:
+            quality = max(10, min(95, int(request.args.get("quality", "30"))))
+        except (ValueError, TypeError):
+            quality = 30
         interval = 1.0 / fps
 
         def generate():
@@ -887,6 +894,23 @@ def create_app():
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         return Response(buf.getvalue(), mimetype="image/png")
+
+    @app.route("/api/restart-game", methods=["POST"])
+    def api_restart_game():
+        """Force-stop and relaunch the game on a device."""
+        device = request.form.get("device", "")
+        if not device:
+            return jsonify(ok=False, error="Missing device"), 400
+        known = set(_cached_devices()[0])
+        if device not in known:
+            return jsonify(ok=False, error="Unknown device"), 404
+        # Stop all bot tasks on this device first
+        for key in list(running_tasks.keys()):
+            if key.startswith(device):
+                stop_task(key)
+        config.DEVICE_STATUS.pop(device, None)
+        restart_game(device)
+        return jsonify(ok=True)
 
     # --- Device-scoped routes (friend view) ---
 
@@ -997,43 +1021,18 @@ def create_app():
     def device_api_status(dhash, device=None, token=None, readonly=False):
         """Status for one device only."""
         cleanup_dead_tasks()
-        _, instances = _cached_devices()
-        snapshot = get_troop_status(device)
-        troops_list = []
-        snapshot_age = None
-        if snapshot:
-            snapshot_age = round(snapshot.age_seconds)
-            for t in snapshot.troops:
-                troops_list.append({
-                    "action": t.action.value,
-                    "time_left": t.time_left,
-                })
-        mithril_next = None
-        mithril_anchor = (config.MITHRIL_DEPLOY_TIME.get(device)
-                          or config.LAST_MITHRIL_TIME.get(device))
-        if mithril_anchor:
-            interval = config.get_device_config(device, "mithril_interval")
-            elapsed = time.time() - mithril_anchor
-            remaining = interval * 60 - elapsed
-            mithril_next = max(0, int(remaining))
-
-        device_info = [{
-            "id": device,
-            "name": instances.get(device, device),
-            "status": config.DEVICE_STATUS.get(device, "Idle"),
-            "troops": troops_list,
-            "snapshot_age": snapshot_age,
-            "quests": get_quest_tracking_state(device),
-            "quest_age": get_quest_last_checked(device),
-            "mithril_next": mithril_next,
-        }]
+        devs, instances = _cached_devices()
+        info = _device_status_info(device, instances)
+        # Override status if emulator is no longer connected
+        if device not in devs:
+            info["status"] = "Emulator Offline"
         active = []
-        for key, info in list(running_tasks.items()):
-            if isinstance(info, dict):
-                thread = info.get("thread")
+        for key, val in list(running_tasks.items()):
+            if isinstance(val, dict):
+                thread = val.get("thread")
                 if thread and thread.is_alive() and key.startswith(device):
                     active.append(key)
-        return jsonify({"devices": device_info, "tasks": active,
+        return jsonify({"devices": [info], "tasks": active,
                         "tunnel": tunnel_status(),
                         "upload": _upload_status()})
 
@@ -1071,8 +1070,8 @@ def create_app():
                     return redirect(f"/d/{dhash}?token={token}")
 
             EXCLUSIVE = {
-                "auto_quest": ["auto_gold"],
-                "auto_titan": ["auto_gold"],
+                "auto_quest": ["auto_gold", "auto_titan"],
+                "auto_titan": ["auto_gold", "auto_quest"],
                 "auto_gold":  ["auto_quest", "auto_titan"],
             }
             for conflict in EXCLUSIVE.get(mode_key, []):
@@ -1137,6 +1136,18 @@ def create_app():
         config.DEVICE_STATUS.pop(device, None)
         return redirect(f"/d/{dhash}?token={token}")
 
+    @app.route("/d/<dhash>/api/restart-game", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_restart_game(dhash, device=None, token=None, readonly=False):
+        """Force-stop and relaunch the game on this device."""
+        for key in list(running_tasks.keys()):
+            if key.startswith(device):
+                stop_task(key)
+        config.DEVICE_STATUS.pop(device, None)
+        restart_game(device)
+        return jsonify(ok=True)
+
     @app.route("/d/<dhash>/api/screenshot")
     @require_device_token
     def device_screenshot(dhash, device=None, token=None, readonly=False):
@@ -1150,7 +1161,10 @@ def create_app():
         quality = request.args.get("quality")
         as_attachment = bool(request.args.get("download"))
         if quality and not as_attachment:
-            q = max(10, min(95, int(quality)))
+            try:
+                q = max(10, min(95, int(quality)))
+            except (ValueError, TypeError):
+                q = 30
             _, buf = cv2.imencode(".jpg", screen, [cv2.IMWRITE_JPEG_QUALITY, q])
             return send_file(io.BytesIO(buf.tobytes()), mimetype="image/jpeg")
         _, buf = cv2.imencode(".png", screen)
@@ -1164,8 +1178,14 @@ def create_app():
         """MJPEG stream for this device (friend view)."""
         import cv2
         from flask import Response
-        fps = max(1, min(10, int(request.args.get("fps", "5"))))
-        quality = max(10, min(95, int(request.args.get("quality", "30"))))
+        try:
+            fps = max(1, min(10, int(request.args.get("fps", "5"))))
+        except (ValueError, TypeError):
+            fps = 5
+        try:
+            quality = max(10, min(95, int(request.args.get("quality", "30"))))
+        except (ValueError, TypeError):
+            quality = 30
         interval = 1.0 / fps
 
         def generate():

@@ -160,7 +160,12 @@
     {% endif %}
 
     <div class="live-view-section">
-        <button type="button" class="live-view-toggle" onclick="toggleLiveView(this, '{{ dev.id }}')" data-active="false">Live View</button>
+        <div class="live-view-buttons">
+            <button type="button" class="live-view-toggle" onclick="toggleLiveView(this, '{{ dev.id }}')" data-active="false">Live View</button>
+            {% if not (device_readonly is defined and device_readonly) %}
+            <button type="button" class="restart-game-btn" onclick="restartGame(this, '{{ dev.id }}')" title="Restart Kingdom Guard">Restart Game</button>
+            {% endif %}
+        </div>
         <div class="live-view-container" style="display:none">
             <img class="live-view-img" alt="Screenshot">
         </div>
@@ -417,9 +422,11 @@ function refreshStatus() {
                     var text = statusBar.querySelector('.status-text');
                     if (text) {
                         text.textContent = dev.status;
-                        text.classList.remove('status-active', 'status-waiting', 'status-navigating', 'status-stopping');
+                        text.classList.remove('status-active', 'status-waiting', 'status-navigating', 'status-stopping', 'status-error');
                         if (dev.status === 'Idle') {
                             // default gray
+                        } else if (dev.status.indexOf('Logged Out') !== -1 || dev.status.indexOf('Offline') !== -1) {
+                            text.classList.add('status-error');
                         } else if (dev.status.indexOf('Stopping') !== -1) {
                             text.classList.add('status-stopping');
                         } else if (dev.status.indexOf('Waiting') !== -1) {
@@ -703,6 +710,30 @@ function startPollingFallback(img, deviceId) {
     }
     poll();
     _liveViewTimers[deviceId] = setInterval(poll, 3000);
+}
+
+function restartGame(btn, deviceId) {
+    btn.textContent = 'Restarting...';
+    btn.disabled = true;
+    var url;
+    if (IS_FRIEND_VIEW) {
+        url = API_PREFIX + '/api/restart-game' + API_SUFFIX;
+    } else {
+        url = RELAY_PREFIX + '/api/restart-game';
+    }
+    fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'device=' + encodeURIComponent(deviceId)
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+        btn.textContent = data.ok ? 'Restarted!' : 'Failed';
+        setTimeout(function() { btn.textContent = 'Restart Game'; btn.disabled = false; }, 2000);
+    })
+    .catch(function() {
+        btn.textContent = 'Error';
+        setTimeout(function() { btn.textContent = 'Restart Game'; btn.disabled = false; }, 2000);
+    });
 }
 
 var _shareUrls = { full: '', readonly: '' };

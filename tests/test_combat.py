@@ -1,6 +1,6 @@
 """Tests for combat actions (actions/combat.py).
 
-Covers: _check_dead, _find_green_pixel, _detect_player_at_eg, teleport.
+Covers: _check_dead, _find_green_pixel, _detect_player_at_eg, target, teleport.
 All ADB and vision calls are mocked — no emulator needed.
 """
 
@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock, call
 import config
 from config import Screen
 from actions.combat import (
-    _check_dead, _find_green_pixel, _detect_player_at_eg, teleport,
+    _check_dead, _find_green_pixel, _detect_player_at_eg, target, teleport,
     _check_green_at_current_position,
     _strategy_random_pan, _strategy_big_pan, _strategy_edge_pan,
     _strategy_territory_guided, _COMPASS_DIRS,
@@ -171,6 +171,73 @@ class TestDetectPlayerAtEg:
     def test_returns_false_on_empty_screen(self):
         screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
         assert not _detect_player_at_eg(screen, 540, 960)
+
+
+# ============================================================
+# target — marker counting + position-based tap
+# ============================================================
+
+class TestTarget:
+    def test_no_markers_returns_no_marker(self, mock_device):
+        """0 markers found → returns 'no_marker'."""
+        t = [0.0]
+        def fake_time():
+            t[0] += 0.5
+            return t[0]
+        with patch("actions.combat.check_screen", return_value=Screen.MAP), \
+             patch("actions.combat.heal_all"), \
+             patch("actions.combat.tap_image", return_value=True), \
+             patch("actions.combat.logged_tap"), \
+             patch("actions.combat.load_screenshot", return_value=MagicMock()), \
+             patch("actions.combat.find_all_matches", return_value=[]), \
+             patch("actions.combat.time.sleep"), \
+             patch("actions.combat.time.time", side_effect=fake_time):
+            assert target(mock_device) == "no_marker"
+
+    def test_duplicate_markers_returns_duplicate(self, mock_device):
+        """2+ markers found → returns 'duplicate_markers'."""
+        with patch("actions.combat.check_screen", return_value=Screen.MAP), \
+             patch("actions.combat.heal_all"), \
+             patch("actions.combat.tap_image", return_value=True), \
+             patch("actions.combat.logged_tap"), \
+             patch("actions.combat.load_screenshot", return_value=MagicMock()), \
+             patch("actions.combat.find_all_matches", return_value=[(100, 400), (100, 600)]), \
+             patch("actions.combat.time.sleep"), \
+             patch("actions.combat.time.time", return_value=0.0):
+            assert target(mock_device) == "duplicate_markers"
+
+    def test_single_marker_taps_position(self, mock_device):
+        """1 marker → taps at marker Y position, returns True."""
+        tmpl = np.zeros((40, 60, 3), dtype=np.uint8)
+        with patch("actions.combat.check_screen", return_value=Screen.MAP), \
+             patch("actions.combat.heal_all"), \
+             patch("actions.combat.tap_image", return_value=True), \
+             patch("actions.combat.logged_tap") as mock_tap, \
+             patch("actions.combat.load_screenshot", return_value=MagicMock()), \
+             patch("actions.combat.find_all_matches", return_value=[(100, 450)]), \
+             patch("actions.combat.get_template", return_value=tmpl), \
+             patch("actions.combat.time.sleep"), \
+             patch("actions.combat.time.time", return_value=0.0):
+            result = target(mock_device)
+            assert result is True
+            # Should tap at y = 450 + 40//2 = 470 (marker center)
+            mock_tap.assert_any_call(mock_device, 350, 470, "target_coords")
+
+    def test_taps_actual_marker_y_not_hardcoded(self, mock_device):
+        """Verify tap uses actual marker Y, not the old hardcoded 476."""
+        tmpl = np.zeros((50, 60, 3), dtype=np.uint8)
+        with patch("actions.combat.check_screen", return_value=Screen.MAP), \
+             patch("actions.combat.heal_all"), \
+             patch("actions.combat.tap_image", return_value=True), \
+             patch("actions.combat.logged_tap") as mock_tap, \
+             patch("actions.combat.load_screenshot", return_value=MagicMock()), \
+             patch("actions.combat.find_all_matches", return_value=[(100, 300)]), \
+             patch("actions.combat.get_template", return_value=tmpl), \
+             patch("actions.combat.time.sleep"), \
+             patch("actions.combat.time.time", return_value=0.0):
+            target(mock_device)
+            # y = 300 + 50//2 = 325, definitely not 476
+            mock_tap.assert_any_call(mock_device, 350, 325, "target_coords")
 
 
 # ============================================================

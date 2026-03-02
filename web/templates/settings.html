@@ -217,7 +217,7 @@
         {% if device_troops %}
         {% for dev_id, count in device_troops.items() %}
         <div class="setting-row">
-            <label>{{ dev_id }}:
+            <label>{{ device_names.get(dev_id, dev_id.split(":")[-1]) }}:
                 <input type="number" name="dt_{{ dev_id }}" value="{{ count }}"
                        min="1" max="5" class="input-sm">
             </label>
