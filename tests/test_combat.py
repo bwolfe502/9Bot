@@ -219,7 +219,7 @@ class TestTarget:
             result = target(mock_device)
             assert result is True
             # Coordinate link in first entry row of RECORD dialog
-            mock_tap.assert_any_call(mock_device, 270, 300, "target_coords")
+            mock_tap.assert_any_call(mock_device, 350, 476, "target_coords")
 
 
 # ============================================================

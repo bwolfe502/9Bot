@@ -14,12 +14,14 @@ import logging
 import platform
 import subprocess
 import threading
+import time
 
 import config
 from config import (running_tasks, set_min_troops, set_auto_heal,
                     set_auto_restore_ap, set_ap_restore_options,
                     set_territory_config, set_eg_rally_own, set_titan_rally_own,
-                    set_gather_options, set_tower_quest_enabled)
+                    set_gather_options, set_tower_quest_enabled,
+                    set_protocol_enabled)
 from settings import load_settings, save_settings
 
 # Relay server connection details (obfuscated, not plaintext in source)
@@ -100,6 +102,189 @@ def validate_device_token(device_id, token):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Protocol interceptor lifecycle
+# ---------------------------------------------------------------------------
+
+_interceptor_thread = None
+_protocol_bus = None
+_game_state = None
+
+
+def _setup_frida_forward(port=27042):
+    """Ensure ADB forward for Frida port on all connected devices."""
+    import subprocess
+    from botlog import get_logger
+    log = get_logger("startup")
+    try:
+        result = subprocess.run(
+            [config.adb_path, "devices"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.strip().splitlines()[1:]:
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device":
+                dev_id = parts[0]
+                subprocess.run(
+                    [config.adb_path, "-s", dev_id, "forward",
+                     f"tcp:{port}", f"tcp:{port}"],
+                    capture_output=True, timeout=5,
+                )
+                log.info("ADB forward tcp:%d set for %s", port, dev_id)
+    except Exception:
+        log.warning("Failed to set ADB forward for Frida Gadget", exc_info=True)
+
+
+def _start_protocol():
+    """Start the protocol interceptor if not already running."""
+    global _interceptor_thread, _protocol_bus, _game_state
+    if _interceptor_thread is not None:
+        return
+    try:
+        from protocol.events import EventBus
+        from protocol.interceptor import InterceptorThread
+        from protocol.game_state import GameState
+    except ImportError:
+        from botlog import get_logger
+        get_logger("startup").warning("Protocol package not available — skipping")
+        return
+    _protocol_bus = EventBus()
+    _game_state = GameState("default", _protocol_bus)
+    _interceptor_thread = InterceptorThread(
+        event_bus=_protocol_bus, pre_connect=_setup_frida_forward,
+    )
+    _interceptor_thread.start()
+    from botlog import get_logger
+    get_logger("startup").info("Protocol interceptor started")
+
+
+def _stop_protocol():
+    """Stop the protocol interceptor if running."""
+    global _interceptor_thread, _protocol_bus, _game_state
+    if _interceptor_thread is not None:
+        _interceptor_thread.stop()
+        _interceptor_thread = None
+        _protocol_bus = None
+        _game_state = None
+        from botlog import get_logger
+        get_logger("startup").info("Protocol interceptor stopped")
+
+
+def get_protocol_ap():
+    """Return (current, max) AP from protocol, or None if unavailable/stale."""
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("ap", max_age_s=10.0):
+        return None
+    return state.ap
+
+
+# LineupState enum → bot TroopAction mapping
+# 0=IDLE, 1=HOME, 2=MARCHING, 3=BATTLING, 4=GATHERING, 5=RETURNING, 6=DEFENDING, 7=RALLYING
+_LINEUP_STATE_TO_ACTION = None  # lazy-built on first use
+
+
+def _get_action_map():
+    """Lazy-build LineupState→TroopAction mapping (avoids import at module level)."""
+    global _LINEUP_STATE_TO_ACTION
+    if _LINEUP_STATE_TO_ACTION is not None:
+        return _LINEUP_STATE_TO_ACTION
+    from troops import TroopAction
+    _LINEUP_STATE_TO_ACTION = {
+        0: TroopAction.HOME,       # IDLE → treat as home
+        1: TroopAction.HOME,       # HOME
+        2: TroopAction.MARCHING,   # MARCHING
+        3: TroopAction.BATTLING,   # BATTLING
+        4: TroopAction.GATHERING,  # GATHERING
+        5: TroopAction.RETURNING,  # RETURNING
+        6: TroopAction.DEFENDING,  # DEFENDING
+        7: TroopAction.RALLYING,   # RALLYING
+    }
+    return _LINEUP_STATE_TO_ACTION
+
+
+def get_protocol_rallies():
+    """Return list of active rallies from protocol, or None if unavailable/stale.
+
+    Returns [] if protocol confirms zero rallies (bail-out signal).
+    Returns None if protocol unavailable or data stale (fall through to UI).
+    """
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("rallies", max_age_s=30.0):
+        return None
+    rallies = state.rallies  # thread-safe dict copy
+    if not rallies:
+        return []  # confirmed: no active rallies
+    return list(rallies.values())
+
+
+def get_protocol_troops_home():
+    """Return count of HOME troops from protocol, or None if unavailable/stale."""
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("lineups", max_age_s=30.0):
+        return None
+    lineups = state.lineups
+    lineup_states = state.lineup_states
+    if not lineups:
+        return None
+    home_count = 0
+    for lid, lu in lineups.items():
+        # Prefer NewLineupStateNtf (more recent) over LineupsNtf.state
+        ls = lineup_states.get(lid)
+        effective_state = ls.state if ls is not None else lu.state
+        if effective_state in (0, 1):  # IDLE or HOME
+            home_count += 1
+    return home_count
+
+
+def get_protocol_troop_snapshot(device):
+    """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("lineups", max_age_s=30.0):
+        return None
+    lineups = state.lineups
+    lineup_states = state.lineup_states
+    if not lineups:
+        return None
+
+    from troops import TroopAction, TroopStatus, DeviceTroopSnapshot
+    action_map = _get_action_map()
+
+    troops = []
+    now = time.time()
+    server_ts = state.server_time  # epoch seconds from HeartBeatAck
+
+    for lid, lu in lineups.items():
+        ls = lineup_states.get(lid)
+        effective_state = ls.state if ls is not None else lu.state
+        action = action_map.get(effective_state, TroopAction.MARCHING)
+
+        seconds_remaining = None
+        if ls is not None and ls.stateEndTs > 0 and server_ts:
+            seconds_remaining = max(0, ls.stateEndTs - server_ts)
+        elif ls is not None and ls.stateEndTs > 0:
+            # No server_ts — treat stateEndTs as epoch and compute from wall clock
+            seconds_remaining = max(0, ls.stateEndTs - int(now))
+
+        if action == TroopAction.HOME:
+            troops.append(TroopStatus(action=TroopAction.HOME, read_at=now))
+        else:
+            troops.append(TroopStatus(
+                action=action,
+                seconds_remaining=seconds_remaining,
+                read_at=now,
+            ))
+
+    return DeviceTroopSnapshot(device=device, troops=troops, read_at=now)
+
+
 def apply_settings(settings):
     """Push settings values into config globals.
 
@@ -126,12 +311,19 @@ def apply_settings(settings):
             pass
     from botlog import set_console_verbose
     set_console_verbose(settings.get("verbose_logging", False))
+    import training
+    training.configure(settings.get("collect_training_data", False))
     set_gather_options(
         settings.get("gather_enabled", True),
         settings.get("gather_mine_level", 4),
         settings.get("gather_max_troops", 3),
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
+    set_protocol_enabled(settings.get("protocol_enabled", False))
+    if config.PROTOCOL_ENABLED:
+        _start_protocol()
+    else:
+        _stop_protocol()
     for dev_id, count in settings.get("device_troops", {}).items():
         try:
             config.DEVICE_TOTAL_TROOPS[dev_id] = int(count)
@@ -241,6 +433,12 @@ def shutdown():
     except Exception:
         pass
 
+    # Stop protocol interceptor
+    try:
+        _stop_protocol()
+    except Exception:
+        pass
+
     # Persist mithril timers so they survive restarts
     try:
         if config.LAST_MITHRIL_TIME:
@@ -250,6 +448,13 @@ def shutdown():
             log.info("Mithril timers saved (%d devices)", len(config.LAST_MITHRIL_TIME))
     except Exception as e:
         print(f"Failed to save mithril timers: {e}")
+
+    # Close training data file
+    try:
+        import training
+        training.shutdown()
+    except Exception:
+        pass
 
     # Save session stats
     try:
@@ -319,6 +524,20 @@ def create_bug_report_zip(clear_debug=True, notes=None):
                     if os.path.isfile(fpath) and f.endswith(".png"):
                         zf.write(fpath, zip_prefix + f)
 
+        # Training data (JSONL logs + selective images)
+        training_dir = os.path.join(SCRIPT_DIR, "training_data")
+        if os.path.isdir(training_dir):
+            for f in os.listdir(training_dir):
+                fpath = os.path.join(training_dir, f)
+                if os.path.isfile(fpath) and f.endswith(".jsonl"):
+                    zf.write(fpath, f"training_data/{f}")
+            images_dir = os.path.join(training_dir, "images")
+            if os.path.isdir(images_dir):
+                for f in os.listdir(images_dir):
+                    fpath = os.path.join(images_dir, f)
+                    if os.path.isfile(fpath) and f.endswith(".jpg"):
+                        zf.write(fpath, f"training_data/images/{f}")
+
         # Session stats
         if os.path.isdir(STATS_DIR):
             for f in os.listdir(STATS_DIR):
@@ -381,7 +600,7 @@ def create_bug_report_zip(clear_debug=True, notes=None):
 
 
 def _clear_debug_files(script_dir):
-    """Remove debug screenshots and click trails after bug report export."""
+    """Remove debug screenshots, click trails, and training data after export."""
     for subdir in ["debug/failures", "debug/clicks", "debug"]:
         dirpath = os.path.join(script_dir, subdir)
         if not os.path.isdir(dirpath):
@@ -389,6 +608,18 @@ def _clear_debug_files(script_dir):
         for f in os.listdir(dirpath):
             fpath = os.path.join(dirpath, f)
             if os.path.isfile(fpath) and f.endswith(".png"):
+                try:
+                    os.remove(fpath)
+                except Exception:
+                    pass
+    # Clear training data (JSONL + images)
+    for subdir, ext in [("training_data", ".jsonl"), ("training_data/images", ".jpg")]:
+        dirpath = os.path.join(script_dir, subdir)
+        if not os.path.isdir(dirpath):
+            continue
+        for f in os.listdir(dirpath):
+            fpath = os.path.join(dirpath, f)
+            if os.path.isfile(fpath) and f.endswith(ext):
                 try:
                     os.remove(fpath)
                 except Exception:

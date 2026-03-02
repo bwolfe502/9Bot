@@ -13,6 +13,7 @@ import threading
 import config
 from config import adb_path, BUTTONS, ADB_COMMAND_TIMEOUT
 from botlog import get_logger, stats
+import training
 
 # Thread-local storage for find_image best score (avoids race between device threads)
 _thread_local = threading.local()
@@ -387,6 +388,12 @@ def read_text(screen, region=None, allowlist=None, device=None):
         elif avg_conf < 0.7:
             log.debug("OCR moderate confidence: avg=%.0f%%, min=%.0f%%, text='%s'",
                        avg_conf * 100, min_conf * 100, " ".join(texts).strip())
+        if device:
+            training.log_ocr(device, region, " ".join(texts).strip(), avg_conf, min_conf)
+            if avg_conf < 0.7:
+                training.save_training_image(device, "ocr_low", img,
+                                             {"text": " ".join(texts).strip(),
+                                              "avg_c": round(avg_conf * 100)})
     return " ".join(texts).strip()
 
 
@@ -423,6 +430,18 @@ def read_ap(device, retries=5):
     Returns (current, max) tuple, or None if AP couldn't be read.
     """
     log = get_logger("vision", device)
+
+    # Protocol fast path (when enabled + fresh data available)
+    if config.PROTOCOL_ENABLED:
+        try:
+            from startup import get_protocol_ap
+            ap = get_protocol_ap()
+            if ap is not None:
+                log.debug("AP (protocol): %d/%d", ap[0], ap[1])
+                return ap
+        except Exception:
+            pass  # any failure → fall through to OCR
+
     for attempt in range(retries):
         screen = load_screenshot(device)
         if screen is None:
@@ -503,11 +522,18 @@ def find_image(screen, image_name, threshold=0.8, region=None, device=None):
             if device:
                 stats.record_template_hit(
                     device, image_name, loc[0] + w // 2, loc[1] + h // 2, max_val)
+                training.log_template(device, image_name, max_val, True,
+                                      (loc[0] + w // 2, loc[1] + h // 2), region)
             return max_val, loc, h, w
 
         # Some templates must ONLY match in their region (no fallback)
         # to prevent false positives elsewhere on screen.
         if image_name in _REGION_STRICT:
+            if device:
+                training.log_template(device, image_name, max_val, False, region=region)
+                if 0.65 <= max_val <= threshold:
+                    training.save_training_image(device, "near_miss", screen,
+                                                 {"tpl": image_name, "conf": round(max_val * 100)})
             return None
 
         # Fallback: search full screen in case the element moved outside the region
@@ -521,7 +547,18 @@ def find_image(screen, image_name, threshold=0.8, region=None, device=None):
             if device:
                 stats.record_template_hit(
                     device, image_name, max_loc_full[0] + w // 2, max_loc_full[1] + h // 2, max_val_full)
+                training.log_template(device, image_name, max_val_full, True,
+                                      (max_loc_full[0] + w // 2, max_loc_full[1] + h // 2), region)
+                training.save_training_image(device, "region_drift", screen,
+                                             {"tpl": image_name, "conf": round(max_val_full * 100)})
             return max_val_full, max_loc_full, h, w
+
+        if device:
+            best = max(max_val, max_val_full)
+            training.log_template(device, image_name, best, False, region=region)
+            if 0.65 <= best <= threshold:
+                training.save_training_image(device, "near_miss", screen,
+                                             {"tpl": image_name, "conf": round(best * 100)})
         return None
 
     result = cv2.matchTemplate(screen, button, cv2.TM_CCOEFF_NORMED)
@@ -532,7 +569,15 @@ def find_image(screen, image_name, threshold=0.8, region=None, device=None):
         if device:
             stats.record_template_hit(
                 device, image_name, max_loc[0] + w // 2, max_loc[1] + h // 2, max_val)
+            training.log_template(device, image_name, max_val, True,
+                                  (max_loc[0] + w // 2, max_loc[1] + h // 2))
         return max_val, max_loc, h, w
+
+    if device:
+        training.log_template(device, image_name, max_val, False)
+        if 0.65 <= max_val <= threshold:
+            training.save_training_image(device, "near_miss", screen,
+                                         {"tpl": image_name, "conf": round(max_val * 100)})
     return None
 
 def find_all_matches(screen, image_name, threshold=0.8, min_distance=50, device=None):
@@ -675,7 +720,7 @@ IMAGE_REGIONS = {
     "statuses/battling.png":      (0, 0, 360, 1920),       # left third
     "statuses/marching.png":      (0, 0, 360, 1920),       # left third
     "statuses/returning.png":     (0, 0, 360, 1920),       # left third
-    "stationed.png":              (0, 0, 360, 1920),       # left third
+    "stationed.png":              (0, 0, 1080, 1920),      # full screen (used on map, EG dialog, and panel)
     "defending.png":              (0, 0, 360, 1920),       # left third
 
     # Tower popup
@@ -683,6 +728,7 @@ IMAGE_REGIONS = {
 
     # Deploy screen
     "depart.png":                 (0, 800, 1080, 1650),       # mid-to-lower; hits at y:873-1586
+    "mithril_depart.png":         (0, 500, 1080, 1700),       # depart variant; hits at y:715-1250
 
     # Back arrow (top-left corner)
     "back_arrow.png":             (0, 9, 145, 137),          # tight: 104x88 tpl @ fixed (73,73)

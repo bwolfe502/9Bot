@@ -1,5 +1,7 @@
 """Tests for _classify_quest_text (actions/quests.py)."""
 
+from unittest.mock import patch
+
 from actions.quests import _classify_quest_text
 from config import QuestType
 
@@ -34,3 +36,31 @@ class TestClassifyQuestText:
     def test_unknown(self):
         assert _classify_quest_text("something else entirely") is None
         assert _classify_quest_text("") is None
+
+    @patch("actions.quests.sys")
+    def test_long_name_trimmed_to_tail_mac(self, mock_sys):
+        """When Apple Vision drops '(' and regex captures multi-quest bleed,
+        classification should use only the tail (last 30 chars)."""
+        mock_sys.platform = "darwin"
+        # Real example from logs: Titans text bleeds into Gather match
+        long_name = (
+            "Your faction s UnlocKitan foslueS auns a le/Goblin Lab "
+            "17:29:10 10000 ALLIANCE Defeat Titans 14/15) 5000 "
+            "0126.34 GO SIDE QUEST Gather"
+        )
+        # Should classify as GATHER (tail), not TITAN (earlier in string)
+        assert _classify_quest_text(long_name) == QuestType.GATHER
+
+    @patch("actions.quests.sys")
+    def test_long_name_not_trimmed_on_pc(self, mock_sys):
+        """On Windows the trim is disabled — long names classify normally."""
+        mock_sys.platform = "win32"
+        long_name = "x" * 40 + " Defeat Titans and Gather"
+        # Without trim, "titan" is found first
+        assert _classify_quest_text(long_name) == QuestType.TITAN
+
+    def test_short_name_not_trimmed(self):
+        """Normal short names (< 30 chars) are unaffected by trimming."""
+        assert _classify_quest_text("Defeat Titans") == QuestType.TITAN
+        assert _classify_quest_text("Gather") == QuestType.GATHER
+        assert _classify_quest_text("Evil Guard") == QuestType.EVIL_GUARD

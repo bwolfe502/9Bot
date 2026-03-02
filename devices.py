@@ -152,18 +152,128 @@ def get_devices():
 def get_emulator_instances():
     """Get mapping of device IDs to friendly display names.
 
-    On Windows: tries to map ADB devices to emulator window titles
-                (supports BlueStacks and MuMu Player).
-    On macOS/Linux: uses ADB device IDs as display names.
+    On Windows: maps ADB devices to emulator window titles via process
+                inspection (supports BlueStacks and MuMu Player).
+    On macOS:   reads BlueStacks config for instance display names.
+    On Linux:   uses ADB device IDs as display names (no mapping).
     """
     devices = get_devices()
 
     if platform.system() == "Windows":
         return _get_emulator_instances_windows(devices)
 
-    # macOS / Linux — no window mapping, just use device IDs
+    if platform.system() == "Darwin":
+        return _get_emulator_instances_macos(devices)
+
+    # Linux — no window mapping, just use device IDs
     _log.debug("Found devices: %s", devices)
     return {device: device for device in devices}
+
+# ============================================================
+# macOS: emulator instance name mapping
+# ============================================================
+
+_BLUESTACKS_CONF = "/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"
+
+
+def _get_emulator_instances_macos(devices):
+    """Map ADB devices to emulator display names on macOS.
+
+    Reads BlueStacks ``bluestacks.conf`` to extract instance display names and
+    ADB ports, then matches them against connected ADB device IDs.
+    """
+    if not devices:
+        return {}
+
+    device_map = {d: d for d in devices}
+
+    try:
+        conf = _parse_bluestacks_conf()
+    except Exception as e:
+        _log.debug("Could not read BlueStacks config: %s", e)
+        return device_map
+
+    if not conf:
+        return device_map
+
+    # Build port (int) → display_name from config
+    port_to_name = {}
+    for instance_id, info in conf.items():
+        port_str = info.get("adb_port")
+        name = info.get("display_name")
+        if port_str and name:
+            try:
+                port_to_name[int(port_str)] = name
+            except ValueError:
+                pass
+
+    if not port_to_name:
+        return device_map
+
+    # Match device IDs to display names by port
+    for device in devices:
+        port = _extract_port(device)
+        if port and port in port_to_name:
+            device_map[device] = port_to_name[port]
+
+    mapped = {d: n for d, n in device_map.items() if n != d}
+    if mapped:
+        _log.debug("macOS instance mapping: %s",
+                   ", ".join(f"{d} -> {n}" for d, n in mapped.items()))
+
+    return device_map
+
+
+def _parse_bluestacks_conf():
+    """Parse BlueStacks config file, returning {instance_id: {key: value}}.
+
+    Config lines look like:
+        bst.instance.Tiramisu64_1.display_name="Nine"
+        bst.instance.Tiramisu64_1.adb_port="5565"
+    """
+    import os
+
+    if not os.path.isfile(_BLUESTACKS_CONF):
+        return {}
+
+    instances = {}
+    with open(_BLUESTACKS_CONF, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line.startswith("bst.instance."):
+                continue
+            # bst.instance.<id>.<key>="<value>"
+            rest = line[len("bst.instance."):]
+            parts = rest.split(".", 1)
+            if len(parts) != 2:
+                continue
+            instance_id = parts[0]
+            kv = parts[1]
+            if "=" not in kv:
+                continue
+            key, val = kv.split("=", 1)
+            val = val.strip('"')
+            if instance_id not in instances:
+                instances[instance_id] = {}
+            instances[instance_id][key] = val
+
+    return instances
+
+
+def _extract_port(device):
+    """Extract port number from a device ID string."""
+    if ":" in device:
+        try:
+            return int(device.split(":")[1])
+        except (IndexError, ValueError):
+            pass
+    elif device.startswith("emulator-"):
+        try:
+            return int(device.split("-")[1]) + 1
+        except (IndexError, ValueError):
+            pass
+    return None
+
 
 # ============================================================
 # WINDOWS-ONLY: emulator window name mapping

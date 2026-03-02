@@ -229,7 +229,7 @@ def target(device):
         return "duplicate_markers"
 
     # Tap the coordinate link in the first entry row to navigate
-    logged_tap(device, 270, 300, "target_coords")
+    logged_tap(device, 350, 476, "target_coords")
     time.sleep(1)
 
     log.info("Target sequence complete!")

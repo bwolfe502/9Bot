@@ -239,7 +239,10 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
 
     # Extract bot name from first path segment: /<bot_name>/...
     parts = path.strip("/").split("/", 1)
-    bot_name = parts[0]
+    raw_name = parts[0]
+    if not raw_name or not raw_name.isalnum():
+        raise web.HTTPBadRequest(text="Invalid bot name")
+    bot_name = raw_name
     sub_path = "/" + parts[1] if len(parts) > 1 else "/"
 
     # Redirect /<bot_name> to /<bot_name>/ for consistency

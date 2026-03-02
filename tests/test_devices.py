@@ -5,7 +5,9 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from devices import (auto_connect_emulators, get_devices, get_emulator_instances,
-                     _auto_connect_by_ports, _connect_ports)
+                     _auto_connect_by_ports, _connect_ports,
+                     _get_emulator_instances_macos, _parse_bluestacks_conf,
+                     _extract_port)
 
 
 # ============================================================
@@ -129,12 +131,24 @@ class TestGetDevices:
 class TestGetEmulatorInstances:
     @patch("devices.get_devices")
     @patch("devices.platform.system")
-    def test_non_windows(self, mock_platform, mock_get_devices):
-        """On Linux/macOS, returns device IDs as display names."""
+    def test_linux_returns_device_ids(self, mock_platform, mock_get_devices):
+        """On Linux, returns device IDs as display names (no mapping)."""
         mock_platform.return_value = "Linux"
         mock_get_devices.return_value = ["127.0.0.1:7555"]
         result = get_emulator_instances()
         assert result == {"127.0.0.1:7555": "127.0.0.1:7555"}
+
+    @patch("devices._get_emulator_instances_macos")
+    @patch("devices.get_devices")
+    @patch("devices.platform.system")
+    def test_macos_delegates(self, mock_platform, mock_get_devices, mock_mac_func):
+        """On macOS, delegates to _get_emulator_instances_macos."""
+        mock_platform.return_value = "Darwin"
+        mock_get_devices.return_value = ["127.0.0.1:5565"]
+        mock_mac_func.return_value = {"127.0.0.1:5565": "Nine"}
+        result = get_emulator_instances()
+        assert result == {"127.0.0.1:5565": "Nine"}
+        mock_mac_func.assert_called_once_with(["127.0.0.1:5565"])
 
     @patch("devices.get_devices")
     @patch("devices.platform.system")
@@ -155,3 +169,96 @@ class TestGetEmulatorInstances:
         result = get_emulator_instances()
         assert result == {"127.0.0.1:7555": "MuMu Player 1"}
         mock_win_func.assert_called_once_with(["127.0.0.1:7555"])
+
+
+# ============================================================
+# macOS instance mapping
+# ============================================================
+
+_SAMPLE_CONF = """\
+bst.version="5.21.755.7538"
+bst.installed_images="Tiramisu64"
+bst.instance.Tiramisu64.adb_port="5555"
+bst.instance.Tiramisu64.display_name="Plop"
+bst.instance.Tiramisu64_1.adb_port="5565"
+bst.instance.Tiramisu64_1.display_name="Nine"
+"""
+
+
+class TestExtractPort:
+    def test_ip_port(self):
+        assert _extract_port("127.0.0.1:5565") == 5565
+
+    def test_emulator_format(self):
+        assert _extract_port("emulator-5554") == 5555
+
+    def test_invalid(self):
+        assert _extract_port("unknown") is None
+
+
+class TestParseBluestacksConf:
+    @patch("builtins.open", create=True)
+    @patch("os.path.isfile", return_value=True)
+    def test_parses_instances(self, _mock_isfile, mock_open):
+        from io import StringIO
+        mock_open.return_value.__enter__ = lambda s: StringIO(_SAMPLE_CONF)
+        mock_open.return_value.__exit__ = lambda s, *a: None
+        result = _parse_bluestacks_conf()
+        assert result["Tiramisu64"]["display_name"] == "Plop"
+        assert result["Tiramisu64"]["adb_port"] == "5555"
+        assert result["Tiramisu64_1"]["display_name"] == "Nine"
+        assert result["Tiramisu64_1"]["adb_port"] == "5565"
+
+    @patch("os.path.isfile", return_value=False)
+    def test_missing_conf_returns_empty(self, _mock_isfile):
+        result = _parse_bluestacks_conf()
+        assert result == {}
+
+
+class TestGetEmulatorInstancesMacOS:
+    @patch("devices._parse_bluestacks_conf")
+    def test_maps_port_to_display_name(self, mock_conf):
+        mock_conf.return_value = {
+            "Tiramisu64": {"adb_port": "5555", "display_name": "Plop"},
+            "Tiramisu64_1": {"adb_port": "5565", "display_name": "Nine"},
+        }
+        result = _get_emulator_instances_macos(["127.0.0.1:5565"])
+        assert result == {"127.0.0.1:5565": "Nine"}
+
+    @patch("devices._parse_bluestacks_conf")
+    def test_unmatched_device_keeps_id(self, mock_conf):
+        mock_conf.return_value = {
+            "Tiramisu64": {"adb_port": "5555", "display_name": "Plop"},
+        }
+        result = _get_emulator_instances_macos(["127.0.0.1:7555"])
+        assert result == {"127.0.0.1:7555": "127.0.0.1:7555"}
+
+    @patch("devices._parse_bluestacks_conf")
+    def test_no_conf_returns_device_ids(self, mock_conf):
+        mock_conf.return_value = {}
+        result = _get_emulator_instances_macos(["127.0.0.1:5565"])
+        assert result == {"127.0.0.1:5565": "127.0.0.1:5565"}
+
+    def test_empty_devices(self):
+        result = _get_emulator_instances_macos([])
+        assert result == {}
+
+    @patch("devices._parse_bluestacks_conf")
+    def test_multiple_instances(self, mock_conf):
+        mock_conf.return_value = {
+            "Tiramisu64": {"adb_port": "5555", "display_name": "Plop"},
+            "Tiramisu64_1": {"adb_port": "5565", "display_name": "Nine"},
+        }
+        result = _get_emulator_instances_macos(
+            ["127.0.0.1:5555", "127.0.0.1:5565"]
+        )
+        assert result == {
+            "127.0.0.1:5555": "Plop",
+            "127.0.0.1:5565": "Nine",
+        }
+
+    @patch("devices._parse_bluestacks_conf")
+    def test_conf_exception_falls_back(self, mock_conf):
+        mock_conf.side_effect = IOError("disk error")
+        result = _get_emulator_instances_macos(["127.0.0.1:5565"])
+        assert result == {"127.0.0.1:5565": "127.0.0.1:5565"}

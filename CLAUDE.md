@@ -8,7 +8,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | File | Purpose | Key exports |
 |------|---------|-------------|
 | `run_web.py` | Web-only entry point (primary) | `main` (pywebview + browser fallback) |
-| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status` |
+| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap`, `get_protocol_rallies`, `get_protocol_troops_home`, `get_protocol_troop_snapshot` |
 | `main.py` | Legacy GUI entry point (deprecated) | Tkinter app, `create_gui()` |
 | `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
 | `settings.py` | Settings persistence | `DEFAULTS`, `load_settings`, `save_settings`, `SETTINGS_FILE` |
@@ -22,8 +22,18 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `actions/_helpers.py` | Shared state + utilities | `_interruptible_sleep`, `_last_depart_slot` |
 | `vision.py` | Screenshots, template matching, OCR, ADB input | `load_screenshot`, `find_image`, `find_all_matches`, `tap_image`, `wait_for_image_and_tap`, `read_text`, `read_number`, `read_ap`, `adb_tap`, `adb_swipe`, `adb_keyevent`, `timed_wait`, `tap`, `logged_tap`, `get_last_best`, `save_failure_screenshot`, `tap_tower_until_attack_menu`, `warmup_ocr` |
 | `navigation.py` | Screen detection + state-machine navigation | `check_screen`, `navigate` |
-| `troops.py` | Troop counting (pixel), status model (OCR), healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
+| `troops.py` | Troop counting (pixel/protocol), status model, healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
+| `training.py` | Training data collector (JSONL + images) | `configure`, `log_template`, `log_ocr`, `log_screen`, `save_training_image`, `get_training_stats`, `shutdown` |
 | `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
+| `protocol/` | Frida Gadget protocol interception (package) | Re-exports all public classes via `__init__.py` |
+| `protocol/interceptor.py` | Frida connection + hook loading | `ProtocolInterceptor` (start/stop/stats) |
+| `protocol/frida_hook.js` | Frida Gadget hook script (loaded into game) | Hooks `TFW.NetMsgData.FromByte/MakeByte` via IL2CPP runtime API |
+| `protocol/decoder.py` | Protobuf wire-format decoder | `decode_frame`, `decode_protobuf_raw`, `ProtobufDecoder`, `MessageStream` |
+| `protocol/messages.py` | Typed message dataclasses | `Rally`, `EntitiesNtf`, `HeartBeatReq`, `MESSAGE_CLASSES`, etc. |
+| `protocol/events.py` | Thread-safe event bus + message router | `EventBus`, `MessageRouter`, `EVT_*` constants |
+| `protocol/game_state.py` | Per-device reactive game state | `GameState`, `GameStateRegistry`, `get_game_state` |
+| `protocol/registry.py` | BKDR hash ↔ message name mapping | `bkdr_hash`, `msg_id`, `wire_id`, `get_wire_registry` |
+| `protocol/patch_apk.py` | APK patching + pure Python signing | Pull splits from device, LIEF inject, v1 sign, install |
 | `config.py` | Global mutable state, enums, constants | `QuestType`, `RallyType`, `Screen`, ADB path, thresholds, team colors, `alert_queue` |
 | `devices.py` | ADB device detection + emulator window mapping | `auto_connect_emulators`, `get_devices`, `get_emulator_instances` |
 | `botlog.py` | Logging, metrics, timing | `setup_logging`, `get_logger`, `set_console_verbose`, `StatsTracker`, `timed_action`, `stats`, `BOT_VERSION` |
@@ -68,6 +78,15 @@ web/dashboard.py (Flask)
   ├─ config, devices, navigation, vision, troops, actions, territory, botlog
   ├─ runners (shared task runners — no duplication)
   └─ settings (shared persistence — no duplication)
+
+startup.py (protocol integration)
+  └─ protocol/ (lazy import — only when protocol_enabled=True)
+      ├─ events (EventBus)
+      ├─ interceptor (InterceptorThread → Frida)
+      └─ game_state (GameState — reactive store)
+
+vision.py → startup.get_protocol_ap() (lazy, when PROTOCOL_ENABLED)
+troops.py → startup.get_protocol_troops_home/troop_snapshot() (lazy, when PROTOCOL_ENABLED)
 ```
 
 `botlog.py` and `config.py` have no internal dependencies (safe to import anywhere).
@@ -121,6 +140,7 @@ All session-scoped, reset on restart:
 - `EG_RALLY_OWN_ENABLED`, `TITAN_RALLY_OWN_ENABLED` — If False, only join rallies — never start own
 - `GATHER_ENABLED`, `GATHER_MINE_LEVEL`, `GATHER_MAX_TROOPS` — Gold gathering config
 - `TOWER_QUEST_ENABLED` — Occupy tower for alliance quest
+- `PROTOCOL_ENABLED` — Frida Gadget protocol interception (global toggle, not per-device)
 - `CLICK_TRAIL_ENABLED` — Save click trail screenshots
 - `BUTTONS` — Dict mapping button names to `{"x": int, "y": int}` coordinates (used by `vision.tap()`)
 
@@ -167,7 +187,8 @@ Device IDs are either `"127.0.0.1:<port>"` (TCP) or `"emulator-<port>"` (local A
 - macOS: Apple Vision framework (native, ~30ms/call)
 - `read_text(screen, region, allowlist)` — text from screen region
 - `read_number(screen, region)` — integer, handles comma/period thousands separators
-- `read_ap(device, retries=5)` — returns `(current_ap, max_ap)` tuple
+- `read_ap(device, retries=5)` — returns `(current_ap, max_ap)` tuple. Tries protocol fast path
+  first when `PROTOCOL_ENABLED` (instant, ~0ms), falls through to OCR on any failure or stale data
 - `warmup_ocr()` — pre-initializes OCR in background thread at startup (downloads EasyOCR models
   on first run, ~10-30s; macOS triggers Apple Vision framework warmup)
 
@@ -207,9 +228,18 @@ State machine via `navigate(target_screen, device)`:
 - Expects `device` as first positional arg
 
 ### Troop System (troops.py)
-**Counting** — Pixel-based: checks cyan color `[107, 247, 255]` at known Y positions on MAP screen. Returns 0-5.
+**Counting** — Protocol fast path first (when `PROTOCOL_ENABLED`): `get_protocol_troops_home()` returns
+home count from `GameState.lineups` (instant, ≤30s freshness). Falls through to pixel-based counting
+on `None` or any error. Pixel path: checks cyan color `[107, 247, 255]` at known Y positions on MAP
+screen. Returns 0-5.
 
 **Status model** — `TroopStatus` dataclass with `TroopAction` enum (HOME, DEFENDING, OCCUPYING, MARCHING, RETURNING, STATIONING, GATHERING, RALLYING, BATTLING, ADVENTURING). `DeviceTroopSnapshot` holds full troop state with helpers like `home_count`, `deployed_count`, `soonest_free()`.
+
+**Panel statuses** — Protocol fast path first (when `PROTOCOL_ENABLED`): `get_protocol_troop_snapshot()`
+builds a `DeviceTroopSnapshot` from `LineupsNtf`/`NewLineupStateNtf` data with `seconds_remaining`
+from `stateEndTs` (instant, ≤30s freshness). Falls through to icon template matching on `None` or error.
+LineupState→TroopAction mapping: IDLE/HOME→HOME, MARCHING→MARCHING, BATTLING→BATTLING, GATHERING→GATHERING,
+RETURNING→RETURNING, DEFENDING→DEFENDING, RALLYING→RALLYING. Unknown states default to MARCHING.
 
 **Healing** — `heal_all(device)`: finds heal.png, taps through heal dialogs in a loop until no more heal buttons.
 
@@ -347,6 +377,72 @@ Settings: `auto_upload_logs` (bool), `upload_interval_hours` (int, 1-168). Key f
 `upload_bug_report()`, `start_manual_upload()`, `get_upload_progress()` (phases: idle→zipping→uploading→done).
 Server: `POST /_upload?bot={name}` (500MB limit, keeps last 10), `GET /_admin?secret=XXX` for admin.
 
+### Training Data Collector (training.py)
+Opt-in JSONL logger for template match, OCR, and screen detection decisions. Selective image
+capture for near-misses (confidence 0.65-0.79), low-confidence OCR (avg < 0.7), unknown screens,
+and region drift. Setting: `collect_training_data` (default `False`).
+
+- JSONL: one file per session (`training_data/td_{timestamp}.jsonl`), capped at 10 files
+- Images: JPEG to `training_data/images/`, rolling cap of 200
+- Hooked into `find_image()`, `read_text()`, `check_screen()`
+- Included in bug report ZIPs, cleared after export
+- Stats shown on `/debug` page, toggle on `/settings` page
+- `configure(enabled)`, `shutdown()` called from `startup.py`
+
+### Protocol Interception (protocol/ + startup.py)
+Opt-in Frida Gadget integration that intercepts the game's network protocol for instant data reads.
+Setting: `protocol_enabled` (default `False`), toggled from `/debug` page (hidden from main settings).
+
+**APK Patching** (`patch_apk.py`): Injects Frida Gadget into the game APK. Pulls split APKs from
+a connected device (`--device`), patches the arm64 split via LIEF (`add_library("libfrida-gadget.so")`),
+signs all 3 splits, and installs. Signing uses pure Python (v1/JAR signing via `cryptography` library)
+— no Java/SDK required. Keystore cached as PEM files. Only needed once per game update; subsequent
+reinstalls reuse the same keystore (no tutorial replay).
+
+**Hook Script** (`frida_hook.js`): Runs inside the game process via Frida Gadget. Dynamically
+resolves `TFW.NetMsgData.FromByte/MakeByte` addresses at runtime using IL2CPP's metadata API
+(`il2cpp_class_from_name` + `il2cpp_class_get_methods`). No hardcoded RVAs or LIEF delta — works
+across game versions and LIEF versions. Frida's `mod.findExportByName()` (instance method, not
+`Module.findExportByName` static — the static version doesn't exist in this Frida gadget version).
+
+**Data Pipeline**: Frida hooks → `send()` → Python `_on_frida_message()` → `decode_frame()` →
+`ProtobufDecoder.decode()` (schema from `proto_field_map.json`) → `MESSAGE_CLASSES[name].from_dict()`
+→ `MessageRouter.route()` → `EventBus.emit()` → `GameState` handlers. Wire-level msg_id resolved
+via `wire_registry.json` (BKDR hash lookup, 1000+ message types).
+
+**Data Files**: `wire_registry.json` (msg_id → class name), `proto_field_map.json` (per-message
+field schemas with names, types, wire types), `registry.json` (internal cspb-prefixed registry).
+
+**Lifecycle** (startup.py): `_start_protocol()` creates EventBus → GameState → InterceptorThread
+(daemon). `_stop_protocol()` tears down. Called from `apply_settings()`. Import wrapped in
+try/except ImportError — if protocol package or frida not installed, silently skips.
+Requires: `adb forward tcp:27042 tcp:27042` (set up by `_setup_frida_forward()` in startup.py).
+
+**AP fast path** (vision.py): `read_ap()` calls `get_protocol_ap()` first when enabled. Returns
+`(current, max)` from `GameState.ap` if fresh (≤10s), else `None` → falls through to OCR.
+Entire block wrapped in try/except — any failure silently falls through.
+
+**Troop fast paths** (troops.py): `troops_avail()` calls `get_protocol_troops_home()` first when
+enabled — returns home count from `GameState.lineups` if fresh (≤30s), else `None` → falls through
+to pixel counting. `read_panel_statuses()` calls `get_protocol_troop_snapshot()` — builds a full
+`DeviceTroopSnapshot` from lineup data with `seconds_remaining` timers, else `None` → falls through
+to icon template matching. Both wrapped in try/except, same zero-risk pattern as AP.
+
+**Rally fast path** (actions/rallies.py): `join_rally()` calls `get_protocol_rallies()` first when
+enabled — returns list of `Rally` objects if fresh (≤30s), `[]` for confirmed zero rallies, else
+`None` → falls through to UI. When `[]` or all rallies are full/marching/blacklisted, bails out
+immediately (saves 20-30s of war screen navigation + scrolling). **NPC/player type filtering**:
+`_NPC_RALLY_TYPES` (titan, eg, groot) match `rally.npcCity`, `_PLAYER_RALLY_TYPES` (castle, pass,
+tower) match `rally.playerCity`. Derives `want_npc`/`want_player` from the requested `rally_types`
+so only relevant rallies are considered (e.g. castle rallies are ignored when requesting titan/eg).
+`_rally_matches_target()` helper performs the check. NPC `cfgID` values are logged at debug level
+for future fine-grained type mapping. Does NOT skip the UI join flow when joinable rallies exist —
+only provides early bail-out. Same try/except pattern as AP/troops.
+
+**Safety**: Zero-risk to existing users. Protocol off by default, one bool check when disabled.
+InterceptorThread auto-reconnects (10s interval) if gadget not running. Stale data returns
+None, triggering vision fallback. No existing code paths change when setting is off.
+
 ### Per-Device Access Control (startup.py + web/dashboard.py)
 Token-based shareable URLs: `https://1453.life/{bot_name}/d/{device_hash}?token={token}`
 - `device_hash` = `SHA256(device_id)[:8]`, tokens = `SHA256(license_key + ":" + device_id)[:16]`
@@ -370,7 +466,7 @@ threads and clears all statuses. Dashboard JS `_stoppingModes` prevents toggle f
 ## Tests
 
 ```bash
-py -m pytest          # run all ~752 tests
+py -m pytest          # run all ~852 tests
 py -m pytest -x       # stop on first failure
 py -m pytest -k name  # filter by test name
 ```
@@ -386,11 +482,88 @@ No fixtures require a running emulator — all use mocked ADB/vision.
 - Test names: `test_<function>_<scenario>` (e.g. `test_find_image_returns_none_below_threshold`)
 - Use `@pytest.mark.parametrize` for related test cases that vary only by input/expected values
 
+## Diagnostic Analysis
+
+Run `/analyze` to process all session data (stats, logs, debug screenshots), document
+findings, and clean up. Findings are stored in `.claude/analysis/` (tracked in git).
+
+See `.claude/analysis/MEMORY.md` for the index of known issues and patterns.
+When investigating bugs or making changes, check the analysis files first for prior data.
+
 ## Git Workflow
 
-- `master` — tagged releases only (v1.1.0, ..., v2.0.0)
-- `dev` — integration branch, always working
-- Feature branches: `feature/*`, `fix/*`, `cleanup/*` → PR into dev
-- Conventional commits: `feat:`, `fix:`, `refactor:`, `test:` prefix
-- Current version: see `version.txt`
+Current version: see `version.txt`
+
+### Branches
+
+| Branch | Purpose | Rules |
+|--------|---------|-------|
+| `master` | Release branch — tagged releases only | Never commit directly. Only receives merges from `dev`. |
+| `dev` | Integration branch — always working | Day-to-day commits go here. Must stay buildable. |
+| `feature/*` | Experimental/risky work | Optional. Use when a change might be thrown away. Merge or delete when done. |
+
+### Commits
+
+- **One logical change per commit.** Don't bundle unrelated fixes.
+- **Conventional prefix:** `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`, `revert:`
+- **Meaningful messages** that explain *why*, not just *what*:
+  - Good: `fix: tower recall failing due to stale detail_button position`
+  - Bad: `fix: stuff`
+
+### Releasing to master
+
+```bash
+# 1. On dev: bump version and commit
+#    Edit version.txt → X.Y.Z
+git add version.txt
+git commit -m "chore: bump version to X.Y.Z"
+
+# 2. Merge into master with a release message
+git checkout master
+git merge --no-ff dev -m "release: vX.Y.Z"
+
+# 3. Tag and push
+git tag vX.Y.Z
+git push origin master --tags
+
+# 4. Return to dev
+git checkout dev
+```
+
+Master log should read like a changelog — one `release: vX.Y.Z` entry per release.
+
+### Rules
+
+- **No hotfixes on master.** Fix on `dev`, then release.
+- **No `Merge branch 'dev'` messages.** Always use `--no-ff` with an explicit `release:` message.
+- **Delete stale branches** after merging. Don't let old `feature/*` branches accumulate.
+- **Don't rewrite published history.** No force-push to `master` or `dev`.
+
+### Claude Enforcement (MANDATORY)
+
+Claude MUST actively enforce this workflow. The user works on many things in parallel and
+needs Claude to be the gatekeeper.
+
+**Before any commit:**
+- If the working tree has unrelated staged changes, STOP and ask the user to separate them.
+- If a commit message bundles multiple unrelated changes, refuse and suggest splitting it.
+- If on `master`, refuse the commit entirely — redirect to `dev`.
+
+**When the user says "release", "push to master", "merge to master", or similar:**
+1. Run `git status` and `git log --oneline dev` to audit what's on dev.
+2. Present a clear list of ALL uncommitted changes AND all commits since the last release.
+3. Ask the user to explicitly confirm which changes are release-ready vs. not ready.
+4. If anything is WIP/experimental (e.g. protocol features, phantom clash), flag it and
+   ask whether it should be included. Do NOT silently merge everything.
+5. If WIP changes need to be excluded, help the user isolate them (stash, branch, revert)
+   BEFORE merging to master.
+6. Only proceed with the release steps after the user has approved the exact scope.
+
+**During normal work:**
+- If the user asks to commit a large batch of changes touching unrelated areas, push back
+  and suggest breaking it into separate commits.
+- If unstaged/uncommitted changes are piling up across many files, proactively remind the
+  user to commit or stash before context is lost.
+- When starting a new session, check `git status` — if there are uncommitted changes,
+  surface them early so nothing gets forgotten.
 

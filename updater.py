@@ -22,6 +22,7 @@ PRESERVE_FILES = {
     ".license_key",
     ".venv",
     "__pycache__",
+    ".claude",
     "platform-tools",
     "settings.json",
     "_update.zip",

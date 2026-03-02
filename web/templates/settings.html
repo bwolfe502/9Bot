@@ -50,6 +50,11 @@
             <span class="unit">hours</span>
         </label>
         <p style="color:#667;font-size:12px;padding-top:6px;margin:0">Periodically uploads logs and debug data for troubleshooting. Requires restart.</p>
+        <label class="setting-row" style="margin-top:12px">
+            <input type="checkbox" name="collect_training_data" {% if settings.collect_training_data %}checked{% endif %}>
+            Collect Training Data
+        </label>
+        <p style="color:#667;font-size:12px;padding-top:6px;margin:0">Log template match, OCR, and screen detection decisions for AI training. Included in bug report uploads.</p>
     </div>
 
     <!-- Auto Quest -->

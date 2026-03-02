@@ -56,6 +56,8 @@ DEFAULTS = {
     "remote_access": True,
     "auto_upload_logs": False,
     "upload_interval_hours": 24,
+    "collect_training_data": False,
+    "protocol_enabled": False,
 }
 
 

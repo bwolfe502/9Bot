@@ -1810,6 +1810,135 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     margin-top: 1px;
 }
 
+/* ------------------------------------------------------------------ */
+/* Calibrate Page                                                      */
+/* ------------------------------------------------------------------ */
+
+.calibrate-page main { max-width: 600px; margin: 0 auto; padding: 16px 12px; }
+
+.cal-toolbar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px;
+}
+.cal-toolbar select, .cal-toolbar button {
+    background: #1e1e3a; border: 1px solid #333; color: #e0e0f0;
+    padding: 8px 12px; border-radius: 6px; font-size: 14px;
+}
+.cal-toolbar select { flex: 1; min-width: 0; }
+.cal-toolbar button { cursor: pointer; white-space: nowrap; }
+.cal-toolbar button:active { opacity: 0.7; }
+.cal-btn-capture { background: #1a3a5c !important; border-color: #2a6 !important; }
+.cal-btn-record { position: relative; }
+.cal-btn-record.active { background: #5a1a1a !important; border-color: #c44 !important; }
+.cal-btn-record.active::before {
+    content: ''; position: absolute; top: 6px; right: 6px;
+    width: 8px; height: 8px; border-radius: 50%; background: #f44;
+    animation: cal-pulse 1s infinite;
+}
+@keyframes cal-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+.cal-canvas-wrap {
+    position: relative; width: 100%; background: #111;
+    border-radius: 8px; overflow: hidden; cursor: crosshair;
+    touch-action: none; -webkit-touch-callout: none; user-select: none;
+}
+.cal-canvas-wrap canvas { display: block; width: 100%; height: auto; }
+.cal-placeholder {
+    aspect-ratio: 9 / 16; display: flex; align-items: center; justify-content: center;
+    color: #555; font-size: 14px;
+}
+
+.cal-coords, .cal-region {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+    background: #14142a; border-radius: 6px; padding: 8px 12px;
+    font-family: "SF Mono", "Consolas", monospace; font-size: 14px; color: #0ff;
+}
+.cal-coords .cal-label, .cal-region .cal-label { color: #888; font-size: 12px; }
+.cal-coords .cal-value, .cal-region .cal-value { flex: 1; }
+.cal-note-input {
+    background: transparent; border: none; border-bottom: 1px solid #333;
+    color: #aab; font-size: 13px; padding: 2px 4px; width: 100px; outline: none;
+    font-family: "SF Mono", "Consolas", monospace;
+}
+.cal-note-input:focus { border-color: #0ff; color: #e0e0f0; }
+.cal-note-input::placeholder { color: #444; }
+.cal-log-note { color: #888; margin-left: 6px; font-size: 12px; }
+.cal-log-note::before { content: '— '; }
+.cal-copy-btn {
+    background: #1e1e3a; border: 1px solid #333; color: #aab; border-radius: 4px;
+    padding: 4px 10px; cursor: pointer; font-size: 12px;
+}
+.cal-copy-btn:active { background: #2a6; color: #fff; }
+
+.cal-region-actions {
+    display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap;
+}
+.cal-region-actions input[type="text"] {
+    background: #1e1e3a; border: 1px solid #333; color: #e0e0f0;
+    padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1; min-width: 100px;
+}
+.cal-region-actions button {
+    background: #1a3a5c; border: 1px solid #2a6; color: #e0e0f0;
+    padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;
+}
+.cal-region-actions button:active { opacity: 0.7; }
+.cal-region-actions .cal-overwrite { font-size: 11px; color: #888; display: flex; align-items: center; gap: 4px; }
+.cal-region-actions .cal-overwrite input { accent-color: #2a6; }
+
+.cal-section-title {
+    font-size: 13px; color: #888; margin-top: 16px; margin-bottom: 6px;
+    text-transform: uppercase; letter-spacing: 0.5px;
+}
+
+.cal-log {
+    max-height: 200px; overflow-y: auto; background: #14142a;
+    border-radius: 6px; padding: 6px;
+}
+.cal-log-entry {
+    display: flex; align-items: center; gap: 8px; padding: 4px 6px;
+    font-family: "SF Mono", "Consolas", monospace; font-size: 13px; color: #bbc;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.cal-log-entry:last-child { border-bottom: none; }
+.cal-log-entry .cal-idx { color: #555; font-size: 11px; min-width: 20px; }
+.cal-log-entry .cal-value { flex: 1; color: #0ff; }
+
+.cal-timeline {
+    display: flex; flex-direction: column; gap: 8px; margin-top: 8px;
+    max-height: 400px; overflow-y: auto;
+}
+.cal-step {
+    display: flex; align-items: center; gap: 10px; background: #14142a;
+    border-radius: 6px; padding: 8px 10px;
+}
+.cal-step-num {
+    width: 24px; height: 24px; border-radius: 50%; background: #2a6;
+    color: #fff; font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.cal-step-info { flex: 1; font-size: 13px; color: #bbc; }
+.cal-step-info strong { color: #0ff; }
+.cal-step-thumb {
+    width: 36px; height: 64px; border-radius: 4px; object-fit: cover; flex-shrink: 0;
+}
+
+.cal-export-row {
+    display: flex; gap: 8px; align-items: center; margin-top: 10px;
+}
+.cal-export-row input[type="text"] {
+    background: #1e1e3a; border: 1px solid #333; color: #e0e0f0;
+    padding: 6px 10px; border-radius: 4px; font-size: 13px; flex: 1;
+}
+.cal-export-row button {
+    background: #1a3a5c; border: 1px solid #2a6; color: #e0e0f0;
+    padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 13px; white-space: nowrap;
+}
+.cal-toast {
+    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+    background: #2a6; color: #fff; padding: 8px 18px; border-radius: 6px;
+    font-size: 13px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 100;
+}
+.cal-toast.show { opacity: 1; }
+
 /* Safe area for notched iPhones */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
     main {

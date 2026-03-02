@@ -29,6 +29,20 @@ from actions._helpers import _last_depart_slot
 
 _log = get_logger("actions")
 
+# NPC rally types — these target npcCity in the protocol data
+_NPC_RALLY_TYPES = {QuestType.TITAN, QuestType.EVIL_GUARD, RallyType.GROOT}
+# Player rally types — these target playerCity
+_PLAYER_RALLY_TYPES = {RallyType.CASTLE, RallyType.PASS, RallyType.TOWER}
+
+
+def _rally_matches_target(rally, want_npc, want_player):
+    """Check if a protocol Rally matches the requested target category."""
+    if want_npc and rally.npcCity is not None:
+        return True
+    if want_player and rally.playerCity is not None:
+        return True
+    return False
+
 
 def _on_war_screen(device):
     """Check if we're still on the war screen."""
@@ -187,6 +201,47 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
         log.warning("Not enough troops available (have %d, need more than %d)", troops, config.get_device_config(device, "min_troops"))
         return False
 
+    # --- Protocol early bail-out ---
+    if config.PROTOCOL_ENABLED:
+        try:
+            from startup import get_protocol_rallies
+            protocol_rallies = get_protocol_rallies()
+            if protocol_rallies is not None:
+                want_npc = any(rt in _NPC_RALLY_TYPES for rt in rally_types)
+                want_player = any(rt in _PLAYER_RALLY_TYPES for rt in rally_types)
+                joinable = [
+                    r for r in protocol_rallies
+                    if r.rallyState in (1, 2)  # READY or WAITING
+                    and r.rallyMaxNum - len(r.troops) > 0
+                    and _rally_matches_target(r, want_npc, want_player)
+                ]
+                if not joinable:
+                    elapsed = time.time() - _jr_start
+                    log.info("<<< join_rally: no joinable rallies matching %s (protocol, %.1fs)",
+                             "/".join(str(rt) for rt in rally_types), elapsed)
+                    stats.record_action(device, "join_rally", False, elapsed)
+                    return False
+                # Log NPC cfgIDs for future type mapping
+                for r in joinable:
+                    if r.npcCity and isinstance(r.npcCity, dict):
+                        log.debug("Protocol NPC rally cfgID=%s troops=%d/%d",
+                                  r.npcCity.get("cfgID"), len(r.troops), r.rallyMaxNum)
+                non_blacklisted = [
+                    r for r in joinable
+                    if not r.troops
+                    or not _is_rally_owner_blacklisted(device, r.troops[0].name)
+                ]
+                if not non_blacklisted:
+                    elapsed = time.time() - _jr_start
+                    log.info("<<< join_rally: %d joinable rallies all blacklisted (protocol, %.1fs)",
+                             len(joinable), elapsed)
+                    stats.record_action(device, "join_rally", False, elapsed)
+                    return False
+                log.debug("Protocol: %d joinable rallies (%d non-blacklisted)",
+                          len(joinable), len(non_blacklisted))
+        except Exception:
+            pass
+
     # Capture a tighter baseline right before entering the war screen.
     # The initial `troops` check above may be stale by the time we tap depart.
     pre_war_troops = troops
@@ -223,7 +278,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
             # Try close button first
             tap_image("close_x.png", device)
             timed_wait(device, lambda: check_screen(device) == Screen.WAR,
-                       3.0, "jr_backout_close_x")
+                       4.0, "jr_backout_close_x")
 
             # Check where we are before continuing
             current = check_screen(device)
@@ -422,16 +477,30 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                     h, w = join_btn.shape[:2]
                     log.debug("Clicking join at (%d, %d)", join_x + w // 2, join_y + h // 2)
                     adb_tap(device, join_x + w // 2, join_y + h // 2)
-                    timed_wait(device, lambda: False, 1, "jr_detail_load")
 
-                    # Wait for rally detail screen to load — check for depart.png
-                    # as the definitive signal, then look for slot or full indicators
+                    # Wait for detail screen to load — depart.png confirms it
+                    detail_loaded = timed_wait(
+                        device,
+                        lambda: find_image(load_screenshot(device),
+                                           "depart.png", threshold=0.75) is not None,
+                        3, "jr_detail_load")
+
+                    if not detail_loaded:
+                        save_failure_screenshot(device, "jr_detail_load_fail")
+                        log.warning("Rally detail screen did not load after join tap "
+                                    "(depart.png not found within 3s)")
+                        if not _backout_to_war_screen():
+                            return "lost"
+                        retries_left -= 1
+                        should_rescan = True
+                        break  # Break rally_locs loop, rescan
+
+                    # Detail screen confirmed — find an open slot
                     slot_found = False
                     rally_full = False
-                    detail_loaded = False
                     last_screen = None
                     start_time = time.time()
-                    while time.time() - start_time < 6:
+                    while time.time() - start_time < 4:
                         if stop_check and stop_check():
                             return False
                         s = load_screenshot(device)
@@ -439,10 +508,6 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                             time.sleep(0.5)
                             continue
                         last_screen = s
-
-                        # Check for depart button — confirms detail screen loaded
-                        if not detail_loaded and find_image(s, "depart.png", threshold=0.75):
-                            detail_loaded = True
 
                         # Check for empty slot BEFORE full_rally — a rally can
                         # show full_rally.png while still having an open slot
@@ -504,7 +569,12 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 if not slot_found:
                     continue  # No slot for this type → try next rally_type
 
-                timed_wait(device, lambda: False, 1, "jr_slot_to_depart")
+                # Wait for depart button to be ready after slot tap
+                timed_wait(
+                    device,
+                    lambda: find_image(load_screenshot(device),
+                                       "depart.png", threshold=0.75) is not None,
+                    2, "jr_slot_to_depart")
                 # Capture which troop is selected before depart for slot tracking
                 try:
                     portrait_result = capture_departing_portrait(device)
@@ -586,6 +656,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                         navigate(Screen.WAR, device)
                         continue  # Try next match
                 else:
+                    save_failure_screenshot(device, "jr_slot_to_depart_fail")
                     log.warning("Depart button not found — backing out")
                     if not _backout_to_war_screen():
                         return "lost"
@@ -625,7 +696,8 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
 
     # Scroll up to top (scroll position persists between visits)
     adb_swipe(device, 560, 300, 560, 1400, 500)
-    timed_wait(device, lambda: False, 1.5, "jr_scroll_up_settle")
+    timed_wait(device, lambda: False, 1.5, "jr_scroll_up_settle",
+               stop_check=stop_check)
 
     # Scroll down and check 5 times
     for attempt in range(5):
@@ -634,7 +706,8 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
             return False
         log.debug("Scroll down attempt %d/5", attempt + 1)
         adb_swipe(device, 560, 948, 560, 245, 500)
-        timed_wait(device, lambda: False, 1.5, "jr_scroll_down_settle")
+        timed_wait(device, lambda: False, 1.5, "jr_scroll_down_settle",
+                   stop_check=stop_check)
 
         # If no join buttons in the bottom quarter of the screen, we've
         # scrolled past all rallies into the marches section — stop early

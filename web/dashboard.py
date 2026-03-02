@@ -28,7 +28,7 @@ import config
 from config import (running_tasks, QuestType, RallyType)
 from devices import get_devices, get_emulator_instances, auto_connect_emulators
 from navigation import check_screen
-from vision import load_screenshot, restart_game
+from vision import load_screenshot, restart_game, adb_tap
 from troops import troops_avail, heal_all, get_troop_status
 from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      check_quests, teleport, teleport_benchmark,
@@ -372,15 +372,21 @@ def create_app():
         if os.path.isfile(log_file):
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()[-150:]
+                    all_lines = f.readlines()
+                lines = [l for l in all_lines if " DEBUG " not in l][-150:]
             except Exception as e:
                 _log.warning("Failed to read log file: %s", e)
                 lines = ["(Could not read log file)"]
+        import training
+        training_stats = training.get_training_stats()
+        settings = _load_settings()
         return render_template("debug.html",
                                devices=device_info,
                                tasks=active_tasks,
                                debug_actions=ONESHOT_DEBUG,
-                               log_lines=lines)
+                               log_lines=lines,
+                               training_stats=training_stats,
+                               protocol_enabled=settings.get("protocol_enabled", False))
 
     @app.route("/logs")
     def logs_page():
@@ -391,7 +397,7 @@ def create_app():
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                     all_lines = f.readlines()
-                    lines = all_lines[-150:]
+                lines = [l for l in all_lines if " DEBUG " not in l][-150:]
             except Exception as e:
                 _log.warning("Failed to read log file: %s", e)
                 lines = ["(Could not read log file)"]
@@ -573,7 +579,8 @@ def create_app():
         for key in ["auto_heal", "auto_restore_ap", "ap_use_free", "ap_use_potions",
                      "ap_allow_large_potions", "ap_use_gems", "verbose_logging",
                      "eg_rally_own", "titan_rally_own", "web_dashboard", "gather_enabled",
-                     "tower_quest_enabled", "remote_access", "auto_upload_logs"]:
+                     "tower_quest_enabled", "remote_access", "auto_upload_logs",
+                     "collect_training_data"]:
             settings[key] = key in request.form
 
         for key in ["ap_gem_limit", "min_troops", "variation", "titan_interval",
@@ -742,6 +749,15 @@ def create_app():
             download_name=filename,
         )
 
+    @app.route("/api/protocol-toggle", methods=["POST"])
+    def api_protocol_toggle():
+        """Toggle protocol_enabled setting (debug page)."""
+        settings = _load_settings()
+        settings["protocol_enabled"] = not settings.get("protocol_enabled", False)
+        _apply_settings(settings)
+        _save_settings(settings)
+        return jsonify({"ok": True, "enabled": settings["protocol_enabled"]})
+
     @app.route("/api/upload-logs", methods=["POST"])
     def api_upload_logs():
         """Start a bug report upload in the background."""
@@ -785,7 +801,9 @@ def create_app():
         if os.path.isfile(log_file):
             try:
                 with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()[-150:]
+                    all_lines = f.readlines()
+                # Filter out DEBUG lines for the human-facing viewer
+                lines = [l for l in all_lines if " DEBUG " not in l][-150:]
             except Exception as e:
                 _log.warning("Failed to read log file: %s", e)
         return jsonify({"lines": [l.rstrip() for l in lines]})
@@ -1203,5 +1221,96 @@ def create_app():
 
         return Response(generate(),
                         mimetype="multipart/x-mixed-replace; boundary=frame")
+
+    # --- Calibrate routes ---
+
+    @app.route("/calibrate")
+    def calibrate_page():
+        detected, instances = _cached_devices()
+        device_info = [{"id": d, "name": instances.get(d, d)} for d in detected]
+        return render_template("calibrate.html", devices=device_info)
+
+    @app.route("/api/calibrate/tap", methods=["POST"])
+    def calibrate_tap():
+        """Forward a tap to the device, wait briefly, return fresh screenshot."""
+        data = request.get_json(silent=True) or {}
+        device = data.get("device", "")
+        try:
+            x, y = int(data["x"]), int(data["y"])
+        except (KeyError, ValueError, TypeError):
+            return jsonify(error="Missing or invalid x/y"), 400
+        known = set(_cached_devices()[0])
+        if device not in known:
+            return jsonify(error="Unknown device"), 404
+        adb_tap(device, x, y)
+        time.sleep(0.3)
+        import io, cv2
+        from flask import send_file
+        screen = load_screenshot(device)
+        if screen is None:
+            return jsonify(error="Screenshot failed"), 500
+        _, buf = cv2.imencode(".png", screen)
+        return send_file(io.BytesIO(buf.tobytes()), mimetype="image/png")
+
+    @app.route("/api/calibrate/crop", methods=["POST"])
+    def calibrate_crop():
+        """Crop a region from a fresh screenshot and save as template PNG."""
+        data = request.get_json(silent=True) or {}
+        device = data.get("device", "")
+        filename = data.get("filename", "").strip()
+        overwrite = data.get("overwrite", False)
+        try:
+            x1, y1, x2, y2 = int(data["x1"]), int(data["y1"]), int(data["x2"]), int(data["y2"])
+        except (KeyError, ValueError, TypeError):
+            return jsonify(error="Missing or invalid region coordinates"), 400
+        if not filename:
+            return jsonify(error="Missing filename"), 400
+        if not filename.endswith(".png"):
+            filename += ".png"
+        # Path traversal protection
+        if "/" in filename or "\\" in filename or ".." in filename:
+            return jsonify(error="Invalid filename"), 400
+        known = set(_cached_devices()[0])
+        if device not in known:
+            return jsonify(error="Unknown device"), 404
+        # Validate region bounds
+        if x1 < 0 or y1 < 0 or x2 > 1080 or y2 > 1920 or x1 >= x2 or y1 >= y2:
+            return jsonify(error="Invalid region bounds"), 400
+        elements_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "elements")
+        out_path = os.path.join(elements_dir, filename)
+        if os.path.exists(out_path) and not overwrite:
+            return jsonify(error=f"{filename} already exists", exists=True), 409
+        import cv2
+        screen = load_screenshot(device)
+        if screen is None:
+            return jsonify(error="Screenshot failed"), 500
+        crop = screen[y1:y2, x1:x2]
+        os.makedirs(elements_dir, exist_ok=True)
+        cv2.imwrite(out_path, crop)
+        h, w = crop.shape[:2]
+        return jsonify(ok=True, filename=filename, width=w, height=h)
+
+    @app.route("/api/calibrate/export", methods=["POST"])
+    def calibrate_export():
+        """Save a recorded calibration sequence as JSON."""
+        data = request.get_json(silent=True) or {}
+        name = data.get("name", "").strip()
+        steps = data.get("steps")
+        if not name:
+            return jsonify(error="Missing name"), 400
+        if not steps or not isinstance(steps, list):
+            return jsonify(error="Missing or invalid steps"), 400
+        # Sanitize name
+        if "/" in name or "\\" in name or ".." in name:
+            return jsonify(error="Invalid name"), 400
+        if not name.endswith(".json"):
+            name += ".json"
+        cal_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                               "data", "calibrations")
+        os.makedirs(cal_dir, exist_ok=True)
+        out_path = os.path.join(cal_dir, name)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"name": name, "steps": steps}, f, indent=2)
+        return jsonify(ok=True, path=f"data/calibrations/{name}")
 
     return app

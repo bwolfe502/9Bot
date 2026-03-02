@@ -8,6 +8,7 @@ from vision import (tap_image, tap, load_screenshot, adb_tap, adb_keyevent,
 import config
 from config import Screen
 from botlog import get_logger, stats
+import training
 
 # ============================================================
 # DEBUG DIRECTORY
@@ -190,6 +191,11 @@ def check_screen(device):
             log.debug("Screen identified: %s (%.0f%%)", best_name, best_val * 100)
             identified = best_name
 
+        training.log_screen(device, scores, best_name, identified is not None)
+        if not identified:
+            training.save_training_image(device, "unknown_screen", screen,
+                                         {"best": best_name, "conf": round(best_val * 100)})
+
         # Soft popup dismiss (close_x) — try on any screen EXCEPT map_screen.
         # On MAP, close_x appears as part of normal flows (rally dialog, AP
         # window, search overlay) and must NOT be auto-dismissed.
@@ -326,7 +332,7 @@ def _recover_to_known_screen(device):
     for name, action in strategies:
         action()
         timed_wait(device, lambda: check_screen(device) != Screen.UNKNOWN,
-                   1.5, f"recover_{name}")
+                   2.0, f"recover_{name}")
         current = check_screen(device)
         if current != Screen.UNKNOWN:
             log.info("Recovery via %s: now on %s", name, current)
@@ -440,7 +446,7 @@ def navigate(target_screen, device, _depth=0):
         if current == Screen.TROOP_DETAIL:
             adb_tap(device, 990, 1850)
             timed_wait(device, lambda: check_screen(device) == Screen.MAP,
-                       2, "nav_td_exit_to_map")
+                       3.5, "nav_td_exit_to_map")
             current = check_screen(device)
         elif current == Screen.ALLIANCE:
             tap_image("back_arrow.png", device, threshold=0.7)
@@ -449,7 +455,7 @@ def navigate(target_screen, device, _depth=0):
             # Bottom-right globe icon takes us back to map
             adb_tap(device, 970, 1880)
             timed_wait(device, lambda: check_screen(device) == Screen.MAP,
-                       1, "nav_kingdom_to_map")
+                       3, "nav_kingdom_to_map")
             current = check_screen(device)
         elif current in [Screen.BATTLE_LIST, Screen.ALLIANCE_QUEST, Screen.WAR, Screen.TERRITORY, Screen.PROFILE]:
             tap_image("back_arrow.png", device, threshold=0.7)
@@ -533,7 +539,7 @@ def navigate(target_screen, device, _depth=0):
             if not navigate(Screen.MAP, device, _depth=_depth + 1):
                 return False
         adb_tap(device, 75, 1880)
-        return _verify_screen(Screen.KINGDOM, device, wait_time=3.0)
+        return _verify_screen(Screen.KINGDOM, device, wait_time=5.0)
 
     log.warning("Unknown target screen: %s", target_screen)
     return False

@@ -217,6 +217,7 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
     global _status
     try:
         import websockets
+        import websockets.exceptions
     except ImportError:
         _log.error("websockets package not installed. Install with: pip install websockets")
         with _status_lock:
@@ -239,15 +240,37 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
                 ping_timeout=10,
                 close_timeout=5,
                 additional_headers={"Authorization": f"Bearer {relay_secret}"},
+                proxy=None,
             ) as ws:
                 with _status_lock:
                     _status = "connected"
                 _log.info("Tunnel connected to relay (bot=%s)", bot_name)
-                backoff = RECONNECT_BASE  # reset on success
+                connected_at = asyncio.get_event_loop().time()
 
-                async for raw_msg in ws:
-                    if _stop_event.is_set():
+                # Explicit recv loop for better error diagnostics
+                while not _stop_event.is_set():
+                    try:
+                        raw_msg = await asyncio.wait_for(
+                            ws.recv(), timeout=90,
+                        )
+                    except asyncio.TimeoutError:
+                        _log.warning("Tunnel: no data in 90s, reconnecting")
                         break
+                    except websockets.exceptions.ConnectionClosedOK as e:
+                        uptime = asyncio.get_event_loop().time() - connected_at
+                        _log.warning(
+                            "Tunnel closed OK (code=%s reason=%r uptime=%.0fs)",
+                            e.code, e.reason, uptime,
+                        )
+                        break
+                    except websockets.exceptions.ConnectionClosedError as e:
+                        uptime = asyncio.get_event_loop().time() - connected_at
+                        _log.warning(
+                            "Tunnel closed ERROR (code=%s reason=%r uptime=%.0fs)",
+                            e.code, e.reason, uptime,
+                        )
+                        break
+
                     try:
                         msg = json.loads(raw_msg)
                     except json.JSONDecodeError:
@@ -260,10 +283,20 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
                     asyncio.ensure_future(_handle_request(ws, msg, executor))
 
         except Exception as e:
-            _log.warning("Tunnel disconnected: %s — reconnecting in %ds", e, backoff)
+            _log.warning("Tunnel disconnected: %s (%s) — reconnecting in %ds",
+                         type(e).__name__, e, backoff)
 
         with _status_lock:
             _status = "disconnected"
+
+        # Only reset backoff if we stayed connected for a meaningful duration
+        # (prevents rapid reconnect loop when server keeps closing immediately)
+        try:
+            uptime = asyncio.get_event_loop().time() - connected_at
+            if uptime > 30:
+                backoff = RECONNECT_BASE
+        except NameError:
+            pass  # never connected
 
         # Wait before reconnecting (check stop_event every second)
         for _ in range(backoff):
@@ -284,8 +317,11 @@ def start_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
     """Start the tunnel client in a daemon thread. Safe to call multiple times."""
     global _thread
     if _thread is not None and _thread.is_alive():
-        _log.debug("Tunnel already running, ignoring start_tunnel()")
-        return
+        # Signal old thread to stop and wait for it
+        _stop_event.set()
+        _thread.join(timeout=5)
+        if _thread.is_alive():
+            _log.warning("Old tunnel thread still alive after 5s, starting new one anyway")
 
     _stop_event.clear()
 
