@@ -184,3 +184,26 @@ class TestRunGatherLoop:
         result = gather_gold_loop(mock_device, stop_check=lambda: True)
         assert result == 0
         mock_gather.assert_not_called()
+
+    @patch("actions.farming.navigate", return_value=True)
+    @patch("actions.farming.gather_gold")
+    @patch("actions.farming.troops_avail", side_effect=[3, 2, 1])
+    def test_reserve_holds_back_last_troop(self, mock_troops, mock_gather, mock_nav, mock_device):
+        """reserve=1 keeps one troop available for PVP retry."""
+        config.GATHER_MAX_TROOPS = 5
+        config.MIN_TROOPS_AVAILABLE = 0
+        mock_gather.return_value = True
+        result = gather_gold_loop(mock_device, reserve=1)
+        # Should deploy 2 (stops when troops=1 <= 0+1)
+        assert result == 2
+
+    @patch("actions.farming.navigate", return_value=True)
+    @patch("actions.farming.gather_gold")
+    @patch("actions.farming.troops_avail", return_value=5)
+    def test_reserve_zero_deploys_all(self, mock_troops, mock_gather, mock_nav, mock_device):
+        """reserve=0 (default) deploys all available troops."""
+        config.GATHER_MAX_TROOPS = 5
+        config.MIN_TROOPS_AVAILABLE = 0
+        mock_gather.return_value = True
+        result = gather_gold_loop(mock_device, reserve=0)
+        assert result == 5

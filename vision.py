@@ -452,6 +452,7 @@ def read_ap(device, retries=5):
             time.sleep(2)
 
     log.warning("Could not read AP after %d attempts", retries)
+    save_failure_screenshot(device, "read_ap_failed")
     return None
 
 
@@ -571,7 +572,8 @@ def adb_tap(device, x, y):
         subprocess.run([adb_path, "-s", device, "shell", "input", "tap", str(x), str(y)],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=ADB_COMMAND_TIMEOUT)
     except subprocess.TimeoutExpired:
-        get_logger("vision", device).warning("adb_tap timed out after %ds (ADB hung?)", ADB_COMMAND_TIMEOUT)
+        get_logger("vision", device).warning("adb_tap(%d, %d) timed out after %ds (ADB hung?)",
+                                             x, y, ADB_COMMAND_TIMEOUT)
         stats.record_adb_timing(device, "tap", float(ADB_COMMAND_TIMEOUT), success=False)
         return
     elapsed = time.time() - t0
@@ -607,6 +609,25 @@ def adb_keyevent(device, keycode):
         return
     elapsed = time.time() - t0
     stats.record_adb_timing(device, "keyevent", elapsed)
+
+GAME_PACKAGE = "com.tap4fun.odin.kingdomguard"
+
+def restart_game(device):
+    """Force-stop the game app and relaunch it via ADB."""
+    log = get_logger("vision", device)
+    log.info("Restarting game (%s)", GAME_PACKAGE)
+    try:
+        subprocess.run([adb_path, "-s", device, "shell", "am", "force-stop", GAME_PACKAGE],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=ADB_COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        log.warning("force-stop timed out after %ds", ADB_COMMAND_TIMEOUT)
+    try:
+        subprocess.run([adb_path, "-s", device, "shell", "monkey", "-p", GAME_PACKAGE,
+                        "-c", "android.intent.category.LAUNCHER", "1"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=ADB_COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        log.warning("monkey launch timed out after %ds", ADB_COMMAND_TIMEOUT)
+    log.info("Game restart command sent")
 
 def tap(button_name, device):
     """Tap a button by its name from the BUTTONS dictionary"""
@@ -776,7 +797,9 @@ def wait_for_image_and_tap(image_name, device, timeout=5, threshold=0.8):
         if tap_image(image_name, device, threshold=threshold):
             return True
         time.sleep(0.5)
-    log.debug("Timed out waiting for %s after %ds", image_name, timeout)
+    best = get_last_best()
+    log.debug("Timed out waiting for %s after %ds (best: %.0f%%, need: %.0f%%)",
+              image_name, timeout, best * 100, threshold * 100)
     return False
 
 def timed_wait(device, condition_fn, budget_s, label, stop_check=None):

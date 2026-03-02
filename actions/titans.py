@@ -383,6 +383,7 @@ def rally_titan(device):
 
         if not wait_for_image_and_tap("rally_titan_select.png", device, timeout=5, threshold=0.65):
             log.warning("Failed to find Titan select")
+            save_failure_screenshot(device, "titan_select_not_found")
             return False
         timed_wait(
             device,
@@ -391,6 +392,7 @@ def rally_titan(device):
 
         if not wait_for_image_and_tap("search.png", device, timeout=5, threshold=0.65):
             log.warning("Failed to find Search button")
+            save_failure_screenshot(device, "titan_search_not_found")
             return False
         timed_wait(
             device,

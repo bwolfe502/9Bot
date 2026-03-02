@@ -125,18 +125,21 @@ def mine_mithril(device, stop_check=None):
 
     # Step 5: Recall troops — tap each slot right-to-left so that plundered
     # or empty slots don't interfere (no dependency on left-shift behavior).
+    # Only tap slots for the troops we actually have — tapping an empty slot
+    # triggers a popup with a red X that blocks the UI.
+    total = config.DEVICE_TOTAL_TROOPS.get(device, 5)
     recalled_count = 0
-    for i, slot_x in enumerate(reversed(_MITHRIL_SLOTS_X)):
+    for i, slot_x in enumerate(reversed(_MITHRIL_SLOTS_X[:total])):
         if _stopped():
             break
         adb_tap(device, slot_x, _MITHRIL_SLOT_Y)
         timed_wait(device, lambda: False, 1, "mithril_slot_tap")
         if wait_for_image_and_tap("mithril_return.png", device, timeout=2, threshold=0.7):
-            log.debug("Recall slot %d: RETURN found, recalled", 5 - i)
+            log.debug("Recall slot %d: RETURN found, recalled", total - i)
             recalled_count += 1
             timed_wait(device, lambda: False, 1.5, "mithril_recall_anim")
         else:
-            log.debug("Recall slot %d: empty or plundered, skipping", 5 - i)
+            log.debug("Recall slot %d: empty or plundered, skipping", total - i)
 
     if recalled_count > 0:
         log.info("Recalled %d troops from mithril mines", recalled_count)
@@ -153,7 +156,6 @@ def mine_mithril(device, stop_check=None):
     # then SEARCH to refresh and deploy remaining troops if needed.
     # Always deploy all troops — plundered troops return home automatically,
     # so even if we recalled fewer, all troops should be available.
-    total = config.DEVICE_TOTAL_TROOPS.get(device, 5)
     max_deploys = total
     deployed_count = 0
 
@@ -383,8 +385,13 @@ def gather_gold(device, stop_check=None):
     return False
 
 
-def gather_gold_loop(device, stop_check=None):
+def gather_gold_loop(device, stop_check=None, reserve=0):
     """Deploy up to GATHER_MAX_TROOPS troops to gold mines.
+
+    Args:
+        reserve: Extra troops to hold back beyond min_troops (e.g. 1 to
+                 keep a troop available for a pending PVP quest).
+
     Returns the number of troops successfully deployed."""
     log = get_logger("actions", device)
     max_troops = config.get_device_config(device, "gather_max_troops")
@@ -399,7 +406,7 @@ def gather_gold_loop(device, stop_check=None):
             navigate(Screen.MAP, device)
 
         troops = troops_avail(device)
-        min_troops = config.get_device_config(device, "min_troops")
+        min_troops = config.get_device_config(device, "min_troops") + reserve
         if troops <= min_troops:
             log.info("Not enough troops for more gathers (%d available, min %d)",
                      troops, min_troops)

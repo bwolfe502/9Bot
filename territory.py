@@ -592,7 +592,10 @@ def auto_occupy_loop(device):
                 log.debug("Clicking square (%d, %d) at (%d, %d)", target_row, target_col, click_x, click_y)
                 adb_tap(device, click_x, click_y)
 
-                tap_tower_until_attack_menu(device, timeout=10)
+                if not tap_tower_until_attack_menu(device, timeout=10):
+                    log.warning("Tower attack menu did not open for square (%d, %d)",
+                                target_row, target_col)
+                    save_failure_screenshot(device, "occupy_tower_menu_fail")
             else:
                 log.warning("No last attacked square remembered, skipping territory click")
 
@@ -610,9 +613,12 @@ def auto_occupy_loop(device):
             min_troops = config.get_device_config(device, "min_troops")
 
             if troops > min_troops:
-                tap_image("depart.png", device)
-                time.sleep(1)
-                tap_image("depart.png", device)
+                if not tap_image("depart.png", device):
+                    log.warning("First depart tap failed")
+                    save_failure_screenshot(device, "occupy_depart_fail")
+                else:
+                    time.sleep(1)
+                    tap_image("depart.png", device)  # confirmation tap
             else:
                 log.warning("Not enough troops available (have %d, need more than %d)", troops, min_troops)
 
@@ -823,8 +829,8 @@ def scan_territory_coordinates(device, squares=None, save_screenshots=True):
             with open(_COORD_DB_PATH, "r") as f:
                 import json
                 coord_db = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to load coordinate database: %s", e)
 
     if squares is None:
         squares = [(r, c) for r in range(GRID_HEIGHT) for c in range(GRID_WIDTH)

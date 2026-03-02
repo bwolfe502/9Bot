@@ -171,14 +171,9 @@ Device IDs are either `"127.0.0.1:<port>"` (TCP) or `"emulator-<port>"` (local A
 - `warmup_ocr()` — pre-initializes OCR in background thread at startup (downloads EasyOCR models
   on first run, ~10-30s; macOS triggers Apple Vision framework warmup)
 
-**Memory hardening** (Windows/EasyOCR):
-- `_ocr_infer_lock` — serializes `readtext()` calls across device threads. Prevents PyTorch
-  MKL/MKLDNN scratch buffer accumulation per thread (each thread allocates its own buffers).
-- `ONEDNN_PRIMITIVE_CACHE_CAPACITY=8` env var (default 1024) — caps compiled kernel cache.
-  Each unique OCR crop shape compiles a new kernel (~MB each); variable-size crops caused multi-GB bloat.
-- `torch.set_num_threads(2)` — limits intra-op parallelism. Device threads already provide
-  inter-op parallelism; default thread count causes oversubscription.
-- `gc.collect()` called in `StatsTracker` auto-save timer (every 5 min) to release deferred OCR memory.
+**Memory hardening** (Windows/EasyOCR): `_ocr_infer_lock` serializes `readtext()` across threads.
+`ONEDNN_PRIMITIVE_CACHE_CAPACITY=8` + `torch.set_num_threads(2)` cap memory. `gc.collect()` in
+StatsTracker auto-save timer (every 5 min).
 
 ### Screen Navigation (navigation.py)
 State machine via `navigate(target_screen, device)`:
@@ -232,20 +227,9 @@ State machine via `navigate(target_screen, device)`:
   backward compatibility.
 
 ### Territory Coordinate Scanner (territory.py)
-Maps grid squares to world coordinates by clicking each square (which teleports to its tower location)
-and OCR-reading the coordinates from the MAP screen.
-
-- `_COORD_OCR_REGION = (0, 1750, 1080, 1870)` — OCR crop region for coordinate text on MAP screen
-- `_COORD_DB_PATH = "data/territory_coordinates.json"` — persistent coordinate database
-- `_parse_coordinates(text)` — extracts `(x, y)` from OCR text like `"x:150, y:7050"`, handles common artifacts
-- `scan_territory_coordinates(device, squares=None, save_screenshots=True)` — full scan: navigates to
-  TERRITORY, clicks each square, OCR-reads coordinates, saves to JSON database. Merges with existing data.
-  Screenshots saved to `debug/territory_coords/` for calibration. Defaults to all non-throne squares (572).
-- `scan_test_squares(device)` — quick calibration: scans only 4 corner squares `(0,0), (0,23), (23,0), (23,23)`
-
-**Coordinate patterns**: Column correlates with world X (col 0 ~ 150, col 23 ~ 7050). Row correlates
-inversely with world Y (row 0 ~ 7050, row 23 ~ 150-200). ~300 world units per grid step, but not uniform
-due to terrain. Mountain passes are strategic locations not on the territory grid.
+Maps grid squares to world coordinates via `scan_territory_coordinates(device)` (clicks each square,
+OCR-reads coordinates, saves to `data/territory_coordinates.json`). `scan_test_squares(device)` scans
+only 4 corners for calibration.
 
 ### Rally Owner Blacklist (actions/rallies.py)
 - `_ocr_rally_owner()` reads "{Name}'s Troop" from war screen card
@@ -261,55 +245,32 @@ PVP dispatches a troop then continues to other quests while it marches (non-bloc
 Gold gathering is blocked while titan/EG rallies are in-flight (pending). The bot waits for
 rally completion instead of deploying gather troops, preserving troop availability for retries.
 
-**Gold mining gates**: Gold is the lowest priority action. Two additional guards prevent premature mining:
-1. **PVP gate**: If a PVP quest is available but not yet dispatched (not on cooldown), gold mining
-   is skipped. `_all_quests_visually_complete()` checks PVP cooldown; the actionable path also
-   checks `_pvp_last_dispatch` before the `has_gather` branch.
-2. **Pending rally gate**: If titan/EG rallies are in-flight, gold is blocked (preserves troop
-   availability for retries).
+**Marker error suppression**: `_marker_errors = {}` (`{device: set of error strings}`) permanently
+suppresses a quest type when a marker error is detected (duplicate markers, wrong tower type).
+Checked at the top of `_attack_pvp_tower()` and `_run_tower_quest()` — if an error exists for the
+device, the function skips silently (already warned once, don't spam). Cleared by
+`reset_quest_tracking()` (called on auto quest start). Error statuses (e.g. `"ERROR: Duplicate
+Enemy Markers!"`) remain visible until the user fixes markers and restarts auto quest.
 
-**Stray troop recovery**: Runs at the start of each `check_quests` cycle (on MAP screen), before
-quest OCR. Two checks in order:
-1. **Stray defender recall**: If a troop is DEFENDING but `_tower_quest_state` is empty (bot didn't
-   deploy it this session), `recall_tower_troop()` is called immediately — highest priority.
-2. **Stray stationed recall**: `_recall_stray_stationed(device)` checks for STATIONING troops (stuck
-   from a failed EG rally), taps `statuses/stationing.png` → `stationed.png` → `return.png`.
+**Gold mining gates**: Two guards prevent premature gold mining:
+1. **PVP gate**: Skips gold if PVP quest available but not yet dispatched (not on cooldown).
+2. **Pending rally gate**: Blocks gold while titan/EG rallies are in-flight.
+
+**Stray troop recovery**: Runs at start of each `check_quests` cycle before quest OCR.
+Recalls stray DEFENDING troops (not deployed by bot) and stray STATIONING troops (stuck EG rally).
 
 **EG troop gate**: `_eg_troops_available(device)` requires 2 troops not gathering or defending.
-Troops that are rallying, marching, returning, etc. are counted as available since they'll free up.
-Falls back to `troops_avail() >= 2` if no troop snapshot exists.
+Falls back to `troops_avail() >= 2` if no snapshot.
 
-**Tower quest**: `_navigate_to_tower()` opens target menu, taps **Friend tab** `(540, 330)`, looks for
-`friend_marker.png`, then taps the marker to center the map on the tower. `occupy_tower()` then
-taps the tower, reinforces, and departs. `_run_tower_quest()` handles three cases: no tower quests
-(recall stray defender), all complete (recall), active quest (deploy if needed). Uses
-`_tower_quest_state` dict to track bot-deployed troops within a session.
+**Tower quest**: `_navigate_to_tower()` uses Friend tab + `find_all_matches("friend_marker.png")`
+for marker counting. `occupy_tower()` detects wrong tower type (attack vs reinforce button) and
+sets `_marker_errors`. `recall_tower_troop()` uses verified multi-step recall with panel-status
+confirmation (2 approaches: panel icon → friend marker fallback). `_is_troop_defending_relaxed()`
+extends snapshot freshness to 120s (vs 30s default) since quest OCR takes 60+ seconds.
 
-**Tower troop recall**: `recall_tower_troop()` recalls a defending troop via a verified multi-step
-sequence. `_recall_tap_sequence()` does: tap tower `(540, 900)` → `wait_for_image_and_tap`
-`detail_button.png` (lower-left quadrant) → blind taps for Recall/Confirm → close. The outer
-function tries two approaches with panel-status verification after each:
-1. Center via `statuses/defending.png` panel icon (2 attempts).
-2. Fallback: center via `_navigate_to_tower()` (friend marker).
-Returns `True` only when `read_panel_statuses` confirms no DEFENDING troop. Saves failure
-screenshots at each step for coordinate calibration.
-
-**Snapshot freshness & `_is_troop_defending_relaxed`**: `_is_troop_defending(device)` uses a 30s
-snapshot freshness window, which is too short for `_run_tower_quest` — quest OCR takes 60+ seconds,
-so by the time `_run_tower_quest` runs the snapshot from `check_quests` start is stale and we're
-on the ALLIANCE_QUEST screen (can't read panel). `_is_troop_defending_relaxed(device)` extends the
-window to 120s, which covers the typical quest-check duration. A defending troop's status is stable
-(parked at a tower), so accepting older snapshots is safe. Used in `_run_tower_quest` (all three
-branches) and `_all_quests_visually_complete` (tower quest gold-mining gate).
-
-**PVP attack**: `_attack_pvp_tower()` uses `target()` (Enemy tab + `target_marker.png`) to navigate
-to an enemy tower, then `tap_tower_until_attack_menu()` to open the attack menu, and `depart.png`
-to send 1 troop. Troop availability is checked **after** `target()` (which navigates to MAP) —
-`troops_avail()` requires MAP screen pixels, so checking earlier would always read 0. The PVP
-attack panel renders depart at ~74% confidence (vs 80%+ for rally panels), so the depart tap
-uses threshold 0.7. A single march completes the full 500M quest target in one go. A 10-minute
-cooldown (`_PVP_COOLDOWN_S = 600`) prevents re-dispatch while the troop marches. PVP on cooldown
-doesn't block gold mining (`_all_quests_visually_complete` is aware).
+**PVP attack**: `_attack_pvp_tower()` uses `target()` (Enemy tab + marker counting) to navigate
+to enemy tower. Checks button type (attack=correct, reinforce=wrong). Single march completes 500M
+quest. 10-min cooldown (`_PVP_COOLDOWN_S`). Troop check runs **after** `target()` (needs MAP pixels).
 
 ### Titan Search Retry (actions/titans.py)
 `rally_titan` searches for the titan, which centers the map on it, then blind-taps (540, 900)
@@ -363,245 +324,58 @@ banner displays the LAN URL for mobile remote control.
 
 **Pages**: Dashboard (`/`), Settings (`/settings`), Guide (`/guide`), Debug (`/debug`), Logs (`/logs`), Territory Grid (`/territory`), Device View (`/d/<dhash>?token=...`)
 
-**API endpoints**:
-- `GET /api/status` — device statuses, troop snapshots, quest tracking, quest age (seconds since last check), mithril timer, active tasks, tunnel status (polled every 3s)
-- `POST /api/devices/refresh` — reconnect ADB devices
-- `POST /tasks/start` — launch auto-mode or one-shot task
-- `POST /tasks/stop` — stop a specific task
-- `POST /tasks/stop-all` — force-kill all tasks immediately (thread injection via `PyThreadState_SetAsyncExc`)
-- `POST /settings` — save settings form
-- `POST /api/restart` — save settings, stop all, `os.execv` restart
-- `POST /api/quit` — graceful process termination (`os._exit(0)`)
-- `GET /api/logs` — last 150 log lines as JSON
-- `POST /api/bug-report` — generate and download bug report ZIP
-- `POST /api/upload-logs` — start bug report upload in background, returns immediately
-- `GET /api/upload-progress` — poll upload progress (`{"phase", "percent", "message"}`)
-- `GET /api/screenshot?device=<id>&download=1` — live device screenshot as PNG (download=1 forces file save)
-- `GET /api/stream?device=<id>&fps=5&quality=30` — MJPEG live video stream (`multipart/x-mixed-replace`)
-- `GET /api/qr?url=<encoded>` — generate QR code PNG (box_size=12, border=2) for dashboard modal
-- `GET /api/territory/grid` — territory grid state (colors, flags, adjacency)
-- `POST /api/territory/squares` — update manual attack/ignore squares
-- `POST /tasks/stop-mode` — stop all tasks for an auto-mode
-- `GET /settings/device/<device_id>` — per-device settings form
-- `POST /settings/device/<device_id>` — save per-device settings
-- `POST /settings/device/<device_id>/reset` — reset per-device settings to defaults
-
-**Device-scoped routes** (per-device access for shared users):
-- `GET /d/<dhash>?token=...` — filtered dashboard (single device)
-- `GET /d/<dhash>/api/status` — status for one device only
-- `GET /d/<dhash>/api/screenshot` — screenshot of this device
-- `GET /d/<dhash>/api/stream` — MJPEG stream of this device
-- `POST /d/<dhash>/tasks/start` — start task (full access only)
-- `POST /d/<dhash>/tasks/stop` — stop task (full access only)
-- `POST /d/<dhash>/tasks/stop-all` — stop all tasks (full access only)
-- `POST /d/<dhash>/tasks/stop-mode` — stop auto-mode tasks (full access only)
-
-**Dashboard UI components**:
-- **Device card**: status dot (pulsing green when active), status text (color-coded), troop summary pills (grouped by action, colored, centered), quest pills with age timer, mithril countdown timer (purple accent)
-- **Access banners**: LAN + relay URL banners with tap-to-copy, QR code button, and tunnel status indicator (dot + label, updated via polling: green=connected, amber=connecting, red=disconnected, gray=disabled)
-- **Share button**: per-device "Share" button in device header, opens modal with Full Control / View Only tabs, shareable URL + QR code
-- **Collapsible controls**: click "Controls" header to toggle between full toggle switches and compact colored status pills (green when active)
-- **Auto mode toggles**: iOS-style toggle switches in responsive grid (`auto-fit`), grouped by category (Combat/Farming/Events)
-- **Action chips**: minimal bordered buttons in 3-column grid, farm actions (blue accent, includes Gather Gold as one-shot), war actions (red accent), debug actions (purple accent, `.action-chip-debug`)
-- **Live View**: full-width button per device, MJPEG stream with polling fallback for older relay
-- **Running tasks list**: active task names with circular stop (×) buttons
-- **Bottom bar**: Stop All, Refresh, Restart (amber), Quit (muted gray) — owner only
-
-**Auto mode groups** (vary by game mode):
-- Broken Lands (`bl`): Combat (Pass Battle, Occupy Towers, Reinforce Throne) + Farming (Auto Quest, Rally Titans, Mine Mithril)
-- Home Server (`rw`): Events (Join Groot) + Farming (Rally Titans, Mine Mithril) + Combat (Reinforce Throne)
-
-**Templates**: `base.html` (nav, shared JS), `index.html` (dashboard + device view), `settings.html` (with per-device tabs), `guide.html` (quick start guide), `debug.html` (debug actions), `logs.html`
+**API**: See `web/dashboard.py` for full route list. Key endpoints: `/api/status` (polled 3s),
+`/tasks/start|stop|stop-all`, `/api/stream` (MJPEG), `/d/<dhash>` (per-device scoped routes).
+Per-device settings: `GET|POST /settings/device/<id>`.
 
 ### Relay Tunnel (tunnel.py + relay/)
 WebSocket relay for remote access — lets users control 9Bot from outside the LAN.
 
-**Zero-config**: Relay auto-configures from the license key. No user-facing URL/secret/bot-name
-settings. `get_relay_config(settings)` in `startup.py` returns `(relay_url, relay_secret, bot_name)`
-or `None`. Bot name is `SHA256(license_key)[:10]` — unique per user, stable, unguessable.
+**Zero-config**: Relay auto-configures from the license key. Bot name is `SHA256(license_key)[:10]`.
+`get_relay_config(settings)` in `startup.py` returns `(relay_url, relay_secret, bot_name)` or `None`.
 
-**Architecture**: `tunnel.py` opens a `wss://` WebSocket to the relay server (`1453.life`,
-DigitalOcean droplet). Browser hits `https://1453.life/bot_name/` → nginx terminates TLS →
-relay forwards HTTP requests through the tunnel to `localhost:8080` (Flask dashboard).
-Reconnects with exponential backoff (5s→60s cap). Secret sent via `Authorization: Bearer`
-header (not URL query param).
+**Architecture**: `tunnel.py` opens `wss://` to relay (`1453.life`). Browser hits
+`https://1453.life/bot_name/` → nginx → relay forwards to `localhost:8080`. Reconnects with
+exponential backoff (5s→60s cap). Supports MJPEG streaming via `stream_start/chunk/end` protocol.
 
-**Server stack**: nginx (TLS termination, Let's Encrypt auto-renew) → aiohttp relay on port 8090.
-Service runs as non-root `9bot` user via systemd.
-
-**Settings**: Single `remote_access` boolean (default `True`). When `False`, relay is disabled.
-Relay URL and secret are base64-obfuscated constants in `startup.py` (not in settings.json).
-
+**Settings**: `remote_access` boolean (default `True`). URL/secret are base64-obfuscated in `startup.py`.
 **Status**: `tunnel_status()` returns `"disabled"` / `"connecting"` / `"connected"` / `"disconnected"`.
-Exposed in `/api/status` response and shown as a dot + label in the remote access banner.
-
-**MJPEG streaming**: Relay supports long-lived streaming responses via a custom protocol extension.
-`tunnel.py` detects `/api/stream` paths and sends `stream_start`/`stream_chunk`/`stream_end`
-messages over the WebSocket. The relay server (`relay_server.py`) uses `web.StreamResponse` to
-forward chunks to the browser. `cancel_stream` messages handle cleanup when the browser disconnects.
-
-**Relay server** (`relay/relay_server.py`): asyncio WebSocket server, routes `/bot_name/...`
-to the connected bot's tunnel. Landing page shows no bot names (prevents enumeration).
 
 ### Bug Report Auto-Upload (startup.py + relay/relay_server.py)
-Opt-in periodic upload of bug report ZIPs to the relay droplet via direct HTTPS POST
-(not through the WebSocket tunnel, which has a 16MB message limit).
-
-**Settings**: `auto_upload_logs` (bool, default `False`), `upload_interval_hours` (int, default 24, min 1, max 168). Requires restart.
-
-**Client** (`startup.py`):
-- `upload_bug_report(settings=None)` — creates zip via `create_bug_report_zip(clear_debug=False)`,
-  POSTs to `https://1453.life/_upload?bot={bot_name}` with Bearer auth. Returns `(ok, message)`.
-  Uses `_ProgressReader` wrapper to track upload bytes sent for progress reporting.
-- `start_manual_upload(notes=None)` — starts `upload_bug_report` in a background daemon thread,
-  returns immediately. Updates `_upload_progress` dict through each phase.
-- `get_upload_progress()` — returns `{"phase", "percent", "message"}`. Phases: `"idle"` →
-  `"starting"` → `"zipping"` → `"uploading"` → `"done"` / `"error"`.
-- `start_auto_upload(settings)` / `stop_auto_upload()` — daemon thread, sleeps for interval then uploads.
-- `upload_status()` — returns `{"enabled", "interval_hours", "last_upload", "error", "next_upload_in_s"}`.
-- `create_bug_report_zip(clear_debug=True)` — zips logs, all debug screenshots (failures, click
-  trails, general debug PNGs), stats, and settings. `clear_debug=False` skips debug file cleanup
-  (used by periodic uploads to keep files intact for continued debugging).
-
-**Server** (`relay/relay_server.py`):
-- `POST /_upload?bot={name}` — multipart file upload, Bearer auth, 500MB limit, saves to
-  `UPLOAD_DIR/{bot_name}/bugreport_{timestamp}.zip`. Prunes to keep last 10 per bot.
-  Cleans up partial files on any failure (client disconnect, network error).
-- `GET /_admin?secret=XXX` — HTML admin page listing all bots with uploads, download/delete buttons.
-- `GET/DELETE /_admin/uploads/{bot}/{file}` — download or delete a specific upload.
-- `DELETE /_admin/uploads/{bot}` — delete all uploads for a bot.
-- Env var `UPLOAD_DIR` (default `/opt/9bot-relay/uploads`).
-
-**Dashboard**:
-- `POST /api/upload-logs` — starts upload in background thread, returns immediately.
-- `GET /api/upload-progress` — poll upload progress (phase, percent, message). JS polls at 500ms.
-- Upload status included in `GET /api/status` response (`upload` field).
-- Settings page: toggle + interval in Remote Access card.
-- Debug page: "Upload Logs" button with real-time progress (Generating... → Uploading X% → Uploaded!).
+Opt-in periodic upload of bug report ZIPs via direct HTTPS POST to `https://1453.life/_upload`.
+Settings: `auto_upload_logs` (bool), `upload_interval_hours` (int, 1-168). Key functions:
+`upload_bug_report()`, `start_manual_upload()`, `get_upload_progress()` (phases: idle→zipping→uploading→done).
+Server: `POST /_upload?bot={name}` (500MB limit, keeps last 10), `GET /_admin?secret=XXX` for admin.
 
 ### Per-Device Access Control (startup.py + web/dashboard.py)
-Token-based shareable URLs that give others access to a specific device.
-
-**Share link format**: `https://1453.life/{bot_name}/d/{device_hash}?token={token}`
-- `device_hash` = `SHA256(device_id)[:8]` — short, URL-safe, doesn't expose IP/port
-- Full control token = `SHA256(license_key + ":" + device_id)[:16]` — deterministic, no database
-- Read-only token = `SHA256(license_key + ":ro:" + device_id)[:16]` — monitoring only
-
-**Access levels**:
-- `"full"` — can start/stop tasks, toggle auto modes, use action chips
-- `"readonly"` — can view status, troops, quests, live view; no controls or actions
-- `None` — invalid token, returns 403
-
-**Implementation**:
-- `generate_device_token(device_id)` / `generate_device_ro_token(device_id)` in `startup.py`
-- `validate_device_token(device_id, token)` returns `"full"`, `"readonly"`, or `None`
-- `require_device_token` decorator validates token and injects `device`/`token`/`readonly` kwargs
-- `require_full_access` decorator rejects readonly tokens with 403 on write routes
-- Friend view: filtered dashboard (one device card), no settings/debug/restart/quit access
-- Readonly view: status pills only (no toggles), no actions section, no stop buttons, no bottom bar
-
-**Per-device settings overrides** (`settings.json`):
-```json
-{
-  "device_settings": {
-    "127.0.0.1:5585": {
-      "my_team": "blue",
-      "auto_restore_ap": false
-    }
-  }
-}
-```
-- `config.get_device_config(device, key)` checks per-device override, falls back to global
-- `config.get_device_enemy_teams(device)` derives enemies from per-device team color
-- Settings page has device tabs for editing per-device overrides (owner only)
+Token-based shareable URLs: `https://1453.life/{bot_name}/d/{device_hash}?token={token}`
+- `device_hash` = `SHA256(device_id)[:8]`, tokens = `SHA256(license_key + ":" + device_id)[:16]`
+- Access levels: `"full"` (start/stop tasks), `"readonly"` (view only), `None` (403)
+- `validate_device_token(device_id, token)` returns level; `require_full_access` decorator on write routes
+- Per-device settings: `config.get_device_config(device, key)` checks override, falls back to global
 
 ### Device Status System (config.py + all runners)
-`config.DEVICE_STATUS[device]` holds the current status string displayed in both the tkinter GUI
-and the web dashboard. Updated via `config.set_device_status(device, msg)`, cleared via
-`config.clear_device_status(device)`.
+`config.DEVICE_STATUS[device]` — current status string. Set via `set_device_status()`, cleared via
+`clear_device_status()`.
 
-**Conventions**:
-- Title Case for all status strings: `"Rallying Titan..."`, `"Checking Quests..."`
-- Expanded abbreviations: `"Evil Guard"` not `"EG"`
-- Trailing ellipsis for active states: `"Mining Mithril..."`
-- `"Idle"` when between cycles (default / fallback)
+**Conventions**: Title Case, expanded abbreviations ("Evil Guard" not "EG"), trailing ellipsis for
+active states, `"Idle"` as default.
 
-**Status text colors** (web dashboard JS classification):
-- Cyan (`#64d8ff`): active/working — any status not matching below
-- Red (`#ff6b6b`): stopping — status contains `"Stopping"`
-- Amber (`#ffb74d`): waiting — status contains `"Waiting"`
-- Gray (`#aab`): navigating — status contains `"Navigating"`
-- Default gray (`#667`): idle
+**Status text colors** (dashboard JS): Cyan (active), Red ("Stopping"), Amber ("Waiting"),
+Gray ("Navigating"), Default gray (idle).
 
-**Stopping status**: When `stop_task()` is called, it immediately sets `DEVICE_STATUS[device]`
-to `"Stopping {label}..."` (e.g. `"Stopping Auto Quest..."`). This gives instant visual feedback
-in the dashboard while the thread winds down. `force_stop_all()` skips this — it kills threads
-immediately and clears all statuses.
-
-**Optimistic toggle tracking** (dashboard JS): `_stoppingModes` map prevents the 3-second status
-poll from flipping a toggle back ON while the task thread is still alive but stopping. When a user
-turns off an auto mode, the toggle stays OFF immediately. Once the task disappears from the active
-task list, the stopping state is cleared. Applies to both full toggle switches and collapsed pills.
-
-**rally_eg phase statuses** (detailed breakdown):
-1. `"Searching for Evil Guard..."` — opening Evil Guard map
-2. `"Killing Dark Priests (1/5)..."` — first priest probe attack
-3. `"Marching to Dark Priest (1/5)..."` — waiting for first rally (long march)
-4. `"Killing Dark Priests (N/5)..."` — priests 2-5 attack
-5. `"Waiting for Rally (N/5)..."` — waiting for priests 2-5 rally completion
-6. `"Retrying Missing Priests..."` — retry section for missed priests
-7. `"Rallying Evil Guard..."` — final boss rally (P6)
-
-## Debug & Observability
-
-| Directory | Contents | Retention |
-|-----------|----------|-----------|
-| `logs/` | Rotating log files (5MB, 3 backups) | Auto-rotated |
-| `debug/clicks/` | Click trail screenshots | Rolling, capped at `CLICK_TRAIL_MAX` |
-| `debug/failures/` | Failure screenshots | Persistent, capped at 200 |
-| `stats/` | Session stats JSON | Auto-saved every 5min, keeps 30 sessions |
-| `debug/` | Debug screenshots (navigation) | Rolling, capped at `DEBUG_SCREENSHOT_MAX` |
-| `debug/territory_coords/` | Coordinate scan screenshots | Per-square, overwritten on rescan |
-| `data/` | Territory coordinate database (`territory_coordinates.json`) | Persistent, merged on rescan |
+**Stopping**: `stop_task()` immediately sets `"Stopping {label}..."`. `force_stop_all()` kills
+threads and clears all statuses. Dashboard JS `_stoppingModes` prevents toggle flicker during shutdown.
 
 ## Tests
 
 ```bash
-py -m pytest          # run all ~739 tests
+py -m pytest          # run all ~752 tests
 py -m pytest -x       # stop on first failure
 py -m pytest -k name  # filter by test name
 ```
 
 No fixtures require a running emulator — all use mocked ADB/vision.
-
-### Test Files
-
-| File | Tests | Coverage |
-|------|-------|----------|
-| `test_vision.py` | `get_last_best`, `find_image`, `find_all_matches`, `read_number`, `read_text`, `read_ap`, `get_template`, `load_screenshot`, `adb_tap`, `adb_swipe`, `adb_keyevent`, `_try_reconnect`, ADB reconnect retry |
-| `test_navigation.py` | `check_screen`, `navigate`, `_verify_screen`, `_recover_to_known_screen` (4-phase escalation: template dismiss, Android BACK key, center tap, nuclear) |
-| `test_troops.py` | Troop pixel detection, status tracking, icon matching, portrait tracking, triangle detection, `heal_all` (nav failure, no-heal skip, single/multi/5-troop sequences, tap coordinates, wait budgets, safety cap, failure screenshots) |
-| `test_botlog.py` | `StatsTracker`, `timed_action` decorator, `get_logger` |
-| `test_config.py` | AP restore options clamping logic (gem limit bounds) |
-| `test_devices.py` | `auto_connect_emulators`, `get_devices`, `get_emulator_instances` |
-| `test_rally_blacklist.py` | Direct blacklist, failure thresholds, 30-min expiry, reset (`actions.rallies`) |
-| `test_rally_wait.py` | Troop-tracked rally, slot tracking, panel-based waiting, false positive detection (`actions.quests`) |
-| `test_quest_tracking.py` | Multi-device quest rally tracking, `_track_quest_progress`, `_record_rally_started` (`actions.quests`) |
-| `test_check_quests_helpers.py` | `_deduplicate_quests`, `_get_actionable_quests`, `_all_quests_visually_complete` (PVP cooldown), `_attack_pvp_tower` (handler unit tests), PVP dispatch integration (PVP blocks gold mining, cooldown allows gold), `_eg_troops_available` (snapshot-based: gathering/defending tied up, rallying/marching available, fallback), `_recall_stray_stationed` (success, no-op, panel miss, map miss, stop check) (`actions.quests`) |
-| `test_classify_quest.py` | `_classify_quest_text` OCR classification (all QuestType values) (`actions.quests`) |
-| `test_combat.py` | `_check_dead`, `_find_green_pixel`, `_detect_player_at_eg`, `teleport` (happy path, timeout, dead detection, cancel) (`actions.combat`) |
-| `test_territory.py` | `_classify_square_team` (exact/noisy colors, thresholds, team configs), `_get_border_color` (sampling, clock avoidance), `_has_flag` (red pixel detection), `_is_adjacent_to_my_territory` (adjacency, throne, edges), `attack_territory` (full workflow), `auto_occupy_loop` (cycle, stop signal), blue calibration (observed values, boundary distances), `set_territory_config` (auto-derived enemies, threshold changes), red edge cases (near-threshold values), clock overlay row 0 (dimming gaps), `diagnose_grid` (smoke tests) (`territory`) |
-| `test_gather_gold.py` | Gather gold flow (gather.png template tap, depart verification, retry logic), loop troop deployment with retry (`actions.farming`) |
-| `test_tower_quest.py` | Tower/fortress quest occupy, recall (verified, detail_button template, still-defending detection), navigation (friend tab + friend_marker) (`actions.quests`) |
-| `test_settings_validation.py` | `validate_settings` — type checks, range/choice validation, device_troops, warnings, schema sync |
-| `test_task_runner.py` | `sleep_interval`, `launch_task`/`stop_task` (stopping status), `force_stop_all`, run_once, run_repeat, consecutive error recovery, settings load/save (`runners`) |
-| `test_relay_config.py` | `get_relay_config` auto-derive (SHA256 bot name, stability, uniqueness), disabled states (no key, import error, toggle off), defaults integration (`startup`) |
-| `test_device_token.py` | `device_hash` (deterministic, URL-safe), `generate_device_token` (per-device, per-key, no-license), `generate_device_ro_token` (different from full, deterministic), `validate_device_token` (full→"full", readonly→"readonly", wrong→None, no-license→None) (`startup`) |
-| `test_device_config.py` | Per-device configuration overrides (`config`) |
-| `test_evil_guard.py` | Evil Guard rally, `_handle_ap_popup`, probe priest (`actions.evil_guard`) |
-| `test_tunnel.py` | WebSocket relay tunnel (`tunnel`) |
-| `test_relay_upload.py` | Relay upload helpers: `_format_size`, `_safe_bot_name` (validation), `_prune_uploads` (retention). Skipped without aiohttp (`relay.relay_server`) |
-| `test_web_dashboard.py` | Route tests (index, settings, debug, logs, tasks), API tests (`/api/status` incl. tunnel + upload status, `/api/logs`, `/api/upload-logs`, device refresh), task start/stop/stop-all, auto-mode exclusivity, territory grid API, bug report, firewall helper, `sleep_interval`, `run_once`, `launch_task`, `cleanup_dead_tasks`, `apply_settings`, `create_bug_report_zip` (clear_debug param), `upload_bug_report`, `upload_status`, `start_auto_upload`/`stop_auto_upload` (`web.dashboard`, `startup`) |
 
 ### Test Conventions
 - Fixtures in `conftest.py`: `mock_device` ("127.0.0.1:9999"), `mock_device_b` ("127.0.0.1:8888")
@@ -620,62 +394,3 @@ No fixtures require a running emulator — all use mocked ADB/vision.
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `test:` prefix
 - Current version: see `version.txt`
 
-## Project Files
-
-```
-9Bot/
-├── CLAUDE.md            # AI technical reference (this file)
-├── ROADMAP.md           # Development roadmap
-├── TESTING.md           # Tester protocol (bug reporting + active testing guide)
-├── run_web.py           # Primary entry point (web + pywebview)
-├── startup.py           # Shared initialization (used by run_web.py + main.py)
-├── main.py              # Legacy GUI entry point (deprecated)
-├── runners.py           # Shared task runners (used by main.py + dashboard)
-├── settings.py          # Settings persistence (used by main.py + dashboard)
-├── actions/             # Game actions package
-│   ├── __init__.py      # Re-exports all public functions
-│   ├── _helpers.py      # Shared state (_last_depart_slot, _interruptible_sleep)
-│   ├── quests.py        # Quest system + tower quest
-│   ├── rallies.py       # Rally joining + blacklist
-│   ├── combat.py        # Attacks, targeting, teleport
-│   ├── titans.py        # Titan rally + AP restore
-│   ├── evil_guard.py    # Evil Guard attack sequence
-│   └── farming.py       # Gold + mithril gathering
-├── vision.py            # CV + OCR + ADB input
-├── navigation.py        # Screen detection + nav
-├── troops.py            # Troop counting/status/healing
-├── territory.py         # Territory grid + auto-occupy
-├── config.py            # Enums, constants, global state
-├── devices.py           # ADB device detection
-├── botlog.py            # Logging + metrics
-├── license.py           # Machine-bound license keys
-├── tunnel.py            # WebSocket relay tunnel client
-├── run.bat              # User entry point (venv + launch)
-├── requirements.txt     # Python dependencies (pinned versions)
-├── settings.json        # User settings (auto-generated)
-├── version.txt          # Current version string
-├── elements/            # Template images for matching
-│   └── statuses/        # Troop status icon templates
-├── platform-tools/      # Bundled ADB executable
-├── web/                 # Flask web dashboard
-│   ├── dashboard.py     # App factory, routes
-│   ├── static/
-│   │   └── style.css    # Mobile-first dark CSS (cache-busted ?v=N)
-│   └── templates/
-│       ├── base.html    # Nav, shared JS (fmtTime, quest labels, action classes)
-│       ├── index.html   # Dashboard: device cards, toggles, actions, running list
-│       ├── settings.html # Settings form
-│       ├── guide.html   # Quick Start Guide (setup instructions)
-│       ├── debug.html   # Debug actions (Check Screen, Check Troops, Diagnose Grid, Scan Corner Coords)
-│       └── logs.html    # Log viewer
-├── relay/               # Relay server (deployed on droplet)
-│   └── relay_server.py  # asyncio WebSocket relay server
-├── data/                # Persistent data files (territory coordinates)
-├── updater.py           # Auto-update from GitHub releases (zip-slip protected)
-├── tests/               # pytest suite (~739 tests)
-├── logs/                # Log files
-├── stats/               # Session stats JSON
-└── debug/               # Debug screenshots
-    ├── clicks/          # Click trail images
-    └── failures/        # Failure screenshots
-```

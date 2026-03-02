@@ -9,7 +9,8 @@ from config import QuestType
 from actions.quests import (_deduplicate_quests, _get_actionable_quests,
                             _all_quests_visually_complete, _quest_rallies_pending,
                             check_quests, _quest_last_seen, _quest_target,
-                            _attack_pvp_tower, _pvp_last_dispatch, _PVP_COOLDOWN_S)
+                            _attack_pvp_tower, _pvp_last_dispatch, _PVP_COOLDOWN_S,
+                            _marker_errors)
 
 
 # ============================================================
@@ -331,22 +332,41 @@ class TestAllQuestsVisuallyCompletePVP:
 # ============================================================
 
 class TestAttackPvpTower:
+    def _time_gen(self, *values):
+        """Return a time.time mock that yields values then counts from last."""
+        vals = list(values)
+        counter = [vals[-1] if vals else 0.0]
+        def fake():
+            if vals:
+                return vals.pop(0)
+            counter[0] += 0.5
+            return counter[0]
+        return fake
+
     @patch("actions.quests.wait_for_image_and_tap", return_value=True)
-    @patch("actions.quests.tap_tower_until_attack_menu", return_value=True)
+    @patch("actions.quests.tap_image", return_value=True)
+    @patch("actions.quests.find_image")
+    @patch("actions.quests.load_screenshot", return_value=MagicMock())
+    @patch("actions.quests.logged_tap")
     @patch("actions.quests.save_failure_screenshot")
     @patch("actions.quests.config")
     @patch("actions.quests.troops_avail", return_value=3)
     def test_success_full_flow(self, mock_troops, mock_config, mock_save,
-                                mock_tap_tower, mock_wait_tap, mock_device):
-        """Happy path: target succeeds, attack menu opens, depart found."""
+                                mock_ltap, mock_load, mock_find,
+                                mock_tap, mock_wait_tap, mock_device):
+        """Happy path: target succeeds, attack button found, depart found."""
         mock_config.set_device_status = MagicMock()
+        def find_side_effect(screen, image, threshold=0.8):
+            if image == "attack_button.png":
+                return (0.9, (100, 100), 50, 200)
+            return None
+        mock_find.side_effect = find_side_effect
         with patch("actions.combat.target", return_value=True), \
-             patch("actions.quests.time.sleep"):
+             patch("actions.quests.time.sleep"), \
+             patch("actions.quests.time.time", side_effect=self._time_gen(1000, 1000, 1000.5)):
             result = _attack_pvp_tower(mock_device)
             assert result is True
             assert mock_device in _pvp_last_dispatch
-            # Verify cooldown timestamp is recent
-            assert time.time() - _pvp_last_dispatch[mock_device] < 5
 
     def test_cooldown_skips(self, mock_device):
         """Recent dispatch within cooldown — should skip without calling target."""
@@ -356,16 +376,14 @@ class TestAttackPvpTower:
             assert result is False
             mock_target.assert_not_called()
 
-    @patch("actions.quests.tap_tower_until_attack_menu")
     @patch("actions.quests.config")
     @patch("actions.quests.troops_avail", return_value=0)
-    def test_no_troops_skips(self, mock_troops, mock_config, mock_tap_tower, mock_device):
+    def test_no_troops_skips(self, mock_troops, mock_config, mock_device):
         """Zero troops available — skip after target() but before tapping tower."""
         mock_config.set_device_status = MagicMock()
         with patch("actions.combat.target", return_value=True):
             result = _attack_pvp_tower(mock_device)
             assert result is False
-            mock_tap_tower.assert_not_called()
 
     @patch("actions.quests.save_failure_screenshot")
     @patch("actions.quests.config")
@@ -387,50 +405,106 @@ class TestAttackPvpTower:
             assert result is False
             mock_save.assert_called_once_with(mock_device, "pvp_target_fail")
 
-    @patch("actions.quests.tap_tower_until_attack_menu", return_value=False)
+    @patch("actions.quests.find_image", return_value=None)
+    @patch("actions.quests.load_screenshot", return_value=MagicMock())
+    @patch("actions.quests.logged_tap")
     @patch("actions.quests.save_failure_screenshot")
     @patch("actions.quests.config")
     @patch("actions.quests.troops_avail", return_value=3)
     def test_attack_menu_miss(self, mock_troops, mock_config, mock_save,
-                               mock_tap_tower, mock_device):
-        """Attack menu doesn't open — save screenshot."""
+                               mock_ltap, mock_load, mock_find, mock_device):
+        """Neither attack nor reinforce button found — save screenshot."""
         mock_config.set_device_status = MagicMock()
-        with patch("actions.combat.target", return_value=True):
+        # Time values: cooldown check (1000), start_time (1000), then loop iterations
+        times = [1000, 1000] + [1000 + i * 0.5 for i in range(1, 25)]
+        with patch("actions.combat.target", return_value=True), \
+             patch("actions.quests.time.sleep"), \
+             patch("actions.quests.time.time", side_effect=self._time_gen(*times)):
             result = _attack_pvp_tower(mock_device)
             assert result is False
             mock_save.assert_called_once_with(mock_device, "pvp_attack_menu_fail")
 
     @patch("actions.quests.save_failure_screenshot")
     @patch("actions.quests.wait_for_image_and_tap", return_value=False)
-    @patch("actions.quests.tap_tower_until_attack_menu", return_value=True)
+    @patch("actions.quests.find_image")
+    @patch("actions.quests.load_screenshot", return_value=MagicMock())
+    @patch("actions.quests.logged_tap")
+    @patch("actions.quests.tap_image", return_value=True)
     @patch("actions.quests.config")
     @patch("actions.quests.troops_avail", return_value=3)
-    def test_depart_miss(self, mock_troops, mock_config,
-                          mock_tap_tower, mock_wait_tap,
-                          mock_save, mock_device):
+    def test_depart_miss(self, mock_troops, mock_config, mock_tap,
+                          mock_ltap, mock_load, mock_find,
+                          mock_wait_tap, mock_save, mock_device):
         """Depart button not found — save screenshot."""
         mock_config.set_device_status = MagicMock()
+        def find_side_effect(screen, image, threshold=0.8):
+            if image == "attack_button.png":
+                return (0.9, (100, 100), 50, 200)
+            return None
+        mock_find.side_effect = find_side_effect
         with patch("actions.combat.target", return_value=True), \
-             patch("actions.quests.time.sleep"):
+             patch("actions.quests.time.sleep"), \
+             patch("actions.quests.time.time", side_effect=self._time_gen(1000, 1000, 1000.5)):
             result = _attack_pvp_tower(mock_device)
             assert result is False
             mock_save.assert_called_once_with(mock_device, "pvp_depart_fail")
 
-    @patch("actions.quests.tap_image", return_value=True)
-    @patch("actions.quests.tap_tower_until_attack_menu", return_value=True)
-    @patch("actions.quests.save_failure_screenshot")
     @patch("actions.quests.config")
     @patch("actions.quests.troops_avail", return_value=3)
     def test_respects_stop_check_after_target(self, mock_troops, mock_config,
-                                               mock_save, mock_tap_tower,
-                                               mock_tap_image, mock_device):
+                                               mock_device):
         """Stop check fires after target() — should abort before attack menu."""
         mock_config.set_device_status = MagicMock()
         stop = MagicMock(return_value=True)  # stop immediately
         with patch("actions.combat.target", return_value=True):
             result = _attack_pvp_tower(mock_device, stop_check=stop)
             assert result is False
-            mock_tap_tower.assert_not_called()
+
+    @patch("actions.quests.save_failure_screenshot")
+    @patch("actions.quests.config")
+    def test_duplicate_markers_sets_error(self, mock_config, mock_save, mock_device):
+        """target() returns 'duplicate_markers' → error status, saved to _marker_errors."""
+        mock_config.set_device_status = MagicMock()
+        with patch("actions.combat.target", return_value="duplicate_markers"):
+            result = _attack_pvp_tower(mock_device)
+            assert result is False
+            mock_config.set_device_status.assert_called_with(
+                mock_device, "ERROR: Duplicate Enemy Markers!")
+            assert mock_device in _marker_errors
+            assert any("duplicate" in e.lower() for e in _marker_errors[mock_device])
+
+    def test_marker_error_skips_immediately(self, mock_device):
+        """If marker error already set, _attack_pvp_tower returns False immediately."""
+        _marker_errors[mock_device] = {"PVP ERROR: Multiple enemy markers set"}
+        with patch("actions.combat.target") as mock_target:
+            result = _attack_pvp_tower(mock_device)
+            assert result is False
+            mock_target.assert_not_called()
+
+    @patch("actions.quests.find_image")
+    @patch("actions.quests.load_screenshot", return_value=MagicMock())
+    @patch("actions.quests.logged_tap")
+    @patch("actions.quests.save_failure_screenshot")
+    @patch("actions.quests.config")
+    @patch("actions.quests.troops_avail", return_value=3)
+    def test_wrong_button_reinforce_found(self, mock_troops, mock_config,
+                                           mock_save, mock_tap, mock_load,
+                                           mock_find, mock_device):
+        """Reinforce button found instead of attack → wrong tower, sets error."""
+        mock_config.set_device_status = MagicMock()
+        def find_side_effect(screen, image, threshold=0.8):
+            if image == "reinforce_button.png":
+                return (0.9, (100, 100), 50, 200)
+            return None
+        mock_find.side_effect = find_side_effect
+        with patch("actions.combat.target", return_value=True), \
+             patch("actions.quests.time.sleep"), \
+             patch("actions.quests.time.time", side_effect=self._time_gen(1000, 1000, 1000.5)):
+            result = _attack_pvp_tower(mock_device)
+            assert result is False
+            mock_config.set_device_status.assert_any_call(
+                mock_device, "ERROR: Enemy Marker \u2192 Friendly Tower!")
+            assert mock_device in _marker_errors
 
 
 # ============================================================
@@ -467,6 +541,9 @@ class TestPvpDispatchIntegration:
         mock_pvp.assert_called_once()
         # Gather should run because PVP was successfully dispatched (on cooldown)
         mock_gather.assert_called_once()
+        # Should reserve 1 troop for PVP retry
+        _, kwargs = mock_gather.call_args
+        assert kwargs.get("reserve") == 1
 
     @patch("actions.quests._attack_pvp_tower", return_value=False)
     @patch("actions.quests._run_tower_quest")
@@ -538,6 +615,9 @@ class TestPvpDispatchIntegration:
         check_quests(mock_device)
         mock_pvp.assert_called_once()
         mock_gather.assert_called_once()
+        # Should reserve 1 troop for PVP retry
+        _, kwargs = mock_gather.call_args
+        assert kwargs.get("reserve") == 1
 
 
 # ============================================================

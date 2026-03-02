@@ -317,6 +317,12 @@ def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
                     dlog.warning("Auto Pass Battle stopping.")
                     config.alert_queue.put("no_marker")
                     break
+                if result == "duplicate_markers":
+                    dlog.warning("*** MULTIPLE ENEMY MARKERS SET! ***")
+                    dlog.warning("Remove duplicate markers and keep only one.")
+                    dlog.warning("Auto Pass Battle stopping.")
+                    config.alert_queue.put("duplicate_markers")
+                    break
                 if stop_check():
                     break
                 if not result:

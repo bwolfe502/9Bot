@@ -240,6 +240,8 @@ def heal_all(device):
     healed_any = False
     for _ in range(config.MAX_HEAL_ITERATIONS):
         if not tap_image("heal.png", device):
+            if _ == 0:
+                log.debug("No heal button found (troops healthy or not on map)")
             break
         healed_any = True
         log.debug("Starting heal sequence...")
@@ -433,6 +435,7 @@ def read_panel_statuses(device, screen=None) -> Optional[DeviceTroopSnapshot]:
 
     troops = []
     now = time.time()
+    unknown_count = 0
 
     for mid_y in card_midpoints:
         card_top = mid_y - _CARD_HEIGHT // 2
@@ -445,8 +448,13 @@ def read_panel_statuses(device, screen=None) -> Optional[DeviceTroopSnapshot]:
             log.debug("Card at y=%d: %s (%.0f%%)", mid_y, action.value, score * 100)
             troops.append(TroopStatus(action=action, read_at=now))
         else:
-            log.warning("Card at y=%d: unknown icon (best %.0f%%)", mid_y, score * 100)
+            log.warning("Card at y=%d: unknown icon (best %.0f%%), defaulting to MARCHING",
+                        mid_y, score * 100)
+            unknown_count += 1
             troops.append(TroopStatus(action=TroopAction.MARCHING, read_at=now))
+
+    if unknown_count:
+        save_failure_screenshot(device, "unknown_troop_icon")
 
     # Pad with HOME troops for available slots
     for _ in range(avail):

@@ -19,8 +19,8 @@ import config
 from config import QuestType, Screen
 from botlog import get_logger, timed_action, stats
 from vision import (tap_image, wait_for_image_and_tap, timed_wait,
-                    load_screenshot, find_image, get_template,
-                    logged_tap, save_failure_screenshot,
+                    load_screenshot, find_image, find_all_matches,
+                    get_template, logged_tap, save_failure_screenshot,
                     tap_tower_until_attack_menu)
 from navigation import navigate, check_screen, DEBUG_DIR
 from troops import (troops_avail, heal_all, read_panel_statuses,
@@ -58,6 +58,12 @@ _tower_quest_state = {}   # {device: {"deployed_at": float}}
 # PVP dispatch while the cooldown is active to avoid wasting troops.
 _pvp_last_dispatch = {}   # {device: timestamp}
 _PVP_COOLDOWN_S = 600     # 10 minutes
+
+# ---- Marker error suppression ----
+# When a marker error is detected (duplicate markers, wrong tower type),
+# the quest type is permanently suppressed until the user fixes markers
+# and restarts auto quest.
+_marker_errors = {}       # {device: set of error message strings}
 
 
 def _track_quest_progress(device, quest_type, current, target=None):
@@ -179,6 +185,7 @@ def reset_quest_tracking(device=None):
         _tower_quest_state.clear()
         _pvp_last_dispatch.clear()
         _quest_last_checked.clear()
+        _marker_errors.clear()
     else:
         for d in list(_quest_rallies_pending):
             if d[0] == device:
@@ -199,6 +206,7 @@ def reset_quest_tracking(device=None):
         _tower_quest_state.pop(device, None)
         _pvp_last_dispatch.pop(device, None)
         _quest_last_checked.pop(device, None)
+        _marker_errors.pop(device, None)
 
 
 # ---- Quest OCR helpers ----
@@ -260,8 +268,13 @@ def _ocr_quest_rows(device):
         # Fix OCR o/O -> 0
         raw_cur = raw_cur.replace("o", "0").replace("O", "0")
         raw_tgt = raw_tgt.replace("o", "0").replace("O", "0")
-        current = int(raw_cur)
-        target = int(raw_tgt)
+        try:
+            current = int(raw_cur)
+            target = int(raw_tgt)
+        except ValueError:
+            log.warning("Quest OCR parse error: cur=%r tgt=%r (raw: %r)",
+                        raw_cur, raw_tgt, match.group(0))
+            continue
         quest_type = _classify_quest_text(name)
 
         # Override OCR targets with known minimum caps.
@@ -802,8 +815,10 @@ def check_quests(device, stop_check=None):
                 if time.time() - last >= _PVP_COOLDOWN_S:
                     log.info("PVP quest available but not dispatched — skipping gold")
                     return True
+            # Reserve 1 troop for PVP retry while cooldown is active
+            pvp_reserve = 1 if has_pvp else 0
             if navigate(Screen.MAP, device):
-                gather_gold_loop(device, stop_check)
+                gather_gold_loop(device, stop_check, reserve=pvp_reserve)
             return True
 
         return True
@@ -829,6 +844,11 @@ def _attack_pvp_tower(device, stop_check=None):
     from actions.combat import target
     log = get_logger("actions", device)
 
+    # Check for suppressed marker errors (already warned once)
+    if device in _marker_errors and any("enemy" in e.lower() or "pvp" in e.lower()
+                                        for e in _marker_errors[device]):
+        return False
+
     # Check cooldown
     last = _pvp_last_dispatch.get(device, 0)
     elapsed = time.time() - last
@@ -841,6 +861,13 @@ def _attack_pvp_tower(device, stop_check=None):
     # target() navigates to MAP first, so troop check happens after that.
     config.set_device_status(device, "Attacking PVP Tower...")
     result = target(device)
+    if result == "duplicate_markers":
+        msg = "PVP ERROR: Multiple enemy markers set — remove duplicates and restart Auto Quest"
+        log.error(msg)
+        config.set_device_status(device, "ERROR: Duplicate Enemy Markers!")
+        save_failure_screenshot(device, "pvp_duplicate_markers")
+        _marker_errors.setdefault(device, set()).add(msg)
+        return False
     if result is not True:
         reason = "no marker" if result == "no_marker" else "target failed"
         log.warning("PVP: target() returned %s (%s)", result, reason)
@@ -856,8 +883,35 @@ def _attack_pvp_tower(device, stop_check=None):
         log.info("PVP: no troops available (%d), skipping", avail)
         return False
 
-    # Tap the tower to open attack menu
-    if not tap_tower_until_attack_menu(device, timeout=10):
+    # Tap the tower and detect what kind of button appears.
+    # attack_button → correct (enemy tower), reinforce_button → wrong tower!
+    logged_tap(device, 540, 900, "pvp_tower_tap")
+    time.sleep(1)
+
+    start_time = time.time()
+    menu_found = False
+    while time.time() - start_time < 10:
+        screen = load_screenshot(device)
+        if screen is None:
+            time.sleep(0.5)
+            continue
+
+        if find_image(screen, "attack_button.png", threshold=0.7):
+            tap_image("attack_button.png", device, threshold=0.7)
+            menu_found = True
+            break
+
+        if find_image(screen, "reinforce_button.png", threshold=0.5):
+            msg = "PVP ERROR: Enemy marker points to a friendly tower — update marker and restart Auto Quest"
+            log.error(msg)
+            config.set_device_status(device, "ERROR: Enemy Marker → Friendly Tower!")
+            save_failure_screenshot(device, "pvp_wrong_button")
+            _marker_errors.setdefault(device, set()).add(msg)
+            return False
+
+        time.sleep(0.5)
+
+    if not menu_found:
         log.warning("PVP: attack menu did not open")
         save_failure_screenshot(device, "pvp_attack_menu_fail")
         return False
@@ -919,7 +973,8 @@ def _is_troop_defending_relaxed(device):
 def _navigate_to_tower(device):
     """Navigate to the tower marked with the in-game friend marker.
     Opens target menu, taps Friend tab, finds friend_marker.png, centers map.
-    Returns True if map is now centered on the tower, False on failure."""
+    Returns True on success, False on general failure,
+    'no_marker' if no friend marker, 'duplicate_markers' if 2+."""
     log = get_logger("actions", device)
 
     if check_screen(device) != Screen.MAP:
@@ -936,22 +991,33 @@ def _navigate_to_tower(device):
     logged_tap(device, 540, 330, "tower_target_friend_tab")
     time.sleep(1)
 
-    # Check that a friend marker exists
-    marker_found = False
+    # Check how many friend markers exist
+    matches = []
     start_time = time.time()
     while time.time() - start_time < 3:
         screen = load_screenshot(device)
-        if screen is not None and find_image(screen, "friend_marker.png", threshold=0.7):
-            marker_found = True
-            break
+        if screen is not None:
+            matches = find_all_matches(screen, "friend_marker.png",
+                                       threshold=0.7, device=device)
+            if matches:
+                break
         time.sleep(0.5)
 
-    if not marker_found:
+    if not matches:
         log.warning("Tower nav: no friend marker found — is the tower marked?")
-        return False
+        return "no_marker"
 
-    # Tap the target to center map on the tower
-    logged_tap(device, 350, 476, "tower_target_select")
+    if len(matches) > 1:
+        log.error("Tower nav: multiple friend markers found (%d) — remove duplicates!",
+                  len(matches))
+        return "duplicate_markers"
+
+    # Tap at the actual marker position (x=350, y from match)
+    marker_x, marker_y = matches[0]
+    tmpl = get_template("elements/friend_marker.png")
+    h = tmpl.shape[0] if tmpl is not None else 50
+    tap_y = marker_y + h // 2
+    logged_tap(device, 350, tap_y, "tower_target_select")
     time.sleep(2)
 
     log.info("Navigated to tower via target marker")
@@ -987,20 +1053,51 @@ def occupy_tower(device, stop_check=None):
 
     # Navigate to the tower via target marker
     config.set_device_status(device, "Tower Quest: Navigating...")
-    if not _navigate_to_tower(device):
+    nav_result = _navigate_to_tower(device)
+    if nav_result == "duplicate_markers":
+        msg = "Tower ERROR: Multiple friend markers set — remove duplicates and restart Auto Quest"
+        log.error(msg)
+        config.set_device_status(device, "ERROR: Duplicate Friend Markers!")
+        save_failure_screenshot(device, "tower_duplicate_markers")
+        _marker_errors.setdefault(device, set()).add(msg)
+        return False
+    if not nav_result or nav_result == "no_marker":
         log.warning("Failed to navigate to tower")
         return False
 
     if stop_check and stop_check():
         return False
 
-    # Tap the tower
+    # Tap the tower and detect what kind of button appears.
+    # reinforce_button → correct (friendly tower), attack_button → wrong tower!
     config.set_device_status(device, "Tower Quest: Deploying...")
     logged_tap(device, 540, 900, "tower_tap")
     time.sleep(1.5)
 
-    # Tap reinforce (template match — position varies by tower type)
-    if not wait_for_image_and_tap("reinforce_button.png", device, timeout=5):
+    start_time = time.time()
+    button_found = False
+    while time.time() - start_time < 5:
+        screen = load_screenshot(device)
+        if screen is None:
+            time.sleep(0.5)
+            continue
+
+        if find_image(screen, "reinforce_button.png"):
+            tap_image("reinforce_button.png", device)
+            button_found = True
+            break
+
+        if find_image(screen, "attack_button.png", threshold=0.7):
+            msg = "Tower ERROR: Friend marker points to an enemy tower — update marker and restart Auto Quest"
+            log.error(msg)
+            config.set_device_status(device, "ERROR: Friend Marker → Enemy Tower!")
+            save_failure_screenshot(device, "tower_wrong_button")
+            _marker_errors.setdefault(device, set()).add(msg)
+            return False
+
+        time.sleep(0.5)
+
+    if not button_found:
         log.warning("Reinforce button not found after tower tap")
         save_failure_screenshot(device, "tower_reinforce_missing")
         return False
@@ -1109,7 +1206,7 @@ def recall_tower_troop(device, stop_check=None):
     if stop_check and stop_check():
         return False
     log.info("Tower recall: trying friend marker navigation")
-    if _navigate_to_tower(device):
+    if _navigate_to_tower(device) is True:
         time.sleep(1)
         _recall_tap_sequence(device, log, stop_check)
 
@@ -1133,6 +1230,11 @@ def _run_tower_quest(device, quests, stop_check=None):
     If quest is complete and troop is defending, recalls.
     """
     log = get_logger("actions", device)
+
+    # Skip if marker errors were already detected (already warned once)
+    if device in _marker_errors and any("tower" in e.lower() or "friend" in e.lower()
+                                        for e in _marker_errors[device]):
+        return
 
     # Separate active vs completed tower quests
     tower_quests = [q for q in quests

@@ -25,9 +25,9 @@ import config
 from config import Screen
 from botlog import get_logger, timed_action
 from vision import (tap_image, wait_for_image_and_tap, timed_wait,
-                    load_screenshot, find_image, get_template,
-                    adb_tap, adb_swipe, logged_tap, clear_click_trail,
-                    save_failure_screenshot)
+                    load_screenshot, find_image, find_all_matches,
+                    get_template, adb_tap, adb_swipe, logged_tap,
+                    clear_click_trail, save_failure_screenshot)
 from navigation import navigate, check_screen
 from troops import troops_avail, all_troops_home, heal_all
 
@@ -208,22 +208,32 @@ def target(device):
     logged_tap(device, 740, 330, "target_enemy_tab")
     time.sleep(1)
 
-    # Check that a target marker exists (retry up to 3 seconds)
-    marker_found = False
+    # Check how many target markers exist (retry up to 3 seconds)
+    matches = []
     start_time = time.time()
     while time.time() - start_time < 3:
         screen = load_screenshot(device)
-        if find_image(screen, "target_marker.png", threshold=0.7):
-            marker_found = True
-            break
+        if screen is not None:
+            matches = find_all_matches(screen, "target_marker.png",
+                                       threshold=0.7, device=device)
+            if matches:
+                break
         time.sleep(0.5)
 
-    if not marker_found:
+    if not matches:
         log.warning("No target marker found!")
         return "no_marker"
 
-    # Tap the target coordinates
-    logged_tap(device, 350, 476, "target_coords")
+    if len(matches) > 1:
+        log.error("Multiple target markers found (%d) — remove duplicates!", len(matches))
+        return "duplicate_markers"
+
+    # Tap at the actual marker position (x=350, y from match)
+    marker_x, marker_y = matches[0]
+    tmpl = get_template("elements/target_marker.png")
+    h = tmpl.shape[0] if tmpl is not None else 50
+    tap_y = marker_y + h // 2
+    logged_tap(device, 350, tap_y, "target_coords")
     time.sleep(1)
 
     log.info("Target sequence complete!")

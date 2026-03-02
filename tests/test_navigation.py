@@ -3,9 +3,12 @@
 All ADB and vision calls are mocked — no emulator needed.
 """
 
+import threading
+
 import numpy as np
 from unittest.mock import patch, MagicMock, call
 
+import config
 from config import Screen
 from navigation import check_screen, navigate, _verify_screen, _recover_to_known_screen
 
@@ -84,6 +87,42 @@ class TestCheckScreen:
                 result = check_screen("dev1")
 
         assert result == Screen.UNKNOWN
+
+    @patch("navigation.adb_tap")
+    @patch("navigation.get_template")
+    @patch("navigation.load_screenshot")
+    def test_logged_out_stops_only_affected_device(self, mock_screenshot, mock_template, mock_tap):
+        """LOGGED_OUT should only stop tasks for the device that detected it."""
+        screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        mock_screenshot.return_value = screen
+        mock_template.return_value = np.zeros((10, 10, 3), dtype=np.uint8)
+
+        dev_a_stop = threading.Event()
+        dev_b_stop = threading.Event()
+        saved = dict(config.running_tasks)
+        config.running_tasks.clear()
+        config.running_tasks["127.0.0.1:5555_auto_quest"] = {
+            "thread": MagicMock(), "stop_event": dev_a_stop
+        }
+        config.running_tasks["127.0.0.1:5565_auto_quest"] = {
+            "thread": MagicMock(), "stop_event": dev_b_stop
+        }
+
+        try:
+            with patch("navigation.cv2.matchTemplate") as mock_match:
+                result_arr = np.zeros((1911, 1071), dtype=np.float32)
+                mock_match.return_value = result_arr
+                with patch("navigation.cv2.minMaxLoc") as mock_minmax:
+                    # attention template → high score (logged out)
+                    mock_minmax.return_value = (0, 0.95, (0, 0), (0, 0))
+                    result = check_screen("127.0.0.1:5555")
+
+            assert result == Screen.LOGGED_OUT
+            assert dev_a_stop.is_set(), "Device A tasks should be stopped"
+            assert not dev_b_stop.is_set(), "Device B tasks should NOT be stopped"
+        finally:
+            config.running_tasks.clear()
+            config.running_tasks.update(saved)
 
 
 # ============================================================

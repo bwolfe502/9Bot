@@ -594,6 +594,11 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     font-weight: 600;
 }
 
+.status-text.status-error {
+    color: #ff5252;
+    font-weight: 700;
+}
+
 /* Section labels inside cards */
 .section-label {
     font-size: 10px;
@@ -1467,8 +1472,13 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     border-top: 1px solid rgba(255,255,255,0.04);
 }
 
+.live-view-buttons {
+    display: flex;
+    gap: 8px;
+}
+
 .live-view-toggle {
-    width: 100%;
+    flex: 1;
     padding: 8px 14px;
     font-size: 13px;
     font-weight: 700;
@@ -1489,6 +1499,30 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 
 .live-view-toggle:active {
     opacity: 0.7;
+}
+
+.restart-game-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #ffb74d;
+    background: rgba(255,183,77,0.06);
+    border: 1px solid rgba(255,183,77,0.15);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+    white-space: nowrap;
+}
+
+.restart-game-btn:active {
+    background: rgba(255,183,77,0.12);
+    border-color: rgba(255,183,77,0.3);
+}
+
+.restart-game-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
 }
 
 .live-view-container {

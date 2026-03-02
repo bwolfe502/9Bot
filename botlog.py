@@ -238,7 +238,7 @@ class StatsTracker:
                         }
             _log.info("Loaded transition data from previous session: %s", files[0])
         except Exception as e:
-            _log.debug("Could not load previous session data: %s", e)
+            _log.info("Could not load previous session data: %s", e)
 
     def _start_auto_save(self):
         """Periodically save stats to disk so data isn't lost on crash/kill."""
@@ -253,8 +253,8 @@ class StatsTracker:
                 mem = _update_peak()
                 _log = logging.getLogger("botlog")
                 _log.info("Memory checkpoint: %.0f MB (peak: %.0f MB)", mem, _peak_memory_mb)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.getLogger("botlog").warning("Auto-save tick failed: %s", e)
             self._start_auto_save()
 
         self._auto_save_timer = Timer(self.AUTO_SAVE_INTERVAL, _tick)
@@ -638,8 +638,8 @@ def timed_action(action_name):
                 try:
                     from navigation import _save_debug_screenshot
                     _save_debug_screenshot(device, f"error_{action_name}")
-                except Exception:
-                    pass
+                except Exception as ss_err:
+                    log.debug("Failed to save debug screenshot: %s", ss_err)
                 raise
         return wrapper
     return decorator
