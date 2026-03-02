@@ -37,6 +37,11 @@ reports/
 # Bug report inbox (drop ZIPs here for /analyze)
 inbox/*.zip
 
+# Protocol R&D artifacts (captures, logs — source files are tracked)
+protocol/capture*.json
+protocol/live_capture.log
+protocol/live_registry.json
+
 # IDE
 .claude/
 !.claude/commands/

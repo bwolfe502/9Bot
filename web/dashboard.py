@@ -378,12 +378,14 @@ def create_app():
                 lines = ["(Could not read log file)"]
         import training
         training_stats = training.get_training_stats()
+        settings = _load_settings()
         return render_template("debug.html",
                                devices=device_info,
                                tasks=active_tasks,
                                debug_actions=ONESHOT_DEBUG,
                                log_lines=lines,
-                               training_stats=training_stats)
+                               training_stats=training_stats,
+                               protocol_enabled=settings.get("protocol_enabled", False))
 
     @app.route("/logs")
     def logs_page():
@@ -745,6 +747,15 @@ def create_app():
             as_attachment=True,
             download_name=filename,
         )
+
+    @app.route("/api/protocol-toggle", methods=["POST"])
+    def api_protocol_toggle():
+        """Toggle protocol_enabled setting (debug page)."""
+        settings = _load_settings()
+        settings["protocol_enabled"] = not settings.get("protocol_enabled", False)
+        _apply_settings(settings)
+        _save_settings(settings)
+        return jsonify({"ok": True, "enabled": settings["protocol_enabled"]})
 
     @app.route("/api/upload-logs", methods=["POST"])
     def api_upload_logs():

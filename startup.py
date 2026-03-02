@@ -19,7 +19,8 @@ import config
 from config import (running_tasks, set_min_troops, set_auto_heal,
                     set_auto_restore_ap, set_ap_restore_options,
                     set_territory_config, set_eg_rally_own, set_titan_rally_own,
-                    set_gather_options, set_tower_quest_enabled)
+                    set_gather_options, set_tower_quest_enabled,
+                    set_protocol_enabled)
 from settings import load_settings, save_settings
 
 # Relay server connection details (obfuscated, not plaintext in source)
@@ -100,6 +101,58 @@ def validate_device_token(device_id, token):
     return None
 
 
+# ---------------------------------------------------------------------------
+# Protocol interceptor lifecycle
+# ---------------------------------------------------------------------------
+
+_interceptor_thread = None
+_protocol_bus = None
+_game_state = None
+
+
+def _start_protocol():
+    """Start the protocol interceptor if not already running."""
+    global _interceptor_thread, _protocol_bus, _game_state
+    if _interceptor_thread is not None:
+        return
+    try:
+        from protocol.events import EventBus
+        from protocol.interceptor import InterceptorThread
+        from protocol.game_state import GameState
+    except ImportError:
+        from botlog import get_logger
+        get_logger("startup").warning("Protocol package not available — skipping")
+        return
+    _protocol_bus = EventBus()
+    _game_state = GameState("default", _protocol_bus)
+    _interceptor_thread = InterceptorThread(event_bus=_protocol_bus)
+    _interceptor_thread.start()
+    from botlog import get_logger
+    get_logger("startup").info("Protocol interceptor started")
+
+
+def _stop_protocol():
+    """Stop the protocol interceptor if running."""
+    global _interceptor_thread, _protocol_bus, _game_state
+    if _interceptor_thread is not None:
+        _interceptor_thread.stop()
+        _interceptor_thread = None
+        _protocol_bus = None
+        _game_state = None
+        from botlog import get_logger
+        get_logger("startup").info("Protocol interceptor stopped")
+
+
+def get_protocol_ap():
+    """Return (current, max) AP from protocol, or None if unavailable/stale."""
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("ap", max_age_s=10.0):
+        return None
+    return state.ap
+
+
 def apply_settings(settings):
     """Push settings values into config globals.
 
@@ -134,6 +187,11 @@ def apply_settings(settings):
         settings.get("gather_max_troops", 3),
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
+    set_protocol_enabled(settings.get("protocol_enabled", False))
+    if config.PROTOCOL_ENABLED:
+        _start_protocol()
+    else:
+        _stop_protocol()
     for dev_id, count in settings.get("device_troops", {}).items():
         try:
             config.DEVICE_TOTAL_TROOPS[dev_id] = int(count)
@@ -240,6 +298,12 @@ def shutdown():
     try:
         from tunnel import stop_tunnel
         stop_tunnel()
+    except Exception:
+        pass
+
+    # Stop protocol interceptor
+    try:
+        _stop_protocol()
     except Exception:
         pass
 

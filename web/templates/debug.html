@@ -66,6 +66,18 @@
 </div>
 </div>
 
+<!-- Protocol Interception -->
+<div class="section-header" style="margin-top:24px">Protocol</div>
+<div class="status-grid">
+<div class="setting-row" style="border:none; padding:4px 0; display:flex; align-items:center; justify-content:space-between">
+    <span>Interception</span>
+    <button class="action-chip action-chip-debug" id="protocol-toggle-btn"
+            style="margin:0; min-width:90px; border-color:{% if protocol_enabled %}#4cff8e{% else %}#666{% endif %}"
+            onclick="toggleProtocol()">{{ "Enabled" if protocol_enabled else "Disabled" }}</button>
+</div>
+<p style="color:#667;font-size:12px;padding:2px 0 0;margin:0">Frida Gadget protocol interception. Requires patched APK.</p>
+</div>
+
 <!-- Logs -->
 <div class="section-header" style="margin-top:24px">Logs</div>
 <div class="log-controls">
@@ -220,6 +232,23 @@ function refreshLogs() {
             scrollToBottom();
         })
         .catch(function() {});
+}
+
+function toggleProtocol() {
+    var btn = document.getElementById('protocol-toggle-btn');
+    btn.disabled = true;
+    fetch(RELAY_PREFIX + '/api/protocol-toggle', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.textContent = data.enabled ? 'Enabled' : 'Disabled';
+            btn.style.borderColor = data.enabled ? '#4cff8e' : '#666';
+            btn.disabled = false;
+        })
+        .catch(function() {
+            btn.textContent = 'Error';
+            btn.style.borderColor = '#ff6464';
+            setTimeout(function() { btn.disabled = false; }, 2000);
+        });
 }
 
 setInterval(refreshLogs, 5000);

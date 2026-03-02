@@ -196,6 +196,9 @@ GATHER_MAX_TROOPS = 3            # Max troops to send gathering simultaneously
 # Tower quest
 TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires target marker on tower)
 
+# Protocol interception (opt-in, requires Frida Gadget in APK)
+PROTOCOL_ENABLED = False
+
 # Per-device lock — prevents concurrent tasks from controlling the same device
 import threading
 _device_locks = {}
@@ -272,6 +275,8 @@ SETTINGS_RULES = {
     "tower_quest_enabled":   {"type": bool},
     "remote_access":         {"type": bool},
     "auto_upload_logs":      {"type": bool},
+    "collect_training_data": {"type": bool},
+    "protocol_enabled":      {"type": bool},
     # Ints — type + optional min/max
     "ap_gem_limit":          {"type": int, "min": 0, "max": 3500},
     "min_troops":            {"type": int, "min": 0, "max": 5},
@@ -528,6 +533,12 @@ def set_tower_quest_enabled(enabled):
     global TOWER_QUEST_ENABLED
     TOWER_QUEST_ENABLED = enabled
     _log.info("Tower quest: %s", "enabled" if enabled else "disabled")
+
+def set_protocol_enabled(enabled):
+    """Set the protocol interception enabled state."""
+    global PROTOCOL_ENABLED
+    PROTOCOL_ENABLED = bool(enabled)
+    _log.info("Protocol interception: %s", "enabled" if PROTOCOL_ENABLED else "disabled")
 
 def set_gather_options(enabled, mine_level, max_troops):
     """Set gather gold preferences."""

@@ -430,6 +430,18 @@ def read_ap(device, retries=5):
     Returns (current, max) tuple, or None if AP couldn't be read.
     """
     log = get_logger("vision", device)
+
+    # Protocol fast path (when enabled + fresh data available)
+    if config.PROTOCOL_ENABLED:
+        try:
+            from startup import get_protocol_ap
+            ap = get_protocol_ap()
+            if ap is not None:
+                log.debug("AP (protocol): %d/%d", ap[0], ap[1])
+                return ap
+        except Exception:
+            pass  # any failure → fall through to OCR
+
     for attempt in range(retries):
         screen = load_screenshot(device)
         if screen is None:
