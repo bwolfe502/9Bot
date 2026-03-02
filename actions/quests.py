@@ -469,13 +469,27 @@ def _eg_troops_available(device):
     Needs 2 troops not gathering or defending. Troops that are rallying,
     marching, returning, etc. are considered available since they'll free up.
     Falls back to troops_avail() if no snapshot available.
+
+    Safety gate: always checks troops_avail() on the MAP screen first to
+    catch stale snapshots (e.g. troops deployed to mine since last read).
     """
+    log = get_logger("actions", device)
+    # Quick pixel check — if fewer than 2 visible on map, bail immediately
+    avail = troops_avail(device)
+    if avail < 2:
+        log.info("EG rally needs 2 non-gathering/defending troops — not enough "
+                 "(only %d visible on map)", avail)
+        return False
     snapshot = get_troop_status(device)
     if snapshot is None:
-        return troops_avail(device) >= 2
+        return avail >= 2
     tied_up = (len(snapshot.troops_by_action(TroopAction.GATHERING)) +
                len(snapshot.troops_by_action(TroopAction.DEFENDING)))
-    return len(snapshot.troops) - tied_up >= 2
+    free = len(snapshot.troops) - tied_up
+    if free < 2:
+        log.info("EG rally needs 2 non-gathering/defending troops — not enough")
+        return False
+    return True
 
 
 def _run_rally_loop(device, actionable, stop_check=None):
@@ -696,14 +710,10 @@ def check_quests(device, stop_check=None):
     if stop_check and stop_check():
         return True
 
-    # Priority 1: recall any troop stuck defending with no active tower quest.
-    # This runs BEFORE quest OCR so a stray defender gets freed immediately.
+    # Recall stray stationed troops (stuck from failed EG rally).
+    # Stray defender recall is handled by _run_tower_quest AFTER quest OCR,
+    # so we know whether an active tower quest needs the defender.
     if navigate(Screen.MAP, device):
-        if device not in _tower_quest_state:
-            snapshot = read_panel_statuses(device)
-            if snapshot is not None and snapshot.any_doing(TroopAction.DEFENDING):
-                log.info("Stray defending troop detected (no tower quest active) — recalling first")
-                recall_tower_troop(device, stop_check)
         _recall_stray_stationed(device, stop_check)
     if stop_check and stop_check():
         return True
@@ -1012,12 +1022,8 @@ def _navigate_to_tower(device):
                   len(matches))
         return "duplicate_markers"
 
-    # Tap at the actual marker position (x=350, y from match)
-    marker_x, marker_y = matches[0]
-    tmpl = get_template("elements/friend_marker.png")
-    h = tmpl.shape[0] if tmpl is not None else 50
-    tap_y = marker_y + h // 2
-    logged_tap(device, 350, tap_y, "tower_target_select")
+    # Tap the coordinate link in the first entry row to navigate
+    logged_tap(device, 270, 300, "tower_target_coords")
     time.sleep(2)
 
     log.info("Navigated to tower via target marker")
@@ -1242,7 +1248,11 @@ def _run_tower_quest(device, quests, stop_check=None):
     if not tower_quests:
         # No tower quests on screen — but troop may still be defending from a
         # previous quest. Recall it so it's not stuck indefinitely.
-        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+        # Only recall if bot deployed it this session, or tower quests are enabled
+        # (disabled + not bot-deployed = user placed it intentionally).
+        if device in _tower_quest_state or (
+                config.get_device_config(device, "tower_quest_enabled") and
+                _is_troop_defending_relaxed(device)):
             log.info("No tower quests but troop still defending — recalling")
             recall_tower_troop(device, stop_check)
         return
@@ -1252,7 +1262,9 @@ def _run_tower_quest(device, quests, stop_check=None):
 
     if all_done:
         # All tower quests completed — recall troop if defending
-        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+        if device in _tower_quest_state or (
+                config.get_device_config(device, "tower_quest_enabled") and
+                _is_troop_defending_relaxed(device)):
             log.info("Tower quests complete — recalling troop")
             recall_tower_troop(device, stop_check)
         return
@@ -1264,7 +1276,11 @@ def _run_tower_quest(device, quests, stop_check=None):
         config.set_device_status(device, "Tower Quest: Defending...")
         return
 
-    # Need to deploy
+    # Need to deploy — but only if tower quest is enabled in settings
+    if not config.get_device_config(device, "tower_quest_enabled"):
+        log.debug("Tower quest disabled in settings — skipping deploy")
+        return
+
     config.set_device_status(device, "Tower Quest: Deploying...")
     success = occupy_tower(device, stop_check)
     if not success:

@@ -633,7 +633,8 @@ class TestEgTroopsAvailable:
             device=mock_device,
             troops=[TroopStatus(action=TroopAction.HOME) for _ in range(5)],
         )
-        with patch("actions.quests.get_troop_status", return_value=snapshot):
+        with patch("actions.quests.troops_avail", return_value=5), \
+             patch("actions.quests.get_troop_status", return_value=snapshot):
             assert _eg_troops_available(mock_device) is True
 
     def test_four_gathering_one_home_fails(self, mock_device):
@@ -643,7 +644,8 @@ class TestEgTroopsAvailable:
         troops = [TroopStatus(action=TroopAction.GATHERING) for _ in range(4)]
         troops.append(TroopStatus(action=TroopAction.HOME))
         snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
-        with patch("actions.quests.get_troop_status", return_value=snapshot):
+        with patch("actions.quests.troops_avail", return_value=2), \
+             patch("actions.quests.get_troop_status", return_value=snapshot):
             assert _eg_troops_available(mock_device) is False
 
     def test_three_gathering_two_rallying_passes(self, mock_device):
@@ -653,7 +655,8 @@ class TestEgTroopsAvailable:
         troops = [TroopStatus(action=TroopAction.GATHERING) for _ in range(3)]
         troops += [TroopStatus(action=TroopAction.RALLYING) for _ in range(2)]
         snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
-        with patch("actions.quests.get_troop_status", return_value=snapshot):
+        with patch("actions.quests.troops_avail", return_value=2), \
+             patch("actions.quests.get_troop_status", return_value=snapshot):
             assert _eg_troops_available(mock_device) is True
 
     def test_defending_counts_as_tied_up(self, mock_device):
@@ -664,7 +667,8 @@ class TestEgTroopsAvailable:
         troops.append(TroopStatus(action=TroopAction.DEFENDING))
         troops.append(TroopStatus(action=TroopAction.HOME))
         snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
-        with patch("actions.quests.get_troop_status", return_value=snapshot):
+        with patch("actions.quests.troops_avail", return_value=2), \
+             patch("actions.quests.get_troop_status", return_value=snapshot):
             # 5 total - 3 gathering - 1 defending = 1 available → fails
             assert _eg_troops_available(mock_device) is False
 
@@ -680,7 +684,8 @@ class TestEgTroopsAvailable:
             TroopStatus(action=TroopAction.RETURNING),
         ]
         snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
-        with patch("actions.quests.get_troop_status", return_value=snapshot):
+        with patch("actions.quests.troops_avail", return_value=2), \
+             patch("actions.quests.get_troop_status", return_value=snapshot):
             assert _eg_troops_available(mock_device) is True
 
     def test_no_snapshot_falls_back_to_troops_avail(self, mock_device):
@@ -695,6 +700,18 @@ class TestEgTroopsAvailable:
         from actions.quests import _eg_troops_available
         with patch("actions.quests.get_troop_status", return_value=None), \
              patch("actions.quests.troops_avail", return_value=1):
+            assert _eg_troops_available(mock_device) is False
+
+    def test_pixel_check_catches_stale_snapshot(self, mock_device):
+        """Snapshot says troops are home but pixel check shows 0 — stale snapshot."""
+        from actions.quests import _eg_troops_available
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+        snapshot = DeviceTroopSnapshot(
+            device=mock_device,
+            troops=[TroopStatus(action=TroopAction.HOME) for _ in range(5)],
+        )
+        with patch("actions.quests.troops_avail", return_value=0), \
+             patch("actions.quests.get_troop_status", return_value=snapshot):
             assert _eg_troops_available(mock_device) is False
 
 

@@ -275,6 +275,10 @@ var _troopData = {};
 // while the thread is still winding down. Keyed by "device_modeKey".
 var _stoppingModes = {};
 
+// Track modes that are being started — prevents poll from flipping toggle back off
+// before the task thread appears in the active task list. Keyed by "device_modeKey".
+var _startingModes = {};
+
 function renderTroops(container, troops, age, elapsed) {
     container.textContent = '';
     // Update age in the section label
@@ -492,6 +496,10 @@ function refreshStatus() {
                 if (_stoppingModes[stoppingKey]) {
                     if (!isRunning) delete _stoppingModes[stoppingKey];
                     toggle.classList.remove('on');
+                // If mode is starting, keep toggle on until task appears in active list
+                } else if (_startingModes[stoppingKey]) {
+                    if (isRunning) delete _startingModes[stoppingKey];
+                    toggle.classList.add('on');
                 } else {
                     if (isRunning) toggle.classList.add('on');
                     else toggle.classList.remove('on');
@@ -508,6 +516,9 @@ function refreshStatus() {
                 if (_stoppingModes[stoppingKey]) {
                     if (!isRunning) delete _stoppingModes[stoppingKey];
                     pill.classList.remove('pill-on');
+                } else if (_startingModes[stoppingKey]) {
+                    if (isRunning) delete _startingModes[stoppingKey];
+                    pill.classList.add('pill-on');
                 } else {
                     if (isRunning) pill.classList.add('pill-on');
                     else pill.classList.remove('pill-on');
@@ -563,15 +574,19 @@ function toggleAutoMode(modeKey, deviceId) {
     }
     // Optimistic toggle
     if (toggle) toggle.classList.toggle('on');
-    // Track stopping state so poll doesn't override optimistic toggle
+    // Track starting/stopping state so poll doesn't override optimistic toggle
     var stoppingKey = (deviceId || '') + '_' + modeKey;
     if (isRunning) {
         _stoppingModes[stoppingKey] = true;
+        delete _startingModes[stoppingKey];
         // Also update collapsed pill
         var pill = document.querySelector('.control-pill[data-mode="' + modeKey + '"][data-device="' + deviceId + '"]');
         if (pill) pill.classList.remove('pill-on');
     } else {
+        _startingModes[stoppingKey] = true;
         delete _stoppingModes[stoppingKey];
+        var pill = document.querySelector('.control-pill[data-mode="' + modeKey + '"][data-device="' + deviceId + '"]');
+        if (pill) pill.classList.add('pill-on');
     }
     fetch(url, {
         method: 'POST',
