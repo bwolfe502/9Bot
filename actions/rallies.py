@@ -278,7 +278,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
             # Try close button first
             tap_image("close_x.png", device)
             timed_wait(device, lambda: check_screen(device) == Screen.WAR,
-                       3.0, "jr_backout_close_x")
+                       4.0, "jr_backout_close_x")
 
             # Check where we are before continuing
             current = check_screen(device)
@@ -486,6 +486,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                         3, "jr_detail_load")
 
                     if not detail_loaded:
+                        save_failure_screenshot(device, "jr_detail_load_fail")
                         log.warning("Rally detail screen did not load after join tap "
                                     "(depart.png not found within 3s)")
                         if not _backout_to_war_screen():
@@ -655,6 +656,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                         navigate(Screen.WAR, device)
                         continue  # Try next match
                 else:
+                    save_failure_screenshot(device, "jr_slot_to_depart_fail")
                     log.warning("Depart button not found — backing out")
                     if not _backout_to_war_screen():
                         return "lost"

@@ -426,6 +426,7 @@ def rally_titan(device):
         if depart_match is not None:
             break  # found depart — proceed to tap it
 
+        save_failure_screenshot(device, f"titan_depart_miss_{search_attempt + 1}")
         log.warning("Depart not found — titan may have walked (attempt %d/%d)",
                     search_attempt + 1, _MAX_TITAN_SEARCH_ATTEMPTS)
 

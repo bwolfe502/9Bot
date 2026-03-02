@@ -332,7 +332,7 @@ def _recover_to_known_screen(device):
     for name, action in strategies:
         action()
         timed_wait(device, lambda: check_screen(device) != Screen.UNKNOWN,
-                   1.5, f"recover_{name}")
+                   2.0, f"recover_{name}")
         current = check_screen(device)
         if current != Screen.UNKNOWN:
             log.info("Recovery via %s: now on %s", name, current)
@@ -455,7 +455,7 @@ def navigate(target_screen, device, _depth=0):
             # Bottom-right globe icon takes us back to map
             adb_tap(device, 970, 1880)
             timed_wait(device, lambda: check_screen(device) == Screen.MAP,
-                       2, "nav_kingdom_to_map")
+                       3, "nav_kingdom_to_map")
             current = check_screen(device)
         elif current in [Screen.BATTLE_LIST, Screen.ALLIANCE_QUEST, Screen.WAR, Screen.TERRITORY, Screen.PROFILE]:
             tap_image("back_arrow.png", device, threshold=0.7)
