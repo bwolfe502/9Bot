@@ -8,7 +8,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | File | Purpose | Key exports |
 |------|---------|-------------|
 | `run_web.py` | Web-only entry point (primary) | `main` (pywebview + browser fallback) |
-| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap` |
+| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap`, `get_protocol_rallies`, `get_protocol_troops_home`, `get_protocol_troop_snapshot` |
 | `main.py` | Legacy GUI entry point (deprecated) | Tkinter app, `create_gui()` |
 | `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
 | `settings.py` | Settings persistence | `DEFAULTS`, `load_settings`, `save_settings`, `SETTINGS_FILE` |
@@ -22,7 +22,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `actions/_helpers.py` | Shared state + utilities | `_interruptible_sleep`, `_last_depart_slot` |
 | `vision.py` | Screenshots, template matching, OCR, ADB input | `load_screenshot`, `find_image`, `find_all_matches`, `tap_image`, `wait_for_image_and_tap`, `read_text`, `read_number`, `read_ap`, `adb_tap`, `adb_swipe`, `adb_keyevent`, `timed_wait`, `tap`, `logged_tap`, `get_last_best`, `save_failure_screenshot`, `tap_tower_until_attack_menu`, `warmup_ocr` |
 | `navigation.py` | Screen detection + state-machine navigation | `check_screen`, `navigate` |
-| `troops.py` | Troop counting (pixel), status model (OCR), healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
+| `troops.py` | Troop counting (pixel/protocol), status model, healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
 | `training.py` | Training data collector (JSONL + images) | `configure`, `log_template`, `log_ocr`, `log_screen`, `save_training_image`, `get_training_stats`, `shutdown` |
 | `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
 | `protocol/` | Frida Gadget protocol interception | `EventBus`, `InterceptorThread`, `GameState`, `Registry`, `Decoder` |
@@ -78,6 +78,7 @@ startup.py (protocol integration)
       └─ game_state (GameState — reactive store)
 
 vision.py → startup.get_protocol_ap() (lazy, when PROTOCOL_ENABLED)
+troops.py → startup.get_protocol_troops_home/troop_snapshot() (lazy, when PROTOCOL_ENABLED)
 ```
 
 `botlog.py` and `config.py` have no internal dependencies (safe to import anywhere).
@@ -219,9 +220,18 @@ State machine via `navigate(target_screen, device)`:
 - Expects `device` as first positional arg
 
 ### Troop System (troops.py)
-**Counting** — Pixel-based: checks cyan color `[107, 247, 255]` at known Y positions on MAP screen. Returns 0-5.
+**Counting** — Protocol fast path first (when `PROTOCOL_ENABLED`): `get_protocol_troops_home()` returns
+home count from `GameState.lineups` (instant, ≤30s freshness). Falls through to pixel-based counting
+on `None` or any error. Pixel path: checks cyan color `[107, 247, 255]` at known Y positions on MAP
+screen. Returns 0-5.
 
 **Status model** — `TroopStatus` dataclass with `TroopAction` enum (HOME, DEFENDING, OCCUPYING, MARCHING, RETURNING, STATIONING, GATHERING, RALLYING, BATTLING, ADVENTURING). `DeviceTroopSnapshot` holds full troop state with helpers like `home_count`, `deployed_count`, `soonest_free()`.
+
+**Panel statuses** — Protocol fast path first (when `PROTOCOL_ENABLED`): `get_protocol_troop_snapshot()`
+builds a `DeviceTroopSnapshot` from `LineupsNtf`/`NewLineupStateNtf` data with `seconds_remaining`
+from `stateEndTs` (instant, ≤30s freshness). Falls through to icon template matching on `None` or error.
+LineupState→TroopAction mapping: IDLE/HOME→HOME, MARCHING→MARCHING, BATTLING→BATTLING, GATHERING→GATHERING,
+RETURNING→RETURNING, DEFENDING→DEFENDING, RALLYING→RALLYING. Unknown states default to MARCHING.
 
 **Healing** — `heal_all(device)`: finds heal.png, taps through heal dialogs in a loop until no more heal buttons.
 
@@ -388,9 +398,26 @@ try/except ImportError — if protocol package or frida not installed, silently 
 `(current, max)` from `GameState.ap` if fresh (≤10s), else `None` → falls through to OCR.
 Entire block wrapped in try/except — any failure silently falls through.
 
+**Troop fast paths** (troops.py): `troops_avail()` calls `get_protocol_troops_home()` first when
+enabled — returns home count from `GameState.lineups` if fresh (≤30s), else `None` → falls through
+to pixel counting. `read_panel_statuses()` calls `get_protocol_troop_snapshot()` — builds a full
+`DeviceTroopSnapshot` from lineup data with `seconds_remaining` timers, else `None` → falls through
+to icon template matching. Both wrapped in try/except, same zero-risk pattern as AP.
+
+**Rally fast path** (actions/rallies.py): `join_rally()` calls `get_protocol_rallies()` first when
+enabled — returns list of `Rally` objects if fresh (≤30s), `[]` for confirmed zero rallies, else
+`None` → falls through to UI. When `[]` or all rallies are full/marching/blacklisted, bails out
+immediately (saves 20-30s of war screen navigation + scrolling). **NPC/player type filtering**:
+`_NPC_RALLY_TYPES` (titan, eg, groot) match `rally.npcCity`, `_PLAYER_RALLY_TYPES` (castle, pass,
+tower) match `rally.playerCity`. Derives `want_npc`/`want_player` from the requested `rally_types`
+so only relevant rallies are considered (e.g. castle rallies are ignored when requesting titan/eg).
+`_rally_matches_target()` helper performs the check. NPC `cfgID` values are logged at debug level
+for future fine-grained type mapping. Does NOT skip the UI join flow when joinable rallies exist —
+only provides early bail-out. Same try/except pattern as AP/troops.
+
 **Safety**: Zero-risk to existing users. Protocol off by default, one bool check when disabled.
-InterceptorThread auto-reconnects (10s interval) if gadget not running. Stale data (>10s) returns
-None, triggering OCR fallback. No existing code paths change when setting is off.
+InterceptorThread auto-reconnects (10s interval) if gadget not running. Stale data returns
+None, triggering vision fallback. No existing code paths change when setting is off.
 
 ### Per-Device Access Control (startup.py + web/dashboard.py)
 Token-based shareable URLs: `https://1453.life/{bot_name}/d/{device_hash}?token={token}`

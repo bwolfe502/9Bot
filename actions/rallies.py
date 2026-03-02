@@ -29,6 +29,20 @@ from actions._helpers import _last_depart_slot
 
 _log = get_logger("actions")
 
+# NPC rally types — these target npcCity in the protocol data
+_NPC_RALLY_TYPES = {QuestType.TITAN, QuestType.EVIL_GUARD, RallyType.GROOT}
+# Player rally types — these target playerCity
+_PLAYER_RALLY_TYPES = {RallyType.CASTLE, RallyType.PASS, RallyType.TOWER}
+
+
+def _rally_matches_target(rally, want_npc, want_player):
+    """Check if a protocol Rally matches the requested target category."""
+    if want_npc and rally.npcCity is not None:
+        return True
+    if want_player and rally.playerCity is not None:
+        return True
+    return False
+
 
 def _on_war_screen(device):
     """Check if we're still on the war screen."""
@@ -186,6 +200,47 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
     if troops <= config.get_device_config(device, "min_troops"):
         log.warning("Not enough troops available (have %d, need more than %d)", troops, config.get_device_config(device, "min_troops"))
         return False
+
+    # --- Protocol early bail-out ---
+    if config.PROTOCOL_ENABLED:
+        try:
+            from startup import get_protocol_rallies
+            protocol_rallies = get_protocol_rallies()
+            if protocol_rallies is not None:
+                want_npc = any(rt in _NPC_RALLY_TYPES for rt in rally_types)
+                want_player = any(rt in _PLAYER_RALLY_TYPES for rt in rally_types)
+                joinable = [
+                    r for r in protocol_rallies
+                    if r.rallyState in (1, 2)  # READY or WAITING
+                    and r.rallyMaxNum - len(r.troops) > 0
+                    and _rally_matches_target(r, want_npc, want_player)
+                ]
+                if not joinable:
+                    elapsed = time.time() - _jr_start
+                    log.info("<<< join_rally: no joinable rallies matching %s (protocol, %.1fs)",
+                             "/".join(str(rt) for rt in rally_types), elapsed)
+                    stats.record_action(device, "join_rally", False, elapsed)
+                    return False
+                # Log NPC cfgIDs for future type mapping
+                for r in joinable:
+                    if r.npcCity and isinstance(r.npcCity, dict):
+                        log.debug("Protocol NPC rally cfgID=%s troops=%d/%d",
+                                  r.npcCity.get("cfgID"), len(r.troops), r.rallyMaxNum)
+                non_blacklisted = [
+                    r for r in joinable
+                    if not r.troops
+                    or not _is_rally_owner_blacklisted(device, r.troops[0].name)
+                ]
+                if not non_blacklisted:
+                    elapsed = time.time() - _jr_start
+                    log.info("<<< join_rally: %d joinable rallies all blacklisted (protocol, %.1fs)",
+                             len(joinable), elapsed)
+                    stats.record_action(device, "join_rally", False, elapsed)
+                    return False
+                log.debug("Protocol: %d joinable rallies (%d non-blacklisted)",
+                          len(joinable), len(non_blacklisted))
+        except Exception:
+            pass
 
     # Capture a tighter baseline right before entering the war screen.
     # The initial `troops` check above may be stale by the time we tap depart.
