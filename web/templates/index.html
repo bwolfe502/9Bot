@@ -651,10 +651,11 @@ function openBugReport() {
 function closeBugReport() {
     document.getElementById('bugreport-overlay').classList.remove('visible');
 }
+var _bugreportPollId = null;
 function sendBugReport() {
     var btn = document.getElementById('bugreport-send-btn');
     var notes = document.getElementById('bugreport-notes').value;
-    btn.textContent = 'Sending...';
+    btn.textContent = 'Zipping...';
     btn.disabled = true;
     var body = new FormData();
     if (notes.trim()) body.append('notes', notes);
@@ -662,8 +663,7 @@ function sendBugReport() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.ok) {
-                btn.textContent = 'Sent!';
-                setTimeout(closeBugReport, 1500);
+                _pollBugreportProgress(btn);
             } else {
                 btn.textContent = 'Failed';
                 setTimeout(function() { btn.textContent = 'Send'; btn.disabled = false; }, 3000);
@@ -673,6 +673,30 @@ function sendBugReport() {
             btn.textContent = 'Error';
             setTimeout(function() { btn.textContent = 'Send'; btn.disabled = false; }, 3000);
         });
+}
+function _pollBugreportProgress(btn) {
+    if (_bugreportPollId) clearInterval(_bugreportPollId);
+    _bugreportPollId = setInterval(function() {
+        fetch(RELAY_PREFIX + '/api/upload-progress')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.phase === 'zipping') {
+                    btn.textContent = 'Zipping...';
+                } else if (data.phase === 'uploading') {
+                    btn.textContent = 'Uploading... ' + (data.percent || 0) + '%';
+                } else if (data.phase === 'done') {
+                    clearInterval(_bugreportPollId);
+                    _bugreportPollId = null;
+                    btn.textContent = 'Sent!';
+                    setTimeout(function() { closeBugReport(); btn.textContent = 'Send'; btn.disabled = false; }, 2000);
+                } else if (data.phase === 'error') {
+                    clearInterval(_bugreportPollId);
+                    _bugreportPollId = null;
+                    btn.textContent = data.message || 'Upload failed';
+                    setTimeout(function() { btn.textContent = 'Send'; btn.disabled = false; }, 4000);
+                }
+            });
+    }, 500);
 }
 
 
