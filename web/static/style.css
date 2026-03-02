@@ -1854,6 +1854,15 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 }
 .cal-coords .cal-label, .cal-region .cal-label { color: #888; font-size: 12px; }
 .cal-coords .cal-value, .cal-region .cal-value { flex: 1; }
+.cal-note-input {
+    background: transparent; border: none; border-bottom: 1px solid #333;
+    color: #aab; font-size: 13px; padding: 2px 4px; width: 100px; outline: none;
+    font-family: "SF Mono", "Consolas", monospace;
+}
+.cal-note-input:focus { border-color: #0ff; color: #e0e0f0; }
+.cal-note-input::placeholder { color: #444; }
+.cal-log-note { color: #888; margin-left: 6px; font-size: 12px; }
+.cal-log-note::before { content: '— '; }
 .cal-copy-btn {
     background: #1e1e3a; border: 1px solid #333; color: #aab; border-radius: 4px;
     padding: 4px 10px; cursor: pointer; font-size: 12px;

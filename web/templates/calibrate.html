@@ -21,6 +21,7 @@
 <div class="cal-coords" id="cal-coords" style="display:none">
     <span class="cal-label">XY</span>
     <span class="cal-value" id="cal-xy">—</span>
+    <input type="text" id="cal-note" class="cal-note-input" placeholder="note...">
     <button class="cal-copy-btn" id="cal-copy-xy">Copy</button>
 </div>
 
@@ -165,8 +166,12 @@
         i.src = url;
     }
 
-    function addClickLog(gx, gy) {
-        clickLog.unshift({x: gx, y: gy});
+    var noteInput = document.getElementById('cal-note');
+
+    function getNote() { return noteInput.value.trim(); }
+
+    function addClickLog(gx, gy, note) {
+        clickLog.unshift({x: gx, y: gy, note: note || ''});
         if (clickLog.length > 20) clickLog.pop();
         renderLog();
     }
@@ -183,12 +188,19 @@
             var val = document.createElement('span');
             val.className = 'cal-value';
             val.textContent = entry.x + ', ' + entry.y;
+            if (entry.note) {
+                var noteSpan = document.createElement('span');
+                noteSpan.className = 'cal-log-note';
+                noteSpan.textContent = entry.note;
+                val.appendChild(noteSpan);
+            }
+            var copyStr = entry.note ? entry.x + ', ' + entry.y + '  # ' + entry.note : entry.x + ', ' + entry.y;
             var btn = document.createElement('button');
             btn.className = 'cal-copy-btn';
             btn.textContent = 'Copy';
             (function(text) {
                 btn.addEventListener('click', function() { copyText(text); });
-            })(entry.x + ', ' + entry.y);
+            })(copyStr);
             div.appendChild(idx);
             div.appendChild(val);
             div.appendChild(btn);
@@ -214,8 +226,10 @@
             info.className = 'cal-step-info';
             if (s.type === 'tap') {
                 info.innerHTML = 'Tap <strong>' + s.data.x + ', ' + s.data.y + '</strong>';
+                if (s.data.note) info.innerHTML += ' <span style="color:#888">— ' + s.data.note + '</span>';
             } else if (s.type === 'crop') {
                 info.innerHTML = 'Crop <strong>' + s.data.filename + '</strong> (' + s.data.x1 + ',' + s.data.y1 + ')→(' + s.data.x2 + ',' + s.data.y2 + ')';
+                if (s.data.note) info.innerHTML += ' <span style="color:#888">— ' + s.data.note + '</span>';
             }
             div.appendChild(num);
             div.appendChild(info);
@@ -298,16 +312,19 @@
         } else {
             // Click
             var gx = dragStart.gx, gy = dragStart.gy;
+            var note = getNote();
             drawCrosshair(gx, gy);
             xySpan.textContent = gx + ', ' + gy;
             coordsBar.style.display = 'flex';
-            addClickLog(gx, gy);
+            addClickLog(gx, gy, note);
 
             if (recording) {
                 // Get thumbnail before tap
                 var thumbUrl = canvas.toDataURL('image/jpeg', 0.5);
                 var btn = document.getElementById('cal-capture');
                 btn.disabled = true;
+                var stepData = {x: gx, y: gy};
+                if (note) stepData.note = note;
                 fetch(RELAY_PREFIX + '/api/calibrate/tap', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -321,7 +338,7 @@
                         URL.revokeObjectURL(url);
                         btn.disabled = false;
                     });
-                    addStep('tap', {x: gx, y: gy});
+                    addStep('tap', stepData);
                     steps[steps.length - 1].thumb = thumbUrl;
                     renderTimeline();
                 }).catch(function(err) {
@@ -345,12 +362,15 @@
         e.preventDefault();
         // Use dragStart position for click (no movement), else last known
         if (!dragging) {
+            var note = getNote();
             drawCrosshair(dragStart.gx, dragStart.gy);
             xySpan.textContent = dragStart.gx + ', ' + dragStart.gy;
             coordsBar.style.display = 'flex';
-            addClickLog(dragStart.gx, dragStart.gy);
+            addClickLog(dragStart.gx, dragStart.gy, note);
             if (recording) {
                 var thumbUrl = canvas.toDataURL('image/jpeg', 0.5);
+                var stepData = {x: dragStart.gx, y: dragStart.gy};
+                if (note) stepData.note = note;
                 fetch(RELAY_PREFIX + '/api/calibrate/tap', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -361,7 +381,7 @@
                 }).then(function(blob) {
                     var url = URL.createObjectURL(blob);
                     loadImageFromUrl(url, function() { URL.revokeObjectURL(url); });
-                    addStep('tap', {x: dragStart.gx, y: dragStart.gy});
+                    addStep('tap', stepData);
                     steps[steps.length - 1].thumb = thumbUrl;
                     renderTimeline();
                 }).catch(function(err) { toast('Tap failed'); });
@@ -413,11 +433,14 @@
             }
             toast('Saved ' + data.filename + ' (' + data.width + 'x' + data.height + ')');
             if (recording) {
-                addStep('crop', {
+                var cropData = {
                     filename: data.filename,
                     x1: lastRegion.x1, y1: lastRegion.y1,
                     x2: lastRegion.x2, y2: lastRegion.y2
-                });
+                };
+                var cropNote = getNote();
+                if (cropNote) cropData.note = cropNote;
+                addStep('crop', cropData);
             }
             regionWrap.style.display = 'none';
             lastRegion = null;
