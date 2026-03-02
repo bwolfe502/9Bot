@@ -205,7 +205,7 @@ def target(device):
     time.sleep(1)
 
     # Tap the Enemy tab
-    logged_tap(device, 560, 215, "target_enemy_tab")
+    logged_tap(device, 738, 310, "target_enemy_tab")
     time.sleep(1)
 
     # Check how many target markers exist (retry up to 3 seconds)

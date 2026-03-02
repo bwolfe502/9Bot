@@ -87,7 +87,7 @@ class TestNavigateToTower:
              patch("actions.quests.time.time", return_value=0.0):
             assert _navigate_to_tower(mock_device) is True
             # Should tap Friend tab in RECORD dialog
-            mock_tap.assert_any_call(mock_device, 410, 215, "tower_target_friend_tab")
+            mock_tap.assert_any_call(mock_device, 540, 310, "tower_target_friend_tab")
             # Should look for friend_marker.png
             mock_find.assert_called_with(screen, "friend_marker.png",
                                          threshold=0.7, device=mock_device)
