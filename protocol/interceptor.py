@@ -579,7 +579,8 @@ class ProtocolInterceptor:
             return None
 
         for proc in self._frida_device.enumerate_processes():
-            if proc.name == _GAME_PACKAGE or proc.identifier == _GAME_PACKAGE:
+            proc_ident = getattr(proc, "identifier", "") or ""
+            if proc.name == _GAME_PACKAGE or proc_ident == _GAME_PACKAGE:
                 log.info("Found game process: PID=%d name=%s", proc.pid, proc.name)
                 return proc.pid
 
