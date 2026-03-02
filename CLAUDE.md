@@ -25,7 +25,15 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `troops.py` | Troop counting (pixel/protocol), status model, healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
 | `training.py` | Training data collector (JSONL + images) | `configure`, `log_template`, `log_ocr`, `log_screen`, `save_training_image`, `get_training_stats`, `shutdown` |
 | `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
-| `protocol/` | Frida Gadget protocol interception | `EventBus`, `InterceptorThread`, `GameState`, `Registry`, `Decoder` |
+| `protocol/` | Frida Gadget protocol interception (package) | Re-exports all public classes via `__init__.py` |
+| `protocol/interceptor.py` | Frida connection + hook loading | `ProtocolInterceptor` (start/stop/stats) |
+| `protocol/frida_hook.js` | Frida Gadget hook script (loaded into game) | Hooks `TFW.NetMsgData.FromByte/MakeByte` via IL2CPP runtime API |
+| `protocol/decoder.py` | Protobuf wire-format decoder | `decode_frame`, `decode_protobuf_raw`, `ProtobufDecoder`, `MessageStream` |
+| `protocol/messages.py` | Typed message dataclasses | `Rally`, `EntitiesNtf`, `HeartBeatReq`, `MESSAGE_CLASSES`, etc. |
+| `protocol/events.py` | Thread-safe event bus + message router | `EventBus`, `MessageRouter`, `EVT_*` constants |
+| `protocol/game_state.py` | Per-device reactive game state | `GameState`, `GameStateRegistry`, `get_game_state` |
+| `protocol/registry.py` | BKDR hash ↔ message name mapping | `bkdr_hash`, `msg_id`, `wire_id`, `get_wire_registry` |
+| `protocol/patch_apk.py` | APK patching + pure Python signing | Pull splits from device, LIEF inject, v1 sign, install |
 | `config.py` | Global mutable state, enums, constants | `QuestType`, `RallyType`, `Screen`, ADB path, thresholds, team colors, `alert_queue` |
 | `devices.py` | ADB device detection + emulator window mapping | `auto_connect_emulators`, `get_devices`, `get_emulator_instances` |
 | `botlog.py` | Logging, metrics, timing | `setup_logging`, `get_logger`, `set_console_verbose`, `StatsTracker`, `timed_action`, `stats`, `BOT_VERSION` |
@@ -385,14 +393,30 @@ and region drift. Setting: `collect_training_data` (default `False`).
 Opt-in Frida Gadget integration that intercepts the game's network protocol for instant data reads.
 Setting: `protocol_enabled` (default `False`), toggled from `/debug` page (hidden from main settings).
 
-**Package** (`protocol/`): `registry.py` (BKDR hash → message name), `decoder.py` (protobuf wire
-format), `messages.py` (dataclasses), `events.py` (EventBus pub/sub), `game_state.py` (reactive
-store with freshness tracking), `interceptor.py` (Frida connection + auto-reconnect).
-Data files: `wire_registry.json`, `proto_field_map.json`. CLI: `patch_apk.py`, `setup_frida.py`.
+**APK Patching** (`patch_apk.py`): Injects Frida Gadget into the game APK. Pulls split APKs from
+a connected device (`--device`), patches the arm64 split via LIEF (`add_library("libfrida-gadget.so")`),
+signs all 3 splits, and installs. Signing uses pure Python (v1/JAR signing via `cryptography` library)
+— no Java/SDK required. Keystore cached as PEM files. Only needed once per game update; subsequent
+reinstalls reuse the same keystore (no tutorial replay).
+
+**Hook Script** (`frida_hook.js`): Runs inside the game process via Frida Gadget. Dynamically
+resolves `TFW.NetMsgData.FromByte/MakeByte` addresses at runtime using IL2CPP's metadata API
+(`il2cpp_class_from_name` + `il2cpp_class_get_methods`). No hardcoded RVAs or LIEF delta — works
+across game versions and LIEF versions. Frida's `mod.findExportByName()` (instance method, not
+`Module.findExportByName` static — the static version doesn't exist in this Frida gadget version).
+
+**Data Pipeline**: Frida hooks → `send()` → Python `_on_frida_message()` → `decode_frame()` →
+`ProtobufDecoder.decode()` (schema from `proto_field_map.json`) → `MESSAGE_CLASSES[name].from_dict()`
+→ `MessageRouter.route()` → `EventBus.emit()` → `GameState` handlers. Wire-level msg_id resolved
+via `wire_registry.json` (BKDR hash lookup, 1000+ message types).
+
+**Data Files**: `wire_registry.json` (msg_id → class name), `proto_field_map.json` (per-message
+field schemas with names, types, wire types), `registry.json` (internal cspb-prefixed registry).
 
 **Lifecycle** (startup.py): `_start_protocol()` creates EventBus → GameState → InterceptorThread
 (daemon). `_stop_protocol()` tears down. Called from `apply_settings()`. Import wrapped in
 try/except ImportError — if protocol package or frida not installed, silently skips.
+Requires: `adb forward tcp:27042 tcp:27042` (set up by `_setup_frida_forward()` in startup.py).
 
 **AP fast path** (vision.py): `read_ap()` calls `get_protocol_ap()` first when enabled. Returns
 `(current, max)` from `GameState.ap` if fresh (≤10s), else `None` → falls through to OCR.
@@ -442,7 +466,7 @@ threads and clears all statuses. Dashboard JS `_stoppingModes` prevents toggle f
 ## Tests
 
 ```bash
-py -m pytest          # run all ~799 tests
+py -m pytest          # run all ~852 tests
 py -m pytest -x       # stop on first failure
 py -m pytest -k name  # filter by test name
 ```
