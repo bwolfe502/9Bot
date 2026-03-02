@@ -14,6 +14,7 @@ import logging
 import platform
 import subprocess
 import threading
+import time
 
 import config
 from config import (running_tasks, set_min_troops, set_auto_heal,
@@ -177,6 +178,111 @@ def get_protocol_ap():
     if not state.is_fresh("ap", max_age_s=10.0):
         return None
     return state.ap
+
+
+# LineupState enum → bot TroopAction mapping
+# 0=IDLE, 1=HOME, 2=MARCHING, 3=BATTLING, 4=GATHERING, 5=RETURNING, 6=DEFENDING, 7=RALLYING
+_LINEUP_STATE_TO_ACTION = None  # lazy-built on first use
+
+
+def _get_action_map():
+    """Lazy-build LineupState→TroopAction mapping (avoids import at module level)."""
+    global _LINEUP_STATE_TO_ACTION
+    if _LINEUP_STATE_TO_ACTION is not None:
+        return _LINEUP_STATE_TO_ACTION
+    from troops import TroopAction
+    _LINEUP_STATE_TO_ACTION = {
+        0: TroopAction.HOME,       # IDLE → treat as home
+        1: TroopAction.HOME,       # HOME
+        2: TroopAction.MARCHING,   # MARCHING
+        3: TroopAction.BATTLING,   # BATTLING
+        4: TroopAction.GATHERING,  # GATHERING
+        5: TroopAction.RETURNING,  # RETURNING
+        6: TroopAction.DEFENDING,  # DEFENDING
+        7: TroopAction.RALLYING,   # RALLYING
+    }
+    return _LINEUP_STATE_TO_ACTION
+
+
+def get_protocol_rallies():
+    """Return list of active rallies from protocol, or None if unavailable/stale.
+
+    Returns [] if protocol confirms zero rallies (bail-out signal).
+    Returns None if protocol unavailable or data stale (fall through to UI).
+    """
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("rallies", max_age_s=30.0):
+        return None
+    rallies = state.rallies  # thread-safe dict copy
+    if not rallies:
+        return []  # confirmed: no active rallies
+    return list(rallies.values())
+
+
+def get_protocol_troops_home():
+    """Return count of HOME troops from protocol, or None if unavailable/stale."""
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("lineups", max_age_s=30.0):
+        return None
+    lineups = state.lineups
+    lineup_states = state.lineup_states
+    if not lineups:
+        return None
+    home_count = 0
+    for lid, lu in lineups.items():
+        # Prefer NewLineupStateNtf (more recent) over LineupsNtf.state
+        ls = lineup_states.get(lid)
+        effective_state = ls.state if ls is not None else lu.state
+        if effective_state in (0, 1):  # IDLE or HOME
+            home_count += 1
+    return home_count
+
+
+def get_protocol_troop_snapshot(device):
+    """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
+    state = _game_state
+    if state is None:
+        return None
+    if not state.is_fresh("lineups", max_age_s=30.0):
+        return None
+    lineups = state.lineups
+    lineup_states = state.lineup_states
+    if not lineups:
+        return None
+
+    from troops import TroopAction, TroopStatus, DeviceTroopSnapshot
+    action_map = _get_action_map()
+
+    troops = []
+    now = time.time()
+    server_ts = state.server_time  # epoch seconds from HeartBeatAck
+
+    for lid, lu in lineups.items():
+        ls = lineup_states.get(lid)
+        effective_state = ls.state if ls is not None else lu.state
+        action = action_map.get(effective_state, TroopAction.MARCHING)
+
+        seconds_remaining = None
+        if ls is not None and ls.stateEndTs > 0 and server_ts:
+            seconds_remaining = max(0, ls.stateEndTs - server_ts)
+        elif ls is not None and ls.stateEndTs > 0:
+            # No server_ts — treat stateEndTs as epoch and compute from wall clock
+            seconds_remaining = max(0, ls.stateEndTs - int(now))
+
+        if action == TroopAction.HOME:
+            troops.append(TroopStatus(action=TroopAction.HOME, read_at=now))
+        else:
+            troops.append(TroopStatus(
+                action=action,
+                seconds_remaining=seconds_remaining,
+                read_at=now,
+            ))
+
+    return DeviceTroopSnapshot(device=device, troops=troops, read_at=now)
 
 
 def apply_settings(settings):

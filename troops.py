@@ -185,6 +185,18 @@ def troops_avail(device):
     """Check how many troops are available (0-5) by checking pixel colors.
     Only valid on map_screen — verifies using the screenshot before reading pixels."""
     log = get_logger("troops", device)
+
+    # --- Protocol fast path ---
+    if config.PROTOCOL_ENABLED:
+        try:
+            from startup import get_protocol_troops_home
+            home = get_protocol_troops_home()
+            if home is not None:
+                log.debug("Troops home (protocol): %d", home)
+                return home
+        except Exception:
+            pass
+
     screen = load_screenshot(device)
 
     if screen is None:
@@ -375,6 +387,18 @@ def read_panel_statuses(device, screen=None) -> Optional[DeviceTroopSnapshot]:
     Stores and returns a DeviceTroopSnapshot.
     """
     log = get_logger("troops", device)
+
+    # --- Protocol fast path ---
+    if config.PROTOCOL_ENABLED:
+        try:
+            from startup import get_protocol_troop_snapshot
+            snapshot = get_protocol_troop_snapshot(device)
+            if snapshot is not None:
+                log.debug("Panel status (protocol): %s", snapshot.troops)
+                _store_snapshot(device, snapshot)
+                return snapshot
+        except Exception:
+            pass
 
     if screen is None:
         screen = load_screenshot(device)

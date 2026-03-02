@@ -871,3 +871,340 @@ class TestHealAll:
         """Normal exit (heal found then not found) should NOT save failure screenshot."""
         heal_all(mock_device)
         mock_save_fail.assert_not_called()
+
+
+# ============================================================
+# PROTOCOL FAST PATH TESTS
+# ============================================================
+
+class TestTroopsAvailProtocol:
+    """Test that troops_avail uses protocol fast path when enabled."""
+
+    def setup_method(self):
+        self._orig = config.PROTOCOL_ENABLED
+        config.PROTOCOL_ENABLED = False
+
+    def teardown_method(self):
+        config.PROTOCOL_ENABLED = self._orig
+
+    @patch("troops.get_template", return_value=None)
+    @patch("troops.load_screenshot")
+    def test_protocol_disabled_uses_vision(self, mock_ss, mock_tpl):
+        """When protocol is off, normal pixel path runs."""
+        config.PROTOCOL_ENABLED = False
+        screen = _make_screen_with_yellow_at([880, 1040])
+        mock_ss.return_value = screen
+        assert troops_avail("dev1") == 3
+
+    @patch("startup.get_protocol_troops_home", return_value=4)
+    @patch("troops.load_screenshot")
+    def test_protocol_returns_home_count(self, mock_ss, mock_proto):
+        """When protocol returns a value, skip vision entirely."""
+        config.PROTOCOL_ENABLED = True
+        result = troops_avail("dev1")
+        assert result == 4
+        mock_ss.assert_not_called()
+
+    @patch("startup.get_protocol_troops_home", return_value=None)
+    @patch("troops.get_template", return_value=None)
+    @patch("troops.load_screenshot")
+    def test_protocol_none_falls_through(self, mock_ss, mock_tpl, mock_proto):
+        """When protocol returns None, fall through to vision."""
+        config.PROTOCOL_ENABLED = True
+        screen = _make_screen_with_yellow_at([880, 1040])
+        mock_ss.return_value = screen
+        result = troops_avail("dev1")
+        assert result == 3
+        mock_ss.assert_called_once()
+
+    @patch("startup.get_protocol_troops_home", side_effect=Exception("boom"))
+    @patch("troops.get_template", return_value=None)
+    @patch("troops.load_screenshot")
+    def test_protocol_exception_falls_through(self, mock_ss, mock_tpl, mock_proto):
+        """If protocol accessor raises, fall through to vision silently."""
+        config.PROTOCOL_ENABLED = True
+        screen = _make_screen_with_yellow_at([960])
+        mock_ss.return_value = screen
+        result = troops_avail("dev1")
+        assert result == 4
+
+    @patch("startup.get_protocol_troops_home", return_value=0)
+    @patch("troops.load_screenshot")
+    def test_protocol_returns_zero(self, mock_ss, mock_proto):
+        """Protocol returning 0 (all deployed) is a valid result, not None."""
+        config.PROTOCOL_ENABLED = True
+        result = troops_avail("dev1")
+        assert result == 0
+        mock_ss.assert_not_called()
+
+
+class TestReadPanelStatusesProtocol:
+    """Test that read_panel_statuses uses protocol fast path when enabled."""
+
+    def setup_method(self):
+        self._orig = config.PROTOCOL_ENABLED
+        config.PROTOCOL_ENABLED = False
+
+    def teardown_method(self):
+        config.PROTOCOL_ENABLED = self._orig
+
+    @patch("troops.get_template", return_value=None)
+    @patch("troops._status_templates_loaded", True)
+    def test_protocol_disabled_uses_vision(self, mock_tpl):
+        """When protocol is off, normal icon-matching path runs."""
+        config.PROTOCOL_ENABLED = False
+        screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        config.DEVICE_TOTAL_TROOPS.pop("test_proto", None)
+        with patch("troops._status_templates", {}):
+            result = read_panel_statuses("test_proto", screen=screen)
+        assert result is not None
+        assert result.home_count == 5
+
+    @patch("startup.get_protocol_troop_snapshot")
+    def test_protocol_returns_snapshot(self, mock_proto):
+        """When protocol returns a snapshot, skip vision entirely."""
+        config.PROTOCOL_ENABLED = True
+        now = time.time()
+        fake_snapshot = DeviceTroopSnapshot(
+            device="test_proto",
+            troops=[
+                TroopStatus(action=TroopAction.HOME, read_at=now),
+                TroopStatus(action=TroopAction.RALLYING, seconds_remaining=120, read_at=now),
+                TroopStatus(action=TroopAction.GATHERING, seconds_remaining=300, read_at=now),
+            ],
+            read_at=now,
+        )
+        mock_proto.return_value = fake_snapshot
+        result = read_panel_statuses("test_proto")
+        assert result is fake_snapshot
+        assert result.home_count == 1
+        assert result.deployed_count == 2
+
+    @patch("startup.get_protocol_troop_snapshot")
+    def test_protocol_snapshot_stored(self, mock_proto):
+        """Protocol snapshot is stored and retrievable via get_troop_status."""
+        config.PROTOCOL_ENABLED = True
+        now = time.time()
+        fake_snapshot = DeviceTroopSnapshot(
+            device="test_proto_store",
+            troops=[TroopStatus(action=TroopAction.HOME, read_at=now)],
+            read_at=now,
+        )
+        mock_proto.return_value = fake_snapshot
+        read_panel_statuses("test_proto_store")
+        cached = get_troop_status("test_proto_store")
+        assert cached is fake_snapshot
+        # Clean up
+        from troops import _troop_status, _troop_status_lock
+        with _troop_status_lock:
+            _troop_status.pop("test_proto_store", None)
+
+    @patch("startup.get_protocol_troop_snapshot", return_value=None)
+    @patch("troops.get_template", return_value=None)
+    @patch("troops._status_templates_loaded", True)
+    def test_protocol_none_falls_through(self, mock_tpl, mock_proto):
+        """When protocol returns None, fall through to vision."""
+        config.PROTOCOL_ENABLED = True
+        screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        config.DEVICE_TOTAL_TROOPS.pop("test_proto", None)
+        with patch("troops._status_templates", {}):
+            result = read_panel_statuses("test_proto", screen=screen)
+        assert result is not None
+        assert result.home_count == 5
+
+    @patch("startup.get_protocol_troop_snapshot", side_effect=Exception("boom"))
+    @patch("troops.get_template", return_value=None)
+    @patch("troops._status_templates_loaded", True)
+    def test_protocol_exception_falls_through(self, mock_tpl, mock_proto):
+        """If protocol accessor raises, fall through to vision silently."""
+        config.PROTOCOL_ENABLED = True
+        screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        config.DEVICE_TOTAL_TROOPS.pop("test_proto", None)
+        with patch("troops._status_templates", {}):
+            result = read_panel_statuses("test_proto", screen=screen)
+        assert result is not None
+        assert result.home_count == 5
+
+
+# ============================================================
+# PROTOCOL ACCESSOR UNIT TESTS (startup.py)
+# ============================================================
+
+class TestGetProtocolTroopsHome:
+    """Test get_protocol_troops_home accessor in isolation."""
+
+    def test_returns_none_when_no_game_state(self):
+        import startup
+        orig = startup._game_state
+        try:
+            startup._game_state = None
+            from startup import get_protocol_troops_home
+            assert get_protocol_troops_home() is None
+        finally:
+            startup._game_state = orig
+
+    def test_returns_none_when_stale(self):
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = False
+            startup._game_state = mock_state
+            from startup import get_protocol_troops_home
+            assert get_protocol_troops_home() is None
+        finally:
+            startup._game_state = orig
+
+    def test_returns_none_when_no_lineups(self):
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = True
+            mock_state.lineups = {}
+            mock_state.lineup_states = {}
+            startup._game_state = mock_state
+            from startup import get_protocol_troops_home
+            assert get_protocol_troops_home() is None
+        finally:
+            startup._game_state = orig
+
+    def test_counts_home_lineups(self):
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = True
+            # 3 lineups: id=1 HOME(1), id=2 MARCHING(2), id=3 IDLE(0)
+            lu1 = MagicMock(); lu1.state = 1
+            lu2 = MagicMock(); lu2.state = 2
+            lu3 = MagicMock(); lu3.state = 0
+            mock_state.lineups = {1: lu1, 2: lu2, 3: lu3}
+            mock_state.lineup_states = {}
+            startup._game_state = mock_state
+            from startup import get_protocol_troops_home
+            assert get_protocol_troops_home() == 2  # HOME + IDLE
+        finally:
+            startup._game_state = orig
+
+    def test_lineup_state_overrides_lineup(self):
+        """NewLineupStateNtf state takes priority over LineupsNtf state."""
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = True
+            # Lineup says HOME(1), but NewLineupStateNtf says MARCHING(2)
+            lu1 = MagicMock(); lu1.state = 1
+            ls1 = MagicMock(); ls1.state = 2
+            mock_state.lineups = {1: lu1}
+            mock_state.lineup_states = {1: ls1}
+            startup._game_state = mock_state
+            from startup import get_protocol_troops_home
+            assert get_protocol_troops_home() == 0  # overridden to MARCHING
+        finally:
+            startup._game_state = orig
+
+
+class TestGetProtocolTroopSnapshot:
+    """Test get_protocol_troop_snapshot accessor in isolation."""
+
+    def test_returns_none_when_no_game_state(self):
+        import startup
+        orig = startup._game_state
+        try:
+            startup._game_state = None
+            from startup import get_protocol_troop_snapshot
+            assert get_protocol_troop_snapshot("dev1") is None
+        finally:
+            startup._game_state = orig
+
+    def test_returns_none_when_stale(self):
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = False
+            startup._game_state = mock_state
+            from startup import get_protocol_troop_snapshot
+            assert get_protocol_troop_snapshot("dev1") is None
+        finally:
+            startup._game_state = orig
+
+    def test_builds_snapshot_with_mixed_states(self):
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = True
+            mock_state.server_time = 1000000
+
+            lu1 = MagicMock(); lu1.state = 1  # HOME
+            lu2 = MagicMock(); lu2.state = 4  # GATHERING
+
+            ls2 = MagicMock(); ls2.state = 4; ls2.stateEndTs = 1000300  # 300s left
+
+            mock_state.lineups = {1: lu1, 2: lu2}
+            mock_state.lineup_states = {2: ls2}
+            startup._game_state = mock_state
+
+            from startup import get_protocol_troop_snapshot
+            snapshot = get_protocol_troop_snapshot("dev1")
+            assert snapshot is not None
+            assert snapshot.device == "dev1"
+            assert len(snapshot.troops) == 2
+            assert snapshot.home_count == 1
+            assert snapshot.deployed_count == 1
+            gathering = [t for t in snapshot.troops if t.action == TroopAction.GATHERING]
+            assert len(gathering) == 1
+            assert gathering[0].seconds_remaining == 300
+        finally:
+            startup._game_state = orig
+
+    def test_unknown_state_defaults_to_marching(self):
+        """Unknown LineupState value maps to MARCHING."""
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = True
+            mock_state.server_time = None
+
+            lu1 = MagicMock(); lu1.state = 99  # unknown
+            mock_state.lineups = {1: lu1}
+            mock_state.lineup_states = {}
+            startup._game_state = mock_state
+
+            from startup import get_protocol_troop_snapshot
+            snapshot = get_protocol_troop_snapshot("dev1")
+            assert snapshot is not None
+            assert snapshot.troops[0].action == TroopAction.MARCHING
+        finally:
+            startup._game_state = orig
+
+    def test_seconds_remaining_from_wall_clock(self):
+        """When server_time is None, fall back to wall clock for stateEndTs."""
+        import startup
+        orig = startup._game_state
+        try:
+            mock_state = MagicMock()
+            mock_state.is_fresh.return_value = True
+            mock_state.server_time = None
+
+            lu1 = MagicMock(); lu1.state = 6  # DEFENDING
+            ls1 = MagicMock(); ls1.state = 6
+            ls1.stateEndTs = int(time.time()) + 120  # 120s from now
+
+            mock_state.lineups = {1: lu1}
+            mock_state.lineup_states = {1: ls1}
+            startup._game_state = mock_state
+
+            from startup import get_protocol_troop_snapshot
+            snapshot = get_protocol_troop_snapshot("dev1")
+            assert snapshot is not None
+            t = snapshot.troops[0]
+            assert t.action == TroopAction.DEFENDING
+            assert t.seconds_remaining is not None
+            assert 115 <= t.seconds_remaining <= 125
+        finally:
+            startup._game_state = orig
