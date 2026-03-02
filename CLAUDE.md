@@ -8,7 +8,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | File | Purpose | Key exports |
 |------|---------|-------------|
 | `run_web.py` | Web-only entry point (primary) | `main` (pywebview + browser fallback) |
-| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status` |
+| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap` |
 | `main.py` | Legacy GUI entry point (deprecated) | Tkinter app, `create_gui()` |
 | `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
 | `settings.py` | Settings persistence | `DEFAULTS`, `load_settings`, `save_settings`, `SETTINGS_FILE` |
@@ -25,6 +25,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `troops.py` | Troop counting (pixel), status model (OCR), healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
 | `training.py` | Training data collector (JSONL + images) | `configure`, `log_template`, `log_ocr`, `log_screen`, `save_training_image`, `get_training_stats`, `shutdown` |
 | `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
+| `protocol/` | Frida Gadget protocol interception | `EventBus`, `InterceptorThread`, `GameState`, `Registry`, `Decoder` |
 | `config.py` | Global mutable state, enums, constants | `QuestType`, `RallyType`, `Screen`, ADB path, thresholds, team colors, `alert_queue` |
 | `devices.py` | ADB device detection + emulator window mapping | `auto_connect_emulators`, `get_devices`, `get_emulator_instances` |
 | `botlog.py` | Logging, metrics, timing | `setup_logging`, `get_logger`, `set_console_verbose`, `StatsTracker`, `timed_action`, `stats`, `BOT_VERSION` |
@@ -69,6 +70,14 @@ web/dashboard.py (Flask)
   ├─ config, devices, navigation, vision, troops, actions, territory, botlog
   ├─ runners (shared task runners — no duplication)
   └─ settings (shared persistence — no duplication)
+
+startup.py (protocol integration)
+  └─ protocol/ (lazy import — only when protocol_enabled=True)
+      ├─ events (EventBus)
+      ├─ interceptor (InterceptorThread → Frida)
+      └─ game_state (GameState — reactive store)
+
+vision.py → startup.get_protocol_ap() (lazy, when PROTOCOL_ENABLED)
 ```
 
 `botlog.py` and `config.py` have no internal dependencies (safe to import anywhere).
@@ -122,6 +131,7 @@ All session-scoped, reset on restart:
 - `EG_RALLY_OWN_ENABLED`, `TITAN_RALLY_OWN_ENABLED` — If False, only join rallies — never start own
 - `GATHER_ENABLED`, `GATHER_MINE_LEVEL`, `GATHER_MAX_TROOPS` — Gold gathering config
 - `TOWER_QUEST_ENABLED` — Occupy tower for alliance quest
+- `PROTOCOL_ENABLED` — Frida Gadget protocol interception (global toggle, not per-device)
 - `CLICK_TRAIL_ENABLED` — Save click trail screenshots
 - `BUTTONS` — Dict mapping button names to `{"x": int, "y": int}` coordinates (used by `vision.tap()`)
 
@@ -168,7 +178,8 @@ Device IDs are either `"127.0.0.1:<port>"` (TCP) or `"emulator-<port>"` (local A
 - macOS: Apple Vision framework (native, ~30ms/call)
 - `read_text(screen, region, allowlist)` — text from screen region
 - `read_number(screen, region)` — integer, handles comma/period thousands separators
-- `read_ap(device, retries=5)` — returns `(current_ap, max_ap)` tuple
+- `read_ap(device, retries=5)` — returns `(current_ap, max_ap)` tuple. Tries protocol fast path
+  first when `PROTOCOL_ENABLED` (instant, ~0ms), falls through to OCR on any failure or stale data
 - `warmup_ocr()` — pre-initializes OCR in background thread at startup (downloads EasyOCR models
   on first run, ~10-30s; macOS triggers Apple Vision framework warmup)
 
@@ -360,6 +371,27 @@ and region drift. Setting: `collect_training_data` (default `False`).
 - Stats shown on `/debug` page, toggle on `/settings` page
 - `configure(enabled)`, `shutdown()` called from `startup.py`
 
+### Protocol Interception (protocol/ + startup.py)
+Opt-in Frida Gadget integration that intercepts the game's network protocol for instant data reads.
+Setting: `protocol_enabled` (default `False`), toggled from `/debug` page (hidden from main settings).
+
+**Package** (`protocol/`): `registry.py` (BKDR hash → message name), `decoder.py` (protobuf wire
+format), `messages.py` (dataclasses), `events.py` (EventBus pub/sub), `game_state.py` (reactive
+store with freshness tracking), `interceptor.py` (Frida connection + auto-reconnect).
+Data files: `wire_registry.json`, `proto_field_map.json`. CLI: `patch_apk.py`, `setup_frida.py`.
+
+**Lifecycle** (startup.py): `_start_protocol()` creates EventBus → GameState → InterceptorThread
+(daemon). `_stop_protocol()` tears down. Called from `apply_settings()`. Import wrapped in
+try/except ImportError — if protocol package or frida not installed, silently skips.
+
+**AP fast path** (vision.py): `read_ap()` calls `get_protocol_ap()` first when enabled. Returns
+`(current, max)` from `GameState.ap` if fresh (≤10s), else `None` → falls through to OCR.
+Entire block wrapped in try/except — any failure silently falls through.
+
+**Safety**: Zero-risk to existing users. Protocol off by default, one bool check when disabled.
+InterceptorThread auto-reconnects (10s interval) if gadget not running. Stale data (>10s) returns
+None, triggering OCR fallback. No existing code paths change when setting is off.
+
 ### Per-Device Access Control (startup.py + web/dashboard.py)
 Token-based shareable URLs: `https://1453.life/{bot_name}/d/{device_hash}?token={token}`
 - `device_hash` = `SHA256(device_id)[:8]`, tokens = `SHA256(license_key + ":" + device_id)[:16]`
@@ -383,7 +415,7 @@ threads and clears all statuses. Dashboard JS `_stoppingModes` prevents toggle f
 ## Tests
 
 ```bash
-py -m pytest          # run all ~752 tests
+py -m pytest          # run all ~799 tests
 py -m pytest -x       # stop on first failure
 py -m pytest -k name  # filter by test name
 ```
