@@ -998,7 +998,7 @@ def _navigate_to_tower(device):
     time.sleep(1)
 
     # Tap the Friend tab (tower marker is stored here)
-    logged_tap(device, 540, 330, "tower_target_friend_tab")
+    logged_tap(device, 410, 215, "tower_target_friend_tab")
     time.sleep(1)
 
     # Check how many friend markers exist
