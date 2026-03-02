@@ -389,7 +389,8 @@ def _build_cert_rsa(cert_sf: bytes, private_key, certificate) -> bytes:
         PKCS7SignatureBuilder()
         .set_data(cert_sf)
         .add_signer(certificate, private_key, hashes.SHA256())
-        .sign(Encoding.DER, [PKCS7Options.DetachedSignature])
+        .sign(Encoding.DER, [PKCS7Options.DetachedSignature,
+                             PKCS7Options.NoCapabilities])
     )
 
 
