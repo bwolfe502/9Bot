@@ -14,12 +14,12 @@ Harden existing features before adding new ones.
 - [ ] Teleport system improvements — more reliable targeting and validation
 - [x] Error recovery — stuck-state detection, disconnect handling, popup resilience
 - [x] AP Recovery popup handling — detect game-opened AP popup during EG depart, restore AP inline
-- [ ] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Known widening needed: heal.png, depart.png, stationed.png, mithril_depart.png
+- [ ] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Existing regions verified correct for stationed.png, mithril_depart.png, depart.png (observed positions all within current bounds)
 - [x] Settings validation — validate `settings.json` on startup, catch invalid/corrupt values
-- [ ] Fix join_rally success rate (33%) — `jr_slot_to_depart` transition at 0%, war screen scroll settle broken
-- [ ] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success)
-- [ ] Fix heal flow — all heal transitions at 0%, verify `heal.png` template matches current game UI
-- [ ] Tune timed_wait budgets — `jr_backout_close_x` needs 3.5s (currently 0.5-1.5s), `verify_bl_screen` needs 2.5s
+- [ ] Fix join_rally success rate (33%) — `jr_slot_to_depart` transition at 0%, war screen scroll settle broken. Diagnostic screenshots added (`jr_detail_load_fail`, `jr_slot_to_depart_fail`) — awaiting live data
+- [ ] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success). Diagnostic screenshot added (`titan_depart_miss_{N}`) — awaiting live data
+- [x] ~~Fix heal flow~~ — 0% transitions are expected: heal button only appears when troops are injured (95% of the time they're healthy). Template works perfectly when healing is needed (100% confidence on hits)
+- [x] Tune timed_wait budgets — `jr_backout_close_x` 3.0→4.0s, `nav_kingdom_to_map` 2→3s, `recover_{name}` 1.5→2.0s
 
 ## Phase 2 — Testing & Quality (v1.4.0)
 
@@ -42,7 +42,7 @@ Build confidence that everything works before shipping updates.
 - [ ] Establish pre-release checklist — full test pass, live smoke test, version bump verification
 - [ ] Actionable test data — coverage reports, structured failure output, clear pass/fail signals
 - [ ] Keep CLAUDE.md current — ensure AI has full codebase context for efficient development
-- [ ] Better debug data collection — add failure screenshots to: join_rally (with reason), rally_titan early bail-out, read_ap None returns, heal_all template misses
+- [x] Better debug data collection — failure screenshots added to join_rally (`jr_detail_load_fail`, `jr_slot_to_depart_fail`) and rally_titan (`titan_depart_miss_{N}`). Remaining: read_ap None returns
 - [ ] Automatic log/stats/debug uploading to droplet
 - [ ] Telemetry consent prompt — explicit opt-in dialog on first run (never silent, never pre-checked)
 - [ ] Data scrubbing — strip device IPs, file paths, player names before upload
