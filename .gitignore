@@ -42,7 +42,8 @@ protocol/capture*.json
 protocol/live_capture.log
 protocol/live_registry.json
 
-# IDE
-.claude/
+# Claude Code — track commands and analysis, ignore transient state
+.claude/*
 !.claude/commands/
 !.claude/analysis/
+!.claude/settings.json
