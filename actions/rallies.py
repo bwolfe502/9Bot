@@ -478,32 +478,18 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                     log.debug("Clicking join at (%d, %d)", join_x + w // 2, join_y + h // 2)
                     adb_tap(device, join_x + w // 2, join_y + h // 2)
 
-                    # Wait for detail screen to load — depart.png confirms it
-                    detail_loaded = timed_wait(
-                        device,
-                        lambda: find_image(load_screenshot(device),
-                                           "depart.png", threshold=0.75) is not None,
-                        3, "jr_detail_load")
-
-                    if not detail_loaded:
-                        save_failure_screenshot(device, "jr_detail_load_fail")
-                        log.warning("Rally detail screen did not load after join tap "
-                                    "(depart.png not found within 3s)")
-                        if not _backout_to_war_screen():
-                            return "lost"
-                        retries_left -= 1
-                        should_rescan = True
-                        break  # Break rally_locs loop, rescan
-
-                    # Detail screen confirmed — tap the last slot position
-                    # (148, 1532) is the final slot; if it's open the rally
-                    # has room, if not the rally is full.
+                    # Wait for detail screen to settle, then tap the last slot.
+                    # Depart button only appears AFTER a slot is filled, so we
+                    # can't use depart.png to confirm the detail screen loaded.
+                    time.sleep(1.5)
                     adb_tap(device, 148, 1532)
+
+                    # Depart appearing confirms the slot tap worked
                     slot_found = timed_wait(
                         device,
                         lambda: find_image(load_screenshot(device),
                                            "depart.png", threshold=0.75) is not None,
-                        2, "jr_slot_to_depart")
+                        3, "jr_slot_to_depart")
                     if not slot_found:
                         log.warning("Rally is full — backing out to try others")
                         if not _backout_to_war_screen():
@@ -766,28 +752,13 @@ def join_war_rallies(device):
                         h, w = join_btn.shape[:2]
                         adb_tap(device, join_x + w // 2, join_y + h // 2)
 
-                        # Wait for detail screen, check for errors, then tap last slot
-                        need_backout = False
-                        backout_reason = None
-                        start_time = time.time()
-                        while time.time() - start_time < 3:
-                            s = load_screenshot(device)
-                            if s is None:
-                                time.sleep(0.5)
-                                continue
-                            if find_image(s, "titanrally_error.png", threshold=0.8):
-                                need_backout = True
-                                backout_reason = "Titan rally detected"
-                                break
-                            if find_image(s, "depart.png", threshold=0.75):
-                                break  # Detail screen loaded
-                            time.sleep(0.5)
+                        # Wait for detail screen to settle, check for errors
+                        time.sleep(1.5)
+                        s = load_screenshot(device)
+                        if s is not None and find_image(s, "titanrally_error.png", threshold=0.8):
+                            return _backout_and_retry("Titan rally detected")
 
-                        if need_backout:
-                            return _backout_and_retry(backout_reason)
-
-                        # Tap the last slot position — if open, depart appears;
-                        # if not, rally is full
+                        # Tap the last slot — depart appears if slot was open
                         adb_tap(device, 148, 1532)
                         time.sleep(1)
                         slot_found = find_image(load_screenshot(device),
