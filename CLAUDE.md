@@ -181,6 +181,9 @@ Device IDs are either `"127.0.0.1:<port>"` (TCP) or `"emulator-<port>"` (local A
 - `get_last_best()` returns thread-local best score on miss (useful for confidence logging)
 - **Preferred over blind taps**: `wait_for_image_and_tap` replaces `logged_tap` where button position
   varies (e.g. `gather.png` in gold mine popup, where depart y-position varies: 950, 1128, 1307)
+- **Depart Anyway fallback**: When troops are low health, the game shows `depart_anyway.png` instead
+  of `depart.png`. All depart flows (rallies, titans, evil guard) check for this after `depart.png`
+  fails. If `auto_heal` is on, heals first and retries. If off, taps Depart Anyway as last resort.
 
 ### OCR (vision.py)
 - Windows: EasyOCR (deep learning, ~500-2000ms/call on CPU)
@@ -203,6 +206,10 @@ State machine via `navigate(target_screen, device)`:
 3. Routes to target screen via intermediate screens (e.g. MAP → ALLIANCE → WAR)
 4. Verifies arrival with `_verify_screen()` (retries twice)
 5. Recursion guard: max depth 3
+
+**Soft popup dismiss exclusions** — `close_x.png` auto-dismiss is skipped on MAP and WAR screens.
+On MAP, close_x appears in rally dialogs, AP windows, and search overlays. On WAR, close_x is part
+of the rally detail/search panel. Dismissing it on either screen would break normal game flows.
 
 **Unknown screen recovery** — `_recover_to_known_screen(device)` uses 4-phase escalation:
 1. Template-based dismiss: close X, cancel button, back arrow (x2)
