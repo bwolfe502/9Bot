@@ -776,6 +776,7 @@ class GameState:
             return
         with self._lock:
             self._lineups.clear()
+            self._lineup_states.clear()  # full snapshot → discard stale state entries
             for lu in msg.lineups:
                 if lu.id:
                     self._lineups[lu.id] = lu
@@ -787,11 +788,18 @@ class GameState:
             return
         with self._lock:
             for info in msg.lineups:
-                self._lineup_states[info.lineupID] = info
-                # Also update state on the stored Lineup if we have it.
+                # Update state on the stored Lineup if we have it.
                 lu = self._lineups.get(info.lineupID)
                 if lu is not None:
                     lu.state = info.state
+                # HOME/IDLE → troop is back; remove state entry so the
+                # Lineup.state (which we just updated) is the source of truth.
+                # Keeping stale MARCHING/GATHERING entries was causing phantom
+                # deployed troops on the dashboard.
+                if info.state in (0, 1):
+                    self._lineup_states.pop(info.lineupID, None)
+                else:
+                    self._lineup_states[info.lineupID] = info
             self._touch("lineups")
 
     def _on_battle_result(self, msg: Any) -> None:

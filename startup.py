@@ -319,7 +319,8 @@ def get_protocol_troops_home(device=None):
         return None
     home_count = 0
     for lid, lu in lineups.items():
-        # Prefer NewLineupStateNtf (more recent) over LineupsNtf.state
+        # _lineup_states only contains deployed troops (HOME entries are
+        # removed on arrival), so missing entry → trust Lineup.state.
         ls = lineup_states.get(lid)
         effective_state = ls.state if ls is not None else lu.state
         if effective_state in (0, 1):  # IDLE or HOME
@@ -352,21 +353,24 @@ def get_protocol_troop_snapshot(device):
 
     troops = []
     now = time.time()
+    now_ms = int(now * 1000)
     server_ts = state.server_time  # epoch milliseconds from HeartBeatAck
+    # Validate server_ts sanity — reject if more than 5 min from wall clock
+    if server_ts and abs(server_ts - now_ms) > 300_000:
+        server_ts = None
 
     for lid, lu in lineups.items():
+        # _lineup_states only contains deployed troops (HOME entries removed),
+        # so missing entry → trust Lineup.state directly.
         ls = lineup_states.get(lid)
         effective_state = ls.state if ls is not None else lu.state
         action = action_map.get(effective_state, TroopAction.MARCHING)
 
         seconds_remaining = None
-        if ls is not None and ls.stateEndTs > 0 and server_ts:
-            # Both stateEndTs and server_ts are epoch milliseconds —
-            # subtract then convert to seconds.
-            seconds_remaining = max(0, (ls.stateEndTs - server_ts) // 1000)
-        elif ls is not None and ls.stateEndTs > 0:
-            # No server_ts — treat stateEndTs as epoch ms and compute from wall clock
-            seconds_remaining = max(0, (ls.stateEndTs - int(now * 1000)) // 1000)
+        if ls is not None and ls.stateEndTs > 0:
+            # stateEndTs is epoch milliseconds — compute remaining seconds
+            ref_ms = server_ts if server_ts else now_ms
+            seconds_remaining = max(0, (ls.stateEndTs - ref_ms) // 1000)
 
         if action == TroopAction.HOME:
             troops.append(TroopStatus(action=TroopAction.HOME, read_at=now))

@@ -1151,12 +1151,13 @@ class TestGetProtocolTroopSnapshot:
         try:
             mock_state = MagicMock()
             mock_state.is_fresh.return_value = True
-            mock_state.server_time = 1000000000  # epoch ms
+            now_ms = int(time.time() * 1000)
+            mock_state.server_time = now_ms
 
             lu1 = MagicMock(); lu1.state = 1  # HOME
             lu2 = MagicMock(); lu2.state = 4  # GATHERING
 
-            ls2 = MagicMock(); ls2.state = 4; ls2.stateEndTs = 1000300000  # 300s left (ms)
+            ls2 = MagicMock(); ls2.state = 4; ls2.stateEndTs = now_ms + 300_000  # 300s from now
 
             mock_state.lineups = {1: lu1, 2: lu2}
             mock_state.lineup_states = {2: ls2}
