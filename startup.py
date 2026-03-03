@@ -135,11 +135,32 @@ def _setup_frida_forward(port=27042):
         log.warning("Failed to set ADB forward for Frida Gadget", exc_info=True)
 
 
+def _ensure_lz4():
+    """Auto-install lz4 if missing (needed for protocol CompressedMessage)."""
+    try:
+        import lz4.block  # noqa: F401
+    except ImportError:
+        from botlog import get_logger
+        log = get_logger("startup")
+        log.info("Installing lz4 package for protocol decompression...")
+        import subprocess, sys
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "lz4", "--quiet"],
+                timeout=60,
+            )
+            log.info("lz4 installed successfully")
+        except Exception:
+            log.warning("Failed to auto-install lz4 — CompressedMessage decoding "
+                        "will be unavailable. Install manually: pip install lz4")
+
+
 def _start_protocol():
     """Start the protocol interceptor if not already running."""
     global _interceptor_thread, _protocol_bus, _game_state
     if _interceptor_thread is not None:
         return
+    _ensure_lz4()
     try:
         from protocol.events import EventBus
         from protocol.interceptor import InterceptorThread

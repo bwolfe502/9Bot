@@ -74,7 +74,7 @@ def _deployed_status(device):
 
 # Track last check_quests time per device for periodic re-checks
 _last_quest_check = {}   # {device: timestamp}
-_QUEST_CHECK_INTERVAL = 60  # seconds
+_QUEST_CHECK_INTERVAL = 300  # seconds (5 minutes when all troops deployed)
 
 
 def _smart_wait_for_troops(device, stop_check, dlog, max_wait=120):
