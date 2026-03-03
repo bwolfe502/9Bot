@@ -37,6 +37,9 @@ reports/
 # Bug report inbox (drop ZIPs here for /analyze)
 inbox/*.zip
 
+# Runtime data (player name cache, etc.)
+data/
+
 # Protocol R&D artifacts (captures, logs — source files are tracked)
 protocol/capture*.json
 protocol/live_capture.log

@@ -18,7 +18,9 @@ Usage::
 from __future__ import annotations
 
 import collections
+import json
 import logging
+import os
 import threading
 import time
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -82,6 +84,74 @@ CATEGORIES = (
     "attacks", "chat", "buffs", "heartbeat", "lineups",
 )
 
+# ------------------------------------------------------------------ #
+#  Shared player name cache (persisted to disk)
+# ------------------------------------------------------------------ #
+
+_PLAYER_NAMES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "player_names.json")
+_player_names_lock = threading.Lock()
+_player_names: Dict[str, str] = {}   # playerID (str) → display name
+_player_names_dirty = False
+_player_names_loaded = False
+
+
+def _load_player_names() -> None:
+    """Load cached player names from disk (called once)."""
+    global _player_names, _player_names_loaded
+    _player_names_loaded = True
+    try:
+        with open(_PLAYER_NAMES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _player_names = data
+            log.debug("Loaded %d cached player names", len(_player_names))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+
+def _save_player_names() -> None:
+    """Persist player names to disk."""
+    global _player_names_dirty
+    _player_names_dirty = False
+    try:
+        os.makedirs(os.path.dirname(_PLAYER_NAMES_FILE), exist_ok=True)
+        with open(_PLAYER_NAMES_FILE, "w", encoding="utf-8") as f:
+            json.dump(_player_names, f, ensure_ascii=False)
+    except OSError:
+        log.debug("Failed to save player names cache", exc_info=True)
+
+
+def cache_player_name(player_id: Any, name: str) -> None:
+    """Cache a player ID → name mapping. Thread-safe, shared across devices."""
+    global _player_names_dirty
+    if not player_id or not name or name.startswith("Player#"):
+        return
+    key = str(player_id)
+    with _player_names_lock:
+        if not _player_names_loaded:
+            _load_player_names()
+        if _player_names.get(key) == name:
+            return
+        _player_names[key] = name
+        _player_names_dirty = True
+
+
+def lookup_player_name(player_id: Any) -> str:
+    """Look up a cached player name by ID. Returns empty string if unknown."""
+    if not player_id:
+        return ""
+    with _player_names_lock:
+        if not _player_names_loaded:
+            _load_player_names()
+        return _player_names.get(str(player_id), "")
+
+
+def save_player_names_if_dirty() -> None:
+    """Save the cache to disk if there are unsaved changes."""
+    with _player_names_lock:
+        if _player_names_dirty:
+            _save_player_names()
+
 
 # ------------------------------------------------------------------ #
 #  GameState
@@ -104,7 +174,7 @@ class GameState:
         self._attacks: List[Intelligence] = []
         self._chat: Deque[Any] = collections.deque(maxlen=_CHAT_MAXLEN)
         self._chat_seen_ids: set = set()  # historyId dedup for ChatPullMsgAck
-        self._player_names: Dict[str, str] = {}  # playerID (str) → display name
+        self._pending_sends: Dict[str, dict] = {}  # clientUuid → parsed req
         self._city_burning_flag: bool = False
         self._buffs: List[dict] = []
         self._battle_results: Deque[Any] = collections.deque(maxlen=_BATTLE_MAXLEN)
@@ -273,6 +343,10 @@ class GameState:
         self._sub("msg:LineupsNtf", self._on_lineups)
         self._sub("msg:NewLineupStateNtf", self._on_lineup_state)
         self._sub("msg:ChatPullMsgAck", self._on_chat_history)
+        self._sub("msg:GetPlayerHeadInfoAck", self._on_player_heads)
+        self._sub("msg:UnionNtf", self._on_union_members)
+        self._sub("msg:ChatSendMsgReq", self._on_chat_send_req)
+        self._sub("msg:ChatSendMsgNtf", self._on_chat_send_ntf)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -368,11 +442,6 @@ class GameState:
                     self._touch("ap")
             self._touch("resources")
 
-    def _cache_player_name(self, player_id: Any, name: str) -> None:
-        """Cache a player ID → display name mapping (caller must hold _lock)."""
-        if player_id and name:
-            self._player_names[str(player_id)] = name
-
     def _on_chat_message(self, msg: Any) -> None:
         """EVT_CHAT_MESSAGE — payload is a dict (transformed) or raw object."""
         with self._lock:
@@ -384,7 +453,7 @@ class GameState:
                 # Cache sender name from live messages (they have playerInfo).
                 sender = msg.get("sender", "")
                 sender_id = msg.get("sender_id") or msg.get("from_id", "")
-                self._cache_player_name(sender_id, sender)
+                cache_player_name(sender_id, sender)
             self._chat.append(msg)
             self._touch("chat")
 
@@ -439,7 +508,7 @@ class GameState:
                 union_name = getattr(player_info, "unionName", "") if player_info else ""
                 from_id = getattr(chat_one_msg, "fromId", "")
 
-                # 1) Try meta JSON (has playerID but usually no name).
+                # 1) Try meta JSON (has chatServerPlayer with playerName).
                 if not sender and payload:
                     meta = getattr(payload, "meta", "")
                     meta_sender = _extract_sender_from_meta(meta)
@@ -447,9 +516,9 @@ class GameState:
                     sender_id = sender_id or meta_sender["sender_id"]
                     union_name = union_name or meta_sender["union_name"]
 
-                # 2) Try player name cache (populated from live messages).
+                # 2) Try persistent player name cache.
                 if not sender and from_id:
-                    sender = self._player_names.get(str(from_id), "")
+                    sender = lookup_player_name(from_id)
 
                 # 3) Final fallback: show numeric ID.
                 if not sender and from_id:
@@ -464,7 +533,7 @@ class GameState:
 
                 # Cache any resolved name for future lookups.
                 if sender and not sender.startswith("Player#"):
-                    self._cache_player_name(from_id or sender_id, sender)
+                    cache_player_name(from_id or sender_id, sender)
 
                 entry = {
                     "content": parsed["content"],
@@ -482,6 +551,159 @@ class GameState:
                 added += 1
             if added:
                 self._touch("chat")
+        # Persist any newly learned names outside the lock.
+        save_player_names_if_dirty()
+
+    def _on_player_heads(self, msg: Any) -> None:
+        """msg:GetPlayerHeadInfoAck — cache player names from head lookups.
+
+        The game client sends GetPlayerHeadInfoReq when opening chat to
+        resolve player IDs to display names.  We intercept the response
+        and cache every name for use in chat history rendering.
+
+        Also retroactively patches any ``Player#<id>`` senders already
+        stored in ``_chat`` — the head info response typically arrives
+        *after* the ChatPullMsgAck that contains the messages.
+        """
+        from .messages import GetPlayerHeadInfoAck
+        if not isinstance(msg, GetPlayerHeadInfoAck):
+            return
+        if msg.errCode != 0:
+            return
+        # Build pid→name lookup from the response.
+        resolved: Dict[str, str] = {}
+        for pid, head_info in msg.heads.items():
+            head = getattr(head_info, "head", None)
+            name = head.name if head else ""
+            if name:
+                cache_player_name(pid, name)
+                resolved[str(pid)] = name
+        if not resolved:
+            return
+        log.debug("Cached %d player names from GetPlayerHeadInfoAck", len(resolved))
+        # Retroactively fix Player#<id> senders in existing chat entries.
+        with self._lock:
+            for entry in self._chat:
+                if not isinstance(entry, dict):
+                    continue
+                sender = entry.get("sender", "")
+                if not sender.startswith("Player#"):
+                    continue
+                pid_str = sender[7:]  # strip "Player#"
+                name = resolved.get(pid_str)
+                if name:
+                    entry["sender"] = name
+        save_player_names_if_dirty()
+
+    def _on_union_members(self, msg: Any) -> None:
+        """msg:UnionNtf — cache player names from the alliance member list.
+
+        Sent at login with the full member roster.  The game client uses
+        this to resolve alliance chat sender names (no GetPlayerHeadInfoReq
+        is sent for alliance channels).
+        """
+        members = None
+        if isinstance(msg, dict):
+            members = msg.get("members", [])
+        else:
+            members = getattr(msg, "members", None)
+        if not members:
+            return
+        cached = 0
+        for member in members:
+            if isinstance(member, dict):
+                pid = member.get("playerID", 0)
+                name = member.get("name", "")
+                if not name:
+                    head = member.get("head")
+                    if isinstance(head, dict):
+                        name = head.get("name", "")
+            else:
+                pid = getattr(member, "playerID", 0)
+                name = getattr(member, "name", "")
+                if not name:
+                    head = getattr(member, "head", None)
+                    if head:
+                        name = getattr(head, "name", "")
+            if pid and name:
+                cache_player_name(pid, name)
+                cached += 1
+        if cached:
+            log.debug("Cached %d player names from UnionNtf", cached)
+            # Retroactively fix Player#<id> senders in existing chat entries.
+            with self._lock:
+                for entry in self._chat:
+                    if not isinstance(entry, dict):
+                        continue
+                    sender = entry.get("sender", "")
+                    if sender.startswith("Player#"):
+                        resolved_name = lookup_player_name(sender[7:])
+                        if resolved_name:
+                            entry["sender"] = resolved_name
+            save_player_names_if_dirty()
+
+    def _on_chat_send_req(self, msg: Any) -> None:
+        """msg:ChatSendMsgReq — capture outgoing chat content by clientUuid."""
+        from .messages import ChatSendMsgReq
+        from .events import parse_chat_msgval
+        if not isinstance(msg, ChatSendMsgReq):
+            return
+        uuid = msg.clientUuid
+        if not uuid:
+            return
+        payload = msg.payload
+        raw_msgval = payload.msgVal if payload else ""
+        parsed = parse_chat_msgval(raw_msgval)
+        try:
+            from .messages import ChatChannelType
+            channel_name = ChatChannelType(msg.channelType).name
+        except (ValueError, ImportError):
+            channel_name = str(msg.channelType)
+        with self._lock:
+            self._pending_sends[uuid] = {
+                "content": parsed["content"],
+                "payload_type": parsed["payload_type"],
+                "channel": channel_name,
+                "channel_type": msg.channelType,
+            }
+
+    def _on_chat_send_ntf(self, msg: Any) -> None:
+        """msg:ChatSendMsgNtf — merge with pending req to build self-sent entry."""
+        if isinstance(msg, dict):
+            err = msg.get("errCode", 0)
+            uuid = msg.get("clientUuid", "")
+            ts = msg.get("timeStamp", 0)
+            hid = msg.get("historyId", "")
+            ch_type = msg.get("channelType", 0)
+        else:
+            err = getattr(msg, "errCode", 0)
+            uuid = getattr(msg, "clientUuid", "")
+            ts = getattr(msg, "timeStamp", 0)
+            hid = getattr(msg, "historyId", "")
+            ch_type = getattr(msg, "channelType", 0)
+        if err != 0 or not uuid:
+            return
+        with self._lock:
+            pending = self._pending_sends.pop(uuid, None)
+            if not pending:
+                return
+            if hid and hid in self._chat_seen_ids:
+                return
+            if hid:
+                self._chat_seen_ids.add(hid)
+            entry = {
+                "content": pending["content"],
+                "sender": "You",
+                "channel": pending["channel"],
+                "channel_type": pending.get("channel_type", ch_type),
+                "timestamp": ts,
+                "payload_type": pending["payload_type"],
+                "sender_id": 0,
+                "union_name": "",
+                "history_id": hid,
+            }
+            self._chat.append(entry)
+            self._touch("chat")
 
     def _on_attack_incoming(self, msg: Any) -> None:
         """EVT_ATTACK_INCOMING — payload is an IntelligencesNtf."""

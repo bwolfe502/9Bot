@@ -14,10 +14,10 @@
     </select>
     <div id="channel-tabs" style="display:flex;gap:4px;flex-wrap:wrap">
         <button class="chat-tab active" data-channel="" onclick="setChannel(this, '')">All</button>
-        <button class="chat-tab" data-channel="WORLD" onclick="setChannel(this, 'WORLD')">World</button>
+        <button class="chat-tab" data-channel="SERVER" onclick="setChannel(this, 'SERVER')">Kingdom</button>
         <button class="chat-tab" data-channel="UNION" onclick="setChannel(this, 'UNION')">Alliance</button>
         <button class="chat-tab" data-channel="FACTION" onclick="setChannel(this, 'FACTION')">Faction</button>
-        <button class="chat-tab" data-channel="SERVER" onclick="setChannel(this, 'SERVER')">Server</button>
+        <button class="chat-tab" data-channel="WORLD" onclick="setChannel(this, 'WORLD')">World</button>
         <button class="chat-tab" data-channel="PRIVATE" onclick="setChannel(this, 'PRIVATE')">Private</button>
     </div>
 </div>
@@ -50,6 +50,7 @@
 .chat-time { color: #555; font-size: 11px; margin-right: 6px; }
 .chat-channel { color: #667; font-size: 11px; margin-right: 6px; }
 .chat-sender { color: #4caaff; margin-right: 4px; }
+.chat-sender-r4 { color: #ff4c4c; margin-right: 4px; }
 .chat-sender-union { color: #555; font-size: 11px; margin-right: 4px; }
 .chat-content { color: #ddd; }
 .chat-system { color: #ff9f43; font-size: 12px; }
@@ -126,7 +127,29 @@ function renderMessages(messages) {
         container.appendChild(empty);
         return;
     }
+    var lastDateStr = '';
     filtered.forEach(function(msg) {
+        // Date separator
+        if (msg.timestamp > 0) {
+            var msgDate = new Date(msg.timestamp);
+            var dateStr = msgDate.toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'});
+            if (dateStr !== lastDateStr) {
+                lastDateStr = dateStr;
+                var sep = document.createElement('div');
+                sep.style.cssText = 'display:flex;align-items:center;gap:12px;padding:8px 0;color:#555;font-size:11px';
+                var line1 = document.createElement('div');
+                line1.style.cssText = 'flex:1;height:1px;background:#333';
+                var label = document.createElement('span');
+                label.textContent = dateStr;
+                var line2 = document.createElement('div');
+                line2.style.cssText = 'flex:1;height:1px;background:#333';
+                sep.appendChild(line1);
+                sep.appendChild(label);
+                sep.appendChild(line2);
+                container.appendChild(sep);
+            }
+        }
+
         var div = document.createElement('div');
         div.className = 'chat-msg';
         var isSystem = msg.payload_type === 11;
@@ -142,9 +165,13 @@ function renderMessages(messages) {
         div.appendChild(time);
 
         // Channel
+        var channelMap = {
+            'SERVER': 'Kingdom', 'UNION': 'Alliance', 'UNION_R4': 'Alliance',
+            'FACTION': 'Faction', 'WORLD': 'World', 'PRIVATE': 'Private'
+        };
         var ch = document.createElement('span');
         ch.className = 'chat-channel';
-        ch.textContent = '[' + (msg.channel || '?') + ']';
+        ch.textContent = '[' + (channelMap[msg.channel] || msg.channel || '?') + ']';
         div.appendChild(ch);
 
         // Union name
@@ -156,20 +183,22 @@ function renderMessages(messages) {
         }
 
         // Sender
+        var isR4 = msg.channel === 'UNION_R4';
         var sender = document.createElement('span');
-        sender.className = isSystem ? 'chat-system' : 'chat-sender';
+        sender.className = isSystem ? 'chat-system' : (isR4 ? 'chat-sender-r4' : 'chat-sender');
         sender.textContent = (msg.sender || (isSystem ? 'System' : '???')) + ': ';
         div.appendChild(sender);
 
-        // Content
+        // Content — clean up player mention tags: [-1#@12345|@Name] → [@Name]
+        var text = (msg.content || '').replace(/\[[^\]]*\|(@[^\]]+)\]/g, '[$1]');
         var content = document.createElement('span');
         content.className = isSystem ? 'chat-system' : (isCoord ? 'chat-coord' : 'chat-content');
-        content.textContent = msg.content;
+        content.textContent = text;
         div.appendChild(content);
 
         container.appendChild(div);
     });
-    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+    container.scrollTop = container.scrollHeight;
 }
 
 // Auto-poll every 3 seconds

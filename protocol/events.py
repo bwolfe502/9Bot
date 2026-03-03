@@ -349,11 +349,15 @@ def parse_chat_msgval(msgval: str) -> dict:
         result["payload_type"] = 11  # Force SYSTEM type
         return result
 
-    # Userdefined — coordinate share, alliance help, etc.
+    # Userdefined — coordinate share, bizarre cave, alliance help, etc.
     if "data" in parsed:
         try:
             data_str = parsed["data"]
             data = json.loads(data_str) if isinstance(data_str, str) else data_str
+            if not isinstance(data, dict):
+                return result
+
+            # Coordinate share
             share_cv = data.get("shareCoordinateContentValue") or {}
             share = share_cv.get("shareCoordinateData")
             if share and isinstance(share, dict):
@@ -362,6 +366,42 @@ def parse_chat_msgval(msgval: str) -> dict:
                 y = share.get("coordY", 0)
                 result["content"] = f"{unit_name} ({x}, {y})"
                 return result
+
+            # Bizarre Cave share
+            cave_cv = data.get("shareBizarreCave") or {}
+            cave = cave_cv.get("shareBizarreCaveData")
+            if cave and isinstance(cave, dict):
+                owner = cave.get("ownerName", "")
+                coord = cave.get("coord") or {}
+                # Game coords are X/Z divided by ~1000
+                parts = ["Bizarre Cave"]
+                if owner:
+                    parts[0] = f"Bizarre Cave ({owner})"
+                result["content"] = parts[0]
+                return result
+
+            # Recruit share
+            recruit = data.get("shareRecruitContentValue")
+            if recruit:
+                result["content"] = "Alliance recruitment"
+                return result
+
+            # Hero share
+            hero = data.get("shareHeroContentValue")
+            if hero:
+                result["content"] = "Shared hero"
+                return result
+
+            # Troop share
+            troop = data.get("shareTroopContentValue")
+            if troop:
+                result["content"] = "Shared troop"
+                return result
+
+            # Fallback for other userdefined types — don't dump raw JSON
+            cvt = data.get("customContentValueType", "")
+            result["content"] = f"[Shared content type {cvt}]"
+            return result
         except (json.JSONDecodeError, TypeError, AttributeError):
             pass
 
@@ -396,6 +436,25 @@ def _extract_sender_from_meta(meta: str) -> dict:
         or parsed.get("ID", 0)
     )
     result["union_name"] = parsed.get("unionName", "") or parsed.get("allianceName", "")
+
+    # Some messages (coordinate shares) have a nested chatServerPlayer JSON
+    # string: {"serverID":..., "playerID":..., "playerName":"BigSnuggy", ...}
+    if not result["sender"]:
+        csp = parsed.get("chatServerPlayer", "")
+        if csp:
+            try:
+                csp_data = json.loads(csp) if isinstance(csp, str) else csp
+                if isinstance(csp_data, dict):
+                    result["sender"] = csp_data.get("playerName", "")
+                    result["sender_id"] = result["sender_id"] or csp_data.get("playerID", 0)
+                    result["union_name"] = (
+                        result["union_name"]
+                        or csp_data.get("uniNickName", "")
+                        or csp_data.get("unionName", "")
+                    )
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     return result
 
 
@@ -460,5 +519,18 @@ def _extract_chat_payload(msg: object) -> dict:
     else:
         result["content"] = ""
         result["payload_type"] = 0
+
+    # Final fallback: try persistent player name cache via fromId.
+    if not result["sender"]:
+        from_id = getattr(chat_msg, "fromId", "")
+        if from_id:
+            try:
+                from .game_state import lookup_player_name
+                result["sender"] = lookup_player_name(from_id)
+            except ImportError:
+                pass
+        # Last resort: show Player#<id>
+        if not result["sender"] and from_id:
+            result["sender"] = f"Player#{from_id}"
 
     return result

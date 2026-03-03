@@ -78,6 +78,7 @@ __all__ = [
     "ChatSendMsgReq",
     "ChatPullMsgReq",
     "ChatPullMsgAck",
+    "GetPlayerHeadInfoAck",
     # Lookup
     "MESSAGE_CLASSES",
 ]
@@ -1129,6 +1130,30 @@ class ChatPullMsgAck:
         )
 
 
+@dataclass
+class GetPlayerHeadInfoAck:
+    errCode: int = 0
+    heads: Dict[int, PlayerHeadInfo] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> GetPlayerHeadInfoAck:
+        if not d:
+            return cls()
+        heads_raw = d.get("heads", {})
+        heads: Dict[int, PlayerHeadInfo] = {}
+        if isinstance(heads_raw, dict):
+            for k, v in heads_raw.items():
+                try:
+                    pid = int(k)
+                except (ValueError, TypeError):
+                    continue
+                heads[pid] = PlayerHeadInfo.from_dict(v) if isinstance(v, dict) else v
+        return cls(
+            errCode=d.get("errCode", 0),
+            heads=heads,
+        )
+
+
 # ------------------------------------------------------------------ #
 #  Lookup: class name -> dataclass type
 # ------------------------------------------------------------------ #
@@ -1183,4 +1208,5 @@ MESSAGE_CLASSES: Dict[str, Type] = {
     "ChatSendMsgReq": ChatSendMsgReq,
     "ChatPullMsgReq": ChatPullMsgReq,
     "ChatPullMsgAck": ChatPullMsgAck,
+    "GetPlayerHeadInfoAck": GetPlayerHeadInfoAck,
 }
