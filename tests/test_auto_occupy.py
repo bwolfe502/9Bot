@@ -41,6 +41,7 @@ def reset_occupy_state():
     config.TERRITORY_SAFE_ZONES = {}
     config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
+    config.ZONE_EXPECTED_TEAMS = {}
     yield
     config.MY_TEAM_COLOR = orig_team
     config.ENEMY_TEAMS = orig_enemies
@@ -53,6 +54,7 @@ def reset_occupy_state():
     config.TERRITORY_SAFE_ZONES = {}
     config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
+    config.ZONE_EXPECTED_TEAMS = {}
 
 
 def _make_stop_after(n_sleeps):

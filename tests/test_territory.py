@@ -16,7 +16,8 @@ import config
 from config import (
     Screen, SQUARE_SIZE, GRID_OFFSET_X, GRID_OFFSET_Y,
     GRID_WIDTH, GRID_HEIGHT, THRONE_SQUARES, BORDER_COLORS,
-    ALL_TEAMS, set_territory_config,
+    ALL_TEAMS, set_territory_config, recompute_pass_blocked,
+    _MUTUAL_ZONE_TEAMS, _HOME_ZONE_TEAMS,
 )
 from territory import (
     _classify_square_team, _get_border_color, _has_flag,
@@ -47,6 +48,7 @@ def reset_territory_state():
     config.TERRITORY_SAFE_ZONES = {}
     config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
+    config.ZONE_EXPECTED_TEAMS = {}
     yield
     config.MY_TEAM_COLOR = orig_team
     config.ENEMY_TEAMS = orig_enemies
@@ -58,6 +60,7 @@ def reset_territory_state():
     config.TERRITORY_SAFE_ZONES = {}
     config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
+    config.ZONE_EXPECTED_TEAMS = {}
 
 
 # ============================================================
@@ -1372,4 +1375,187 @@ class TestScanTargetsPassFiltering:
         result = scan_targets(mock_device)
 
         # (5,6) should still be found as enemy target
+        assert (5, 6) in result["unflagged_enemies"]
+
+
+# ============================================================
+# Zone-expected-teams index (config.recompute_pass_blocked)
+# ============================================================
+
+class TestZoneExpectedTeams:
+    """Test that recompute_pass_blocked builds the ZONE_EXPECTED_TEAMS index."""
+
+    def test_mutual_zone_maps_to_two_teams(self):
+        """Mutual zone square → frozenset of 2 teams."""
+        config.TERRITORY_MUTUAL_ZONES = {
+            "fire_earth": [[5, 5], [5, 6]],
+        }
+        recompute_pass_blocked()
+        assert config.ZONE_EXPECTED_TEAMS[(5, 5)] == frozenset({"red", "yellow"})
+        assert config.ZONE_EXPECTED_TEAMS[(5, 6)] == frozenset({"red", "yellow"})
+
+    def test_home_zone_maps_to_three_teams(self):
+        """Home zone square → frozenset of 3 teams."""
+        config.TERRITORY_HOME_ZONES = {
+            "red": [[15, 0], [15, 1]],
+        }
+        recompute_pass_blocked()
+        assert config.ZONE_EXPECTED_TEAMS[(15, 0)] == frozenset({"red", "yellow", "blue"})
+
+    def test_safe_zone_maps_to_one_team(self):
+        """Safe zone square → frozenset of owning team only."""
+        config.TERRITORY_SAFE_ZONES = {
+            "yellow": [[0, 0], [0, 1]],
+        }
+        recompute_pass_blocked()
+        assert config.ZONE_EXPECTED_TEAMS[(0, 0)] == frozenset({"yellow"})
+
+    def test_overlap_intersects_teams(self):
+        """Square in both mutual + home → intersection of team sets."""
+        # fire_earth has {red, yellow}, red home has {red, yellow, blue}
+        # intersection = {red, yellow}
+        config.TERRITORY_MUTUAL_ZONES = {"fire_earth": [[10, 5]]}
+        config.TERRITORY_HOME_ZONES = {"red": [[10, 5]]}
+        recompute_pass_blocked()
+        assert config.ZONE_EXPECTED_TEAMS[(10, 5)] == frozenset({"red", "yellow"})
+
+    def test_overlap_narrows_further(self):
+        """Square in mutual + safe → intersection narrows to 1 team."""
+        # earth_forest has {yellow, green}, yellow safe has {yellow}
+        # intersection = {yellow}
+        config.TERRITORY_MUTUAL_ZONES = {"earth_forest": [[3, 3]]}
+        config.TERRITORY_SAFE_ZONES = {"yellow": [[3, 3]]}
+        recompute_pass_blocked()
+        assert config.ZONE_EXPECTED_TEAMS[(3, 3)] == frozenset({"yellow"})
+
+    def test_unzoned_square_not_in_index(self):
+        """Squares not in any zone are absent from the index."""
+        config.TERRITORY_MUTUAL_ZONES = {"fire_earth": [[5, 5]]}
+        recompute_pass_blocked()
+        assert (20, 20) not in config.ZONE_EXPECTED_TEAMS
+
+    def test_unknown_zone_key_ignored(self):
+        """Zone keys not in _MUTUAL_ZONE_TEAMS are skipped silently."""
+        config.TERRITORY_MUTUAL_ZONES = {"nonexistent_zone": [[1, 1]]}
+        recompute_pass_blocked()
+        assert (1, 1) not in config.ZONE_EXPECTED_TEAMS
+
+    def test_empty_zones_empty_index(self):
+        """No zones configured → empty index."""
+        recompute_pass_blocked()
+        assert config.ZONE_EXPECTED_TEAMS == {}
+
+
+# ============================================================
+# Zone-aware color classification
+# ============================================================
+
+class TestZoneAwareClassification:
+    """Test _classify_square_team with candidate_teams restriction."""
+
+    # Green-blue midpoint: (124, 160, 162) — ambiguous, 28.4 to green, 28.5 to blue
+    GREEN_BLUE_MID = (124, 160, 162)
+
+    def test_midpoint_resolved_green_in_earth_forest(self):
+        """Green/blue midpoint in earth_forest {yellow, green} → green (blue excluded)."""
+        result = _classify_square_team(
+            self.GREEN_BLUE_MID, device=None,
+            candidate_teams=frozenset({"yellow", "green"}),
+        )
+        assert result == "green"
+
+    def test_midpoint_resolved_blue_in_fire_ice(self):
+        """Green/blue midpoint in fire_ice {red, blue} → blue (green excluded)."""
+        result = _classify_square_team(
+            self.GREEN_BLUE_MID, device=None,
+            candidate_teams=frozenset({"red", "blue"}),
+        )
+        assert result == "blue"
+
+    def test_midpoint_unrestricted_picks_green(self):
+        """Green/blue midpoint with no restriction → green (distance 28.4 < 28.5)."""
+        result = _classify_square_team(self.GREEN_BLUE_MID, device=None)
+        assert result == "green"
+
+    def test_exact_green_in_fire_ice_blue_is_enemy(self):
+        """Exact green in fire_ice {red, blue} when blue IS an enemy: blue at 56.8 ≤ 70 → blue.
+        Acceptable misclassification — both green and blue are enemies."""
+        config.ENEMY_TEAMS = ["yellow", "green", "blue"]
+        exact_green = BORDER_COLORS["green"]
+        result = _classify_square_team(
+            exact_green, device=None,
+            candidate_teams=frozenset({"red", "blue"}),
+        )
+        # blue at 56.8 passes enemy threshold (70), so it matches
+        assert result == "blue"
+
+    def test_exact_green_in_fire_ice_blue_not_enemy(self):
+        """Exact green in fire_ice {red, blue} when blue is NOT an enemy:
+        blue at 56.8 > 55 (tight fallback) → no match → fallback → green."""
+        config.ENEMY_TEAMS = ["yellow"]  # blue not an enemy
+        exact_green = BORDER_COLORS["green"]
+        result = _classify_square_team(
+            exact_green, device=None,
+            candidate_teams=frozenset({"red", "blue"}),
+        )
+        # Falls back to all teams, finds exact green
+        assert result == "green"
+
+    def test_green_infiltrates_fire_earth_fallback(self):
+        """Exact green pixel in fire_earth {red, yellow}: no candidate within threshold → fallback → green."""
+        exact_green = BORDER_COLORS["green"]
+        # yellow is 92.7 away (>70 enemy, >90 own), red is 135.2 (>all)
+        result = _classify_square_team(
+            exact_green, device=None,
+            candidate_teams=frozenset({"red", "yellow"}),
+        )
+        assert result == "green"
+
+    def test_black_pixel_stays_unknown(self):
+        """Black pixel (0,0,0) → unknown even with candidates (all distances >95)."""
+        result = _classify_square_team(
+            (0, 0, 0), device=None,
+            candidate_teams=frozenset({"red", "yellow"}),
+        )
+        assert result == "unknown"
+
+    def test_forest_ice_both_candidates_same_as_unrestricted(self):
+        """forest_ice {green, blue} with green/blue midpoint → same result as unrestricted."""
+        restricted = _classify_square_team(
+            self.GREEN_BLUE_MID, device=None,
+            candidate_teams=frozenset({"green", "blue"}),
+        )
+        unrestricted = _classify_square_team(self.GREEN_BLUE_MID, device=None)
+        assert restricted == unrestricted
+
+    def test_no_candidates_same_as_unrestricted(self):
+        """candidate_teams=None → same as no restriction."""
+        bgr = BORDER_COLORS["red"]
+        restricted = _classify_square_team(bgr, device=None, candidate_teams=None)
+        unrestricted = _classify_square_team(bgr, device=None)
+        assert restricted == unrestricted
+
+    def test_exact_color_matches_in_zone(self):
+        """Exact team color matches when that team is a candidate."""
+        for team, bgr in BORDER_COLORS.items():
+            result = _classify_square_team(
+                bgr, device=None,
+                candidate_teams=frozenset({team}),
+            )
+            assert result == team, f"Exact {team} should match when it's the only candidate"
+
+    @patch("territory.load_screenshot")
+    def test_scan_targets_uses_zone_hints(self, mock_screenshot, mock_device):
+        """scan_targets passes zone candidates to classifier."""
+        config.ZONE_EXPECTED_TEAMS = {
+            (5, 5): frozenset({"red", "yellow"}),
+        }
+        # Put own team at (5,5), enemy at (5,6) — both exact colors
+        image = _make_territory_image({
+            (5, 5): BORDER_COLORS["red"],
+            (5, 6): BORDER_COLORS["yellow"],
+        })
+        mock_screenshot.return_value = image
+        result = scan_targets(mock_device)
+        # (5,5) = own, (5,6) = enemy — standard behavior preserved
         assert (5, 6) in result["unflagged_enemies"]

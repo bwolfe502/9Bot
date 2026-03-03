@@ -75,8 +75,12 @@ def _get_border_color(image, row, col):
     return (0, 0, 0)
 
 
-def _classify_square_team(bgr, device=None):
+def _classify_square_team(bgr, device=None, candidate_teams=None):
     """Determine team based on border color — find closest Euclidean match.
+
+    candidate_teams: optional frozenset of team colors expected in this zone.
+    When provided, only those teams are considered.  If none passes the threshold,
+    falls back to matching against all teams (handles third-team infiltration).
 
     Thresholds:
     - Green: <= 70 (neutral, always recognized)
@@ -90,11 +94,15 @@ def _classify_square_team(bgr, device=None):
     my_team = config.get_device_config(device, "my_team") if device else config.MY_TEAM_COLOR
     enemy_teams = config.get_device_enemy_teams(device) if device else config.ENEMY_TEAMS
 
+    check_colors = BORDER_COLORS
+    if candidate_teams is not None:
+        check_colors = {t: c for t, c in BORDER_COLORS.items() if t in candidate_teams}
+
     min_distance = float('inf')
     best_team = "unknown"
 
     distances = {}
-    for team, (target_b, target_g, target_r) in BORDER_COLORS.items():
+    for team, (target_b, target_g, target_r) in check_colors.items():
         distance = ((b - target_b)**2 + (g - target_g)**2 + (r - target_r)**2)**0.5
         distances[team] = distance
 
@@ -113,6 +121,10 @@ def _classify_square_team(bgr, device=None):
 
     if best_team == "unknown" and my_team in distances and distances[my_team] <= 95:
         return my_team
+
+    # Restricted search found no match — fall back to all teams
+    if candidate_teams is not None:
+        return _classify_square_team(bgr, device, candidate_teams=None)
 
     return "unknown"
 
@@ -393,6 +405,8 @@ def scan_targets(device):
     # --- First pass: classify every square ---
     grid = {}
     blocked = config.PASS_BLOCKED_SQUARES
+    zone_expected = config.ZONE_EXPECTED_TEAMS
+    zone_overrides = 0
     for row in range(GRID_HEIGHT):
         for col in range(GRID_WIDTH):
             if (row, col) in THRONE_SQUARES:
@@ -402,7 +416,17 @@ def scan_targets(device):
                 grid[(row, col)] = "blocked"
                 continue
             border_color = _get_border_color(image, row, col)
-            grid[(row, col)] = _classify_square_team(border_color, device=device)
+            candidates = zone_expected.get((row, col))
+            team = _classify_square_team(border_color, device=device,
+                                         candidate_teams=candidates)
+            # Track when zone filtering changed the result
+            if candidates:
+                team_raw = _classify_square_team(border_color, device=device)
+                if team_raw != team:
+                    zone_overrides += 1
+            grid[(row, col)] = team
+    if zone_overrides:
+        log.info("Zone hints overrode %d square classifications", zone_overrides)
 
     # --- Second pass: neighbor voting for isolated squares ---
     # If a square's team has zero neighbors of the same team but the majority
@@ -911,7 +935,9 @@ def diagnose_grid(device):
                 continue
 
             bgr = _get_border_color(image, row, col)
-            team = _classify_square_team(bgr, device=device)
+            candidates = config.ZONE_EXPECTED_TEAMS.get((row, col))
+            team = _classify_square_team(bgr, device=device,
+                                         candidate_teams=candidates)
             team_counts[team] = team_counts.get(team, 0) + 1
             row_chars.append(TEAM_CHAR.get(team, "?"))
 
@@ -936,6 +962,7 @@ def diagnose_grid(device):
                 "distance": round(best_dist, 1),
                 "has_flag": has_flg,
                 "is_adjacent": is_adj,
+                "zone_expected": sorted(candidates) if candidates else None,
             }
             square_data.append(sq)
 

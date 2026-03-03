@@ -256,12 +256,28 @@ TERRITORY_MUTUAL_ZONES = {}   # {"fire_earth": [[r,c],...], ...} — frontlines 
 TERRITORY_SAFE_ZONES = {}     # {"yellow": [[r,c],...], ...}
 TERRITORY_HOME_ZONES = {}     # {"yellow": [[r,c],...], ...}
 PASS_BLOCKED_SQUARES = set()  # computed from mutual/home/safe zones + pass ownership
+ZONE_EXPECTED_TEAMS = {}      # {(row,col): frozenset of team strings} — built by recompute_pass_blocked()
 
 BORDER_COLORS = {
     "yellow": (107, 223, 239),
     "green":  (100, 175, 160),  # recalibrated from live diagnostic data 2026-02-28
     "red":    (49, 85, 247),
     "blue":   (148, 145, 165)  # recalibrated from live diagnostic data 2026-02-28
+}
+
+# Which teams fight in each mutual zone (derived from map geometry)
+_MUTUAL_ZONE_TEAMS = {
+    "fire_earth":   frozenset({"red", "yellow"}),
+    "fire_ice":     frozenset({"red", "blue"}),
+    "earth_forest": frozenset({"yellow", "green"}),
+    "forest_ice":   frozenset({"green", "blue"}),
+}
+# Which teams can be in each home zone (home + 2 adjacent frontline teams)
+_HOME_ZONE_TEAMS = {
+    "red":    frozenset({"red", "yellow", "blue"}),
+    "yellow": frozenset({"red", "yellow", "green"}),
+    "green":  frozenset({"yellow", "green", "blue"}),
+    "blue":   frozenset({"red", "green", "blue"}),
 }
 
 # ============================================================
@@ -638,4 +654,30 @@ def recompute_pass_blocked():
             for rc in zone:
                 blocked.add(tuple(rc))
     PASS_BLOCKED_SQUARES = blocked
-    _log.debug("Pass-blocked squares recomputed: %d blocked", len(blocked))
+
+    # Build zone-expected-teams inverse index for color disambiguation.
+    # Maps (row, col) → frozenset of team colors that should be present.
+    global ZONE_EXPECTED_TEAMS
+    zone_map = {}
+    for zone_key, squares in TERRITORY_MUTUAL_ZONES.items():
+        teams = _MUTUAL_ZONE_TEAMS.get(zone_key)
+        if not teams:
+            continue
+        for rc in squares:
+            key = tuple(rc)
+            zone_map[key] = zone_map[key] & teams if key in zone_map else teams
+    for team, squares in TERRITORY_HOME_ZONES.items():
+        teams = _HOME_ZONE_TEAMS.get(team)
+        if not teams:
+            continue
+        for rc in squares:
+            key = tuple(rc)
+            zone_map[key] = zone_map[key] & teams if key in zone_map else teams
+    for team, squares in TERRITORY_SAFE_ZONES.items():
+        safe_team = frozenset({team})
+        for rc in squares:
+            key = tuple(rc)
+            zone_map[key] = zone_map[key] & safe_team if key in zone_map else safe_team
+    ZONE_EXPECTED_TEAMS = zone_map
+    _log.debug("Pass-blocked squares recomputed: %d blocked, %d zone-mapped",
+               len(blocked), len(zone_map))
