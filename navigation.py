@@ -196,11 +196,13 @@ def check_screen(device):
             training.save_training_image(device, "unknown_screen", screen,
                                          {"best": best_name, "conf": round(best_val * 100)})
 
-        # Soft popup dismiss (close_x) — try on any screen EXCEPT map_screen.
+        # Soft popup dismiss (close_x) — try on any screen EXCEPT map/war.
         # On MAP, close_x appears as part of normal flows (rally dialog, AP
         # window, search overlay) and must NOT be auto-dismissed.
+        # On WAR, close_x is part of rally detail/search UI — dismissing it
+        # closes the rally menu and breaks rally joining.
         # On other screens (td_screen overlays, unknown popups) it's safe.
-        if identified != Screen.MAP:
+        if identified not in (Screen.MAP, Screen.WAR):
             for tpl_path, popup_name, threshold in _POPUP_SOFT:
                 tpl = get_template(tpl_path)
                 if tpl is None:
