@@ -36,6 +36,9 @@ def reset_occupy_state():
     config.AUTO_HEAL_ENABLED = False
     config.MIN_TROOPS_AVAILABLE = 0
     config.DEVICE_STATUS.clear()
+    config.TERRITORY_PASSES = {}
+    config.TERRITORY_SAFE_ZONES = {}
+    config.PASS_BLOCKED_SQUARES = set()
     yield
     config.MY_TEAM_COLOR = orig_team
     config.ENEMY_TEAMS = orig_enemies
@@ -43,6 +46,9 @@ def reset_occupy_state():
     config.MANUAL_IGNORE_SQUARES.clear()
     config.LAST_ATTACKED_SQUARE.clear()
     config.DEVICE_STATUS.clear()
+    config.TERRITORY_PASSES = {}
+    config.TERRITORY_SAFE_ZONES = {}
+    config.PASS_BLOCKED_SQUARES = set()
 
 
 def _make_stop_after(n_sleeps):

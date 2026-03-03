@@ -5,14 +5,61 @@
 {% block content %}
 
 <div class="section-header">Territory Grid</div>
-<p class="muted" style="margin-bottom:12px;font-size:12px">
-    Click to cycle: <span style="color:#555">none</span> &rarr;
-    <span style="color:#4caf50">attack</span> &rarr;
-    <span style="color:#ef5350">ignore</span>
-</p>
 
+<!-- Tab toggle -->
+<div class="terr-tabs">
+    <div class="terr-tab active" id="tab-passes" onclick="switchTab('passes')">Passes</div>
+    <div class="terr-tab" id="tab-targets" onclick="switchTab('targets')">Targets</div>
+</div>
+
+<!-- Passes mode controls -->
+<div id="passes-controls">
+    <div class="terr-controls">
+        <select id="device-select" style="min-width:160px">
+            <option value="">Select device...</option>
+            {% for d in devices %}
+            <option value="{{ d }}">{{ d }}</option>
+            {% endfor %}
+        </select>
+        <button class="btn" style="padding:6px 12px;font-size:12px" onclick="loadBackground()">Load BG</button>
+    </div>
+    <div class="terr-controls">
+        <select id="zone-select" onchange="onZoneChange()">
+            <optgroup label="Passes">
+                <option value="pass-1">Pass 1</option>
+                <option value="pass-2">Pass 2</option>
+                <option value="pass-3">Pass 3</option>
+                <option value="pass-4">Pass 4</option>
+                <option value="pass-5">Pass 5</option>
+                <option value="pass-6">Pass 6</option>
+                <option value="pass-7">Pass 7</option>
+                <option value="pass-8">Pass 8</option>
+            </optgroup>
+            <optgroup label="Safe Zones">
+                <option value="safe-yellow">Safe: Yellow (Earth)</option>
+                <option value="safe-green">Safe: Green (Forest)</option>
+                <option value="safe-red">Safe: Red (Fire)</option>
+                <option value="safe-blue">Safe: Blue (Ice)</option>
+            </optgroup>
+        </select>
+        <input type="text" id="zone-name" placeholder="Name..." oninput="onNameChange()">
+    </div>
+
+    <!-- Pass ownership toggles -->
+    <div class="terr-pass-toggles" id="pass-toggles"></div>
+</div>
+
+<!-- Targets mode controls -->
+<div id="targets-controls" style="display:none">
+    <p class="muted" style="margin-bottom:12px;font-size:12px">
+        Click to cycle: <span style="color:#555">none</span> &rarr;
+        <span style="color:#4caf50">attack</span> &rarr;
+        <span style="color:#ef5350">ignore</span>
+    </p>
+</div>
+
+<!-- Grid -->
 <div class="card" style="padding:10px;overflow-x:auto">
-    <!-- Column numbers -->
     <div class="terr-grid-wrap">
         <div class="terr-grid-corner"></div>
         <div class="terr-col-headers" id="col-headers"></div>
@@ -24,8 +71,8 @@
 </div>
 
 <div style="display:flex;gap:8px;margin-top:12px">
-    <button class="btn btn-start" style="flex:1" onclick="saveGrid()">Save</button>
-    <button class="btn" style="flex:1" onclick="clearAll()">Clear All</button>
+    <button class="btn btn-start" style="flex:1" onclick="saveAll()">Save</button>
+    <button class="btn" style="flex:1" onclick="clearCurrent()">Clear</button>
 </div>
 
 <div id="save-status" style="margin-top:8px;font-size:12px;color:#4caf50;display:none"></div>
@@ -36,26 +83,63 @@
 <script>
 var GRID_SIZE = 24;
 var THRONE = {};
-var cellStates = {}; // "r,c" -> "none" | "attack" | "ignore"
+var currentTab = 'passes'; // 'passes' or 'targets'
 
-// Initialize throne set for quick lookup
+// Throne set
 [[11,11],[11,12],[12,11],[12,12]].forEach(function(rc) {
     THRONE[rc[0] + ',' + rc[1]] = true;
 });
+
+// --- Targets mode state ---
+var cellStates = {}; // "r,c" -> "none" | "attack" | "ignore"
+
+// --- Passes mode state ---
+var DEFAULT_NAMES = {
+    '1': 'Fire North', '2': 'Fire East',
+    '3': 'Earth South', '4': 'Earth East',
+    '5': 'Forest West', '6': 'Forest South',
+    '7': 'Ice West', '8': 'Ice North'
+};
+var PASS_COLORS = {
+    '1': 'terr-pass-1', '2': 'terr-pass-2', '3': 'terr-pass-3', '4': 'terr-pass-4',
+    '5': 'terr-pass-5', '6': 'terr-pass-6', '7': 'terr-pass-7', '8': 'terr-pass-8'
+};
+var SAFE_COLORS = {
+    'yellow': 'terr-safe-yellow', 'green': 'terr-safe-green',
+    'red': 'terr-safe-red', 'blue': 'terr-safe-blue'
+};
+var PASS_SWATCH_COLORS = {
+    '1': '#ef5350', '2': '#ff8a65', '3': '#ffd54f', '4': '#ffb74d',
+    '5': '#66bb6a', '6': '#81c784', '7': '#4fc3f7', '8': '#64b5f6'
+};
+var SAFE_SWATCH_COLORS = {
+    'yellow': '#ffeb3b', 'green': '#4caf50', 'red': '#f44336', 'blue': '#2196f3'
+};
+
+// Zone data: passes[id] = {name, zone: [[r,c],...], owned: bool}
+var passes = {};
+var safeZones = {}; // {team: [[r,c],...]}
+
+// Initialize default passes
+for (var i = 1; i <= 8; i++) {
+    passes[i] = {name: DEFAULT_NAMES[i], zone: [], owned: false};
+}
+
+// ============================================================
+// Grid build
+// ============================================================
 
 function buildGrid() {
     var colHeaders = document.getElementById('col-headers');
     var rowHeaders = document.getElementById('row-headers');
     var grid = document.getElementById('territory-grid');
 
-    // Column headers
     var colHtml = '';
     for (var c = 0; c < GRID_SIZE; c++) {
         colHtml += '<div class="terr-header-cell">' + c + '</div>';
     }
     colHeaders.innerHTML = colHtml;
 
-    // Row headers + grid cells
     var rowHtml = '';
     var gridHtml = '';
     for (var r = 0; r < GRID_SIZE; r++) {
@@ -67,7 +151,7 @@ function buildGrid() {
             if (isThrone) cls += ' terr-throne';
             gridHtml += '<div class="' + cls + '" data-r="' + r + '" data-c="' + c + '"';
             if (!isThrone) {
-                gridHtml += ' onclick="cycleCell(this)"';
+                gridHtml += ' onclick="onCellClick(this)"';
             }
             gridHtml += '>';
             if (isThrone) gridHtml += '<span class="terr-throne-label">T</span>';
@@ -78,7 +162,36 @@ function buildGrid() {
     grid.innerHTML = gridHtml;
 }
 
-function cycleCell(el) {
+// ============================================================
+// Tab switching
+// ============================================================
+
+function switchTab(tab) {
+    currentTab = tab;
+    document.getElementById('tab-passes').classList.toggle('active', tab === 'passes');
+    document.getElementById('tab-targets').classList.toggle('active', tab === 'targets');
+    document.getElementById('passes-controls').style.display = tab === 'passes' ? '' : 'none';
+    document.getElementById('targets-controls').style.display = tab === 'targets' ? '' : 'none';
+    renderGrid();
+}
+
+// ============================================================
+// Cell click handler (delegates to current mode)
+// ============================================================
+
+function onCellClick(el) {
+    if (currentTab === 'targets') {
+        cycleTargetCell(el);
+    } else {
+        paintZoneCell(el);
+    }
+}
+
+// ============================================================
+// Targets mode
+// ============================================================
+
+function cycleTargetCell(el) {
     var r = el.getAttribute('data-r');
     var c = el.getAttribute('data-c');
     var key = r + ',' + c;
@@ -87,47 +200,296 @@ function cycleCell(el) {
     if (current === 'none') next = 'attack';
     else if (current === 'attack') next = 'ignore';
     else next = 'none';
-
     cellStates[key] = next;
-    el.classList.remove('terr-attack', 'terr-ignore');
-    if (next === 'attack') el.classList.add('terr-attack');
-    else if (next === 'ignore') el.classList.add('terr-ignore');
+    renderGrid();
 }
 
-function applyState(attackList, ignoreList) {
-    // Reset all
-    cellStates = {};
-    document.querySelectorAll('.terr-cell').forEach(function(el) {
-        el.classList.remove('terr-attack', 'terr-ignore');
-    });
+// ============================================================
+// Passes mode — zone painting
+// ============================================================
 
-    attackList.forEach(function(rc) {
-        var key = rc[0] + ',' + rc[1];
-        cellStates[key] = 'attack';
-        var el = document.querySelector('.terr-cell[data-r="' + rc[0] + '"][data-c="' + rc[1] + '"]');
-        if (el) el.classList.add('terr-attack');
-    });
+function getSelectedZone() {
+    return document.getElementById('zone-select').value;
+}
 
-    ignoreList.forEach(function(rc) {
-        var key = rc[0] + ',' + rc[1];
-        cellStates[key] = 'ignore';
-        var el = document.querySelector('.terr-cell[data-r="' + rc[0] + '"][data-c="' + rc[1] + '"]');
-        if (el) el.classList.add('terr-ignore');
+function paintZoneCell(el) {
+    var r = parseInt(el.getAttribute('data-r'));
+    var c = parseInt(el.getAttribute('data-c'));
+    var sel = getSelectedZone();
+    var parts = sel.split('-');
+    var type = parts[0]; // 'pass' or 'safe'
+    var id = parts[1];   // '1'-'8' or team color
+
+    if (type === 'pass') {
+        var zone = passes[id].zone;
+        var idx = _findRC(zone, r, c);
+        if (idx >= 0) {
+            zone.splice(idx, 1); // remove
+        } else {
+            // Remove from any other pass or safe zone first
+            _removeFromAll(r, c);
+            zone.push([r, c]);
+        }
+    } else {
+        // safe zone
+        if (!safeZones[id]) safeZones[id] = [];
+        var sz = safeZones[id];
+        var idx = _findRC(sz, r, c);
+        if (idx >= 0) {
+            sz.splice(idx, 1);
+        } else {
+            _removeFromAll(r, c);
+            sz.push([r, c]);
+        }
+    }
+    renderGrid();
+}
+
+function _findRC(arr, r, c) {
+    for (var i = 0; i < arr.length; i++) {
+        if (arr[i][0] === r && arr[i][1] === c) return i;
+    }
+    return -1;
+}
+
+function _removeFromAll(r, c) {
+    for (var id in passes) {
+        var idx = _findRC(passes[id].zone, r, c);
+        if (idx >= 0) passes[id].zone.splice(idx, 1);
+    }
+    for (var team in safeZones) {
+        var idx = _findRC(safeZones[team], r, c);
+        if (idx >= 0) safeZones[team].splice(idx, 1);
+    }
+}
+
+// ============================================================
+// Zone name handling
+// ============================================================
+
+function onZoneChange() {
+    var sel = getSelectedZone();
+    var nameInput = document.getElementById('zone-name');
+    var parts = sel.split('-');
+    if (parts[0] === 'pass') {
+        nameInput.style.display = '';
+        nameInput.value = passes[parts[1]].name || '';
+    } else {
+        nameInput.style.display = 'none';
+    }
+    // Update dropdown text with name
+    updateDropdownLabels();
+}
+
+function onNameChange() {
+    var sel = getSelectedZone();
+    var parts = sel.split('-');
+    if (parts[0] === 'pass') {
+        passes[parts[1]].name = document.getElementById('zone-name').value;
+        updateDropdownLabels();
+        buildPassToggles();
+    }
+}
+
+function updateDropdownLabels() {
+    var opts = document.getElementById('zone-select').querySelectorAll('option');
+    opts.forEach(function(opt) {
+        if (opt.value.startsWith('pass-')) {
+            var id = opt.value.split('-')[1];
+            var name = passes[id].name || DEFAULT_NAMES[id];
+            opt.textContent = 'Pass ' + id + (name ? ' — ' + name : '');
+        }
     });
 }
 
-function loadGrid() {
+// ============================================================
+// Pass ownership toggles
+// ============================================================
+
+function buildPassToggles() {
+    var html = '';
+    for (var i = 1; i <= 8; i++) {
+        var p = passes[i];
+        var owned = p.owned;
+        var name = p.name || DEFAULT_NAMES[i];
+        var count = p.zone.length;
+        html += '<label class="terr-pass-toggle' + (owned ? ' owned' : '') + '" data-id="' + i + '">';
+        html += '<input type="checkbox"' + (owned ? ' checked' : '') + ' onchange="togglePass(' + i + ', this.checked)">';
+        html += '<span class="terr-pass-swatch" style="background:' + PASS_SWATCH_COLORS[i] + '"></span>';
+        html += name + (count ? ' (' + count + ')' : '');
+        html += '</label>';
+    }
+    document.getElementById('pass-toggles').innerHTML = html;
+}
+
+function togglePass(id, owned) {
+    passes[id].owned = owned;
+    // Quick toggle — save immediately
+    fetch(RELAY_PREFIX + '/api/territory/passes/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: String(id), owned: owned})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) {
+            showStatus('Pass ' + id + ' ' + (owned ? 'owned' : 'unowned') + ' — ' + data.blocked + ' squares blocked');
+        }
+    })
+    .catch(function(err) { console.error('Toggle failed:', err); });
+    buildPassToggles();
+    renderGrid();
+}
+
+// ============================================================
+// Grid rendering
+// ============================================================
+
+function renderGrid() {
+    var cells = document.querySelectorAll('.terr-cell');
+    // Build lookup for fast zone painting
+    var cellZone = {}; // "r,c" -> class name
+
+    if (currentTab === 'passes') {
+        // Paint pass zones
+        for (var id in passes) {
+            var cls = PASS_COLORS[id];
+            var unowned = !passes[id].owned;
+            passes[id].zone.forEach(function(rc) {
+                cellZone[rc[0] + ',' + rc[1]] = cls + (unowned ? ' terr-pass-unowned' : '');
+            });
+        }
+        // Paint safe zones
+        for (var team in safeZones) {
+            var cls = SAFE_COLORS[team];
+            if (!cls) continue;
+            safeZones[team].forEach(function(rc) {
+                cellZone[rc[0] + ',' + rc[1]] = cls;
+            });
+        }
+    }
+
+    cells.forEach(function(el) {
+        var r = el.getAttribute('data-r');
+        var c = el.getAttribute('data-c');
+        var key = r + ',' + c;
+        if (THRONE[key]) return;
+
+        // Clear all zone/target classes
+        el.className = 'terr-cell';
+
+        if (currentTab === 'passes') {
+            var zc = cellZone[key];
+            if (zc) {
+                zc.split(' ').forEach(function(cn) { if (cn) el.classList.add(cn); });
+            }
+        } else {
+            var state = cellStates[key] || 'none';
+            if (state === 'attack') el.classList.add('terr-attack');
+            else if (state === 'ignore') el.classList.add('terr-ignore');
+        }
+    });
+}
+
+// ============================================================
+// Background screenshot
+// ============================================================
+
+function loadBackground() {
+    var device = document.getElementById('device-select').value;
+    if (!device) { alert('Select a device first'); return; }
+    var grid = document.getElementById('territory-grid');
+    var url = RELAY_PREFIX + '/api/territory/screenshot?device=' + encodeURIComponent(device);
+    grid.style.backgroundImage = 'url(' + url + '&t=' + Date.now() + ')';
+    grid.classList.add('has-bg');
+}
+
+// ============================================================
+// Load / Save
+// ============================================================
+
+function loadZones() {
+    fetch(RELAY_PREFIX + '/api/territory/zones')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            // Merge loaded passes with defaults
+            var loaded = data.passes || {};
+            for (var id in loaded) {
+                passes[id] = {
+                    name: loaded[id].name || DEFAULT_NAMES[id] || '',
+                    zone: loaded[id].zone || [],
+                    owned: !!loaded[id].owned
+                };
+            }
+            safeZones = data.safe_zones || {};
+            buildPassToggles();
+            updateDropdownLabels();
+            onZoneChange();
+            renderGrid();
+        })
+        .catch(function(err) { console.error('Failed to load zones:', err); });
+}
+
+function loadTargets() {
     fetch(RELAY_PREFIX + '/api/territory/grid')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            applyState(data.attack || [], data.ignore || []);
+            cellStates = {};
+            (data.attack || []).forEach(function(rc) {
+                cellStates[rc[0] + ',' + rc[1]] = 'attack';
+            });
+            (data.ignore || []).forEach(function(rc) {
+                cellStates[rc[0] + ',' + rc[1]] = 'ignore';
+            });
+            if (currentTab === 'targets') renderGrid();
         })
-        .catch(function(err) {
-            console.error('Failed to load grid:', err);
-        });
+        .catch(function(err) { console.error('Failed to load grid:', err); });
 }
 
-function saveGrid() {
+function saveAll() {
+    if (currentTab === 'passes') {
+        saveZones();
+    } else {
+        saveTargets();
+    }
+}
+
+function saveZones() {
+    // Build clean passes object for API
+    var cleanPasses = {};
+    for (var id in passes) {
+        if (passes[id].zone.length > 0 || passes[id].name !== DEFAULT_NAMES[id]) {
+            cleanPasses[id] = {
+                name: passes[id].name,
+                zone: passes[id].zone,
+                owned: passes[id].owned
+            };
+        }
+    }
+    var cleanSafe = {};
+    for (var team in safeZones) {
+        if (safeZones[team].length > 0) {
+            cleanSafe[team] = safeZones[team];
+        }
+    }
+    fetch(RELAY_PREFIX + '/api/territory/zones', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({passes: cleanPasses, safe_zones: cleanSafe})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) {
+            var total = 0;
+            for (var id in passes) total += passes[id].zone.length;
+            for (var t in safeZones) total += safeZones[t].length;
+            showStatus('Zones saved (' + total + ' squares, ' + data.blocked + ' blocked)');
+        }
+    })
+    .catch(function(err) { console.error('Failed to save zones:', err); });
+}
+
+function saveTargets() {
     var attack = [];
     var ignore = [];
     Object.keys(cellStates).forEach(function(key) {
@@ -136,7 +498,6 @@ function saveGrid() {
         if (cellStates[key] === 'attack') attack.push(rc);
         else if (cellStates[key] === 'ignore') ignore.push(rc);
     });
-
     fetch(RELAY_PREFIX + '/api/territory/grid', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
@@ -144,26 +505,41 @@ function saveGrid() {
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        if (data.ok) {
-            var el = document.getElementById('save-status');
-            el.textContent = 'Saved (' + attack.length + ' attack, ' + ignore.length + ' ignore)';
-            el.style.display = 'block';
-            setTimeout(function() { el.style.display = 'none'; }, 3000);
-        }
+        if (data.ok) showStatus('Saved (' + attack.length + ' attack, ' + ignore.length + ' ignore)');
     })
-    .catch(function(err) {
-        console.error('Failed to save grid:', err);
-    });
+    .catch(function(err) { console.error('Failed to save grid:', err); });
 }
 
-function clearAll() {
-    cellStates = {};
-    document.querySelectorAll('.terr-cell').forEach(function(el) {
-        el.classList.remove('terr-attack', 'terr-ignore');
-    });
+function clearCurrent() {
+    if (currentTab === 'passes') {
+        var sel = getSelectedZone();
+        var parts = sel.split('-');
+        if (parts[0] === 'pass') {
+            passes[parts[1]].zone = [];
+        } else {
+            safeZones[parts[1]] = [];
+        }
+        buildPassToggles();
+    } else {
+        cellStates = {};
+    }
+    renderGrid();
 }
+
+function showStatus(msg) {
+    var el = document.getElementById('save-status');
+    el.textContent = msg;
+    el.style.display = 'block';
+    setTimeout(function() { el.style.display = 'none'; }, 3000);
+}
+
+// ============================================================
+// Init
+// ============================================================
 
 buildGrid();
-loadGrid();
+loadZones();
+loadTargets();
+onZoneChange();
 </script>
 {% endblock %}

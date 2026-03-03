@@ -443,6 +443,10 @@ def apply_settings(settings):
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
     set_protocol_enabled(settings.get("protocol_enabled", False))
+    # Territory passes & safe zones
+    config.TERRITORY_PASSES = settings.get("territory_passes", {})
+    config.TERRITORY_SAFE_ZONES = settings.get("territory_safe_zones", {})
+    config.recompute_pass_blocked()
     # Per-device protocol reconciliation (after device_settings are applied below)
     # Deferred to end of function — see _reconcile_protocol() call.
     for dev_id, count in settings.get("device_troops", {}).items():

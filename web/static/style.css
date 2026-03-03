@@ -1401,6 +1401,110 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     user-select: none;
 }
 
+/* Pass zone colors (semi-transparent overlays) */
+.terr-pass-1 { background: rgba(239, 83, 80, 0.45); }   /* Fire North — red */
+.terr-pass-2 { background: rgba(255, 138, 101, 0.45); }  /* Fire East — orange-red */
+.terr-pass-3 { background: rgba(255, 213, 79, 0.45); }   /* Earth South — amber */
+.terr-pass-4 { background: rgba(255, 183, 77, 0.45); }   /* Earth East — orange */
+.terr-pass-5 { background: rgba(102, 187, 106, 0.45); }  /* Forest West — green */
+.terr-pass-6 { background: rgba(129, 199, 132, 0.45); }  /* Forest South — light green */
+.terr-pass-7 { background: rgba(79, 195, 247, 0.45); }   /* Ice West — light blue */
+.terr-pass-8 { background: rgba(100, 181, 246, 0.45); }   /* Ice North — blue */
+/* Safe zone colors */
+.terr-safe-yellow { background: rgba(255, 235, 59, 0.35); }
+.terr-safe-green  { background: rgba(76, 175, 80, 0.35); }
+.terr-safe-red    { background: rgba(244, 67, 54, 0.35); }
+.terr-safe-blue   { background: rgba(33, 150, 243, 0.35); }
+
+/* Dimmed state for unowned passes */
+.terr-pass-unowned { opacity: 0.4; }
+
+/* Pass zone editor controls */
+.terr-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+.terr-tab {
+    flex: 1;
+    padding: 8px 0;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    color: #889;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.terr-tab.active {
+    background: rgba(0, 188, 212, 0.12);
+    border-color: rgba(0, 188, 212, 0.3);
+    color: #00bcd4;
+}
+.terr-controls {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 10px;
+}
+.terr-controls select,
+.terr-controls input[type="text"] {
+    background: #14142a;
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #e0e0f0;
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+    outline: none;
+}
+.terr-controls select { min-width: 140px; }
+.terr-controls input[type="text"] { width: 120px; }
+.terr-pass-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 10px 0;
+}
+.terr-pass-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    cursor: pointer;
+    user-select: none;
+    transition: all 0.15s;
+}
+.terr-pass-toggle.owned {
+    background: rgba(0, 188, 212, 0.12);
+    border-color: rgba(0, 188, 212, 0.25);
+    color: #4dd0e1;
+}
+.terr-pass-toggle input { display: none; }
+.terr-pass-swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+/* Background image behind grid */
+.terr-grid.has-bg {
+    background-size: 100% 100%;
+    background-position: top left;
+}
+.terr-grid.has-bg .terr-cell {
+    background: transparent;
+}
+.terr-grid.has-bg .terr-cell.terr-throne {
+    background: rgba(51, 51, 85, 0.5);
+}
+
 /* Footer debug link */
 .page-footer {
     text-align: center;

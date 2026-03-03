@@ -61,6 +61,8 @@ DEFAULTS = {
     "collect_training_data": False,
     "protocol_enabled": False,
     "chat_mirror": True,
+    "territory_passes": {},
+    "territory_safe_zones": {},
 }
 
 

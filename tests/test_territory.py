@@ -42,12 +42,18 @@ def reset_territory_state():
     config.LAST_ATTACKED_SQUARE.clear()
     config.AUTO_HEAL_ENABLED = False
     config.MIN_TROOPS_AVAILABLE = 0
+    config.TERRITORY_PASSES = {}
+    config.TERRITORY_SAFE_ZONES = {}
+    config.PASS_BLOCKED_SQUARES = set()
     yield
     config.MY_TEAM_COLOR = orig_team
     config.ENEMY_TEAMS = orig_enemies
     config.MANUAL_ATTACK_SQUARES.clear()
     config.MANUAL_IGNORE_SQUARES.clear()
     config.LAST_ATTACKED_SQUARE.clear()
+    config.TERRITORY_PASSES = {}
+    config.TERRITORY_SAFE_ZONES = {}
+    config.PASS_BLOCKED_SQUARES = set()
 
 
 # ============================================================
@@ -1180,3 +1186,119 @@ class TestDiagnoseGrid:
         # mock_device is "127.0.0.1:9999" → "127_0_0_1_9999"
         assert ":" not in saved_path
         assert "127_0_0_1_9999" in saved_path
+
+
+# ============================================================
+# recompute_pass_blocked + scan_targets pass filtering
+# ============================================================
+
+class TestRecomputePassBlocked:
+    """Test config.recompute_pass_blocked() correctness."""
+
+    def test_empty_passes_and_zones(self):
+        config.TERRITORY_PASSES = {}
+        config.TERRITORY_SAFE_ZONES = {}
+        config.recompute_pass_blocked()
+        assert config.PASS_BLOCKED_SQUARES == set()
+
+    def test_unowned_pass_blocks_zone(self):
+        config.TERRITORY_PASSES = {
+            "1": {"name": "Fire North", "zone": [[5, 5], [5, 6]], "owned": False}
+        }
+        config.recompute_pass_blocked()
+        assert (5, 5) in config.PASS_BLOCKED_SQUARES
+        assert (5, 6) in config.PASS_BLOCKED_SQUARES
+
+    def test_owned_pass_not_blocked(self):
+        config.TERRITORY_PASSES = {
+            "1": {"name": "Fire North", "zone": [[5, 5], [5, 6]], "owned": True}
+        }
+        config.recompute_pass_blocked()
+        assert (5, 5) not in config.PASS_BLOCKED_SQUARES
+        assert (5, 6) not in config.PASS_BLOCKED_SQUARES
+
+    def test_mixed_owned_unowned(self):
+        config.TERRITORY_PASSES = {
+            "1": {"name": "A", "zone": [[1, 1]], "owned": True},
+            "2": {"name": "B", "zone": [[2, 2]], "owned": False},
+        }
+        config.recompute_pass_blocked()
+        assert (1, 1) not in config.PASS_BLOCKED_SQUARES
+        assert (2, 2) in config.PASS_BLOCKED_SQUARES
+
+    def test_enemy_safe_zones_blocked(self):
+        config.MY_TEAM_COLOR = "red"
+        config.TERRITORY_SAFE_ZONES = {
+            "red": [[0, 0]],
+            "blue": [[23, 23]],
+            "yellow": [[0, 23]],
+        }
+        config.recompute_pass_blocked()
+        # Own safe zone NOT blocked
+        assert (0, 0) not in config.PASS_BLOCKED_SQUARES
+        # Enemy safe zones blocked
+        assert (23, 23) in config.PASS_BLOCKED_SQUARES
+        assert (0, 23) in config.PASS_BLOCKED_SQUARES
+
+    def test_union_of_passes_and_safe_zones(self):
+        config.MY_TEAM_COLOR = "red"
+        config.TERRITORY_PASSES = {
+            "1": {"name": "A", "zone": [[3, 3]], "owned": False}
+        }
+        config.TERRITORY_SAFE_ZONES = {
+            "blue": [[7, 7]],
+        }
+        config.recompute_pass_blocked()
+        assert (3, 3) in config.PASS_BLOCKED_SQUARES
+        assert (7, 7) in config.PASS_BLOCKED_SQUARES
+
+
+class TestScanTargetsPassFiltering:
+    """Test that scan_targets skips PASS_BLOCKED_SQUARES."""
+
+    @patch("territory.load_screenshot")
+    def test_blocked_square_skipped_in_scan(self, mock_screenshot, mock_device):
+        """An enemy square behind an unowned pass is not targetable."""
+        # Set up: (5,5) is red (own), (5,6) is yellow (enemy), adjacent
+        # But (5,6) is blocked by a pass
+        config.PASS_BLOCKED_SQUARES = {(5, 6)}
+        image = _make_territory_image({
+            (5, 5): BORDER_COLORS["red"],
+            (5, 6): BORDER_COLORS["yellow"],
+        })
+        mock_screenshot.return_value = image
+
+        result = scan_targets(mock_device)
+
+        # (5,6) should be classified as "blocked", not as enemy
+        assert (5, 6) not in result["unflagged_enemies"]
+        assert (5, 6) not in result["flagged_enemies"]
+
+    @patch("territory.load_screenshot")
+    def test_blocked_square_filtered_from_manual_attack(self, mock_screenshot, mock_device):
+        """MANUAL_ATTACK_SQUARES override still respects pass blocking."""
+        config.MANUAL_ATTACK_SQUARES = {(3, 3), (4, 4)}
+        config.PASS_BLOCKED_SQUARES = {(3, 3)}
+        image = _make_territory_image()
+        mock_screenshot.return_value = image
+
+        result = scan_targets(mock_device)
+
+        # (3,3) blocked → filtered out, (4,4) remains
+        assert (3, 3) not in result["unflagged_enemies"]
+        assert (4, 4) in result["unflagged_enemies"]
+
+    @patch("territory.load_screenshot")
+    def test_unblocked_square_still_targetable(self, mock_screenshot, mock_device):
+        """Squares NOT in PASS_BLOCKED_SQUARES work normally."""
+        config.PASS_BLOCKED_SQUARES = {(10, 10)}  # somewhere else
+        image = _make_territory_image({
+            (5, 5): BORDER_COLORS["red"],
+            (5, 6): BORDER_COLORS["yellow"],
+        })
+        mock_screenshot.return_value = image
+
+        result = scan_targets(mock_device)
+
+        # (5,6) should still be found as enemy target
+        assert (5, 6) in result["unflagged_enemies"]

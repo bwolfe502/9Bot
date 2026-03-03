@@ -1152,7 +1152,8 @@ def create_app():
 
     @app.route("/territory")
     def territory_page():
-        return render_template("territory.html")
+        devs = _cached_devices()[0]
+        return render_template("territory.html", devices=devs)
 
     @app.route("/api/territory/grid")
     def api_territory_grid():
@@ -1168,6 +1169,71 @@ def create_app():
         config.MANUAL_ATTACK_SQUARES = {tuple(s) for s in data.get("attack", [])}
         config.MANUAL_IGNORE_SQUARES = {tuple(s) for s in data.get("ignore", [])}
         return jsonify({"ok": True})
+
+    @app.route("/api/territory/zones")
+    def api_territory_zones():
+        return jsonify({
+            "passes": config.TERRITORY_PASSES,
+            "safe_zones": config.TERRITORY_SAFE_ZONES,
+        })
+
+    @app.route("/api/territory/zones", methods=["POST"])
+    def api_territory_zones_save():
+        data = request.get_json()
+        passes = data.get("passes", {})
+        safe_zones = data.get("safe_zones", {})
+        config.TERRITORY_PASSES = passes
+        config.TERRITORY_SAFE_ZONES = safe_zones
+        config.recompute_pass_blocked()
+        # Persist to settings.json
+        from settings import load_settings, save_settings
+        settings = load_settings()
+        settings["territory_passes"] = passes
+        settings["territory_safe_zones"] = safe_zones
+        save_settings(settings)
+        return jsonify({"ok": True, "blocked": len(config.PASS_BLOCKED_SQUARES)})
+
+    @app.route("/api/territory/passes/toggle", methods=["POST"])
+    def api_territory_pass_toggle():
+        data = request.get_json()
+        pass_id = str(data.get("id", ""))
+        if pass_id not in config.TERRITORY_PASSES:
+            return jsonify({"error": "Unknown pass ID"}), 400
+        owned = bool(data.get("owned", False))
+        config.TERRITORY_PASSES[pass_id]["owned"] = owned
+        config.recompute_pass_blocked()
+        # Persist
+        from settings import load_settings, save_settings
+        settings = load_settings()
+        if "territory_passes" not in settings:
+            settings["territory_passes"] = {}
+        settings["territory_passes"] = config.TERRITORY_PASSES
+        save_settings(settings)
+        return jsonify({"ok": True, "blocked": len(config.PASS_BLOCKED_SQUARES)})
+
+    @app.route("/api/territory/screenshot")
+    def api_territory_screenshot():
+        """JPEG crop of the territory grid area for background overlay."""
+        device = request.args.get("device", "")
+        if not device:
+            return "Missing device parameter", 400
+        known = set(_cached_devices()[0])
+        if device not in known:
+            return "Unknown device", 404
+        import io
+        import cv2
+        from flask import send_file
+        from config import GRID_OFFSET_X, GRID_OFFSET_Y, GRID_WIDTH, GRID_HEIGHT, SQUARE_SIZE
+        screen = load_screenshot(device)
+        if screen is None:
+            return "Screenshot failed", 500
+        # Crop to grid area
+        gw = int(GRID_WIDTH * SQUARE_SIZE)
+        gh = int(GRID_HEIGHT * SQUARE_SIZE)
+        crop = screen[GRID_OFFSET_Y:GRID_OFFSET_Y + gh,
+                       GRID_OFFSET_X:GRID_OFFSET_X + gw]
+        _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 40])
+        return send_file(io.BytesIO(buf.tobytes()), mimetype="image/jpeg")
 
     # --- QR code generator ---
 

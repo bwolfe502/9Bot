@@ -250,6 +250,11 @@ GRID_WIDTH = 24
 GRID_HEIGHT = 24
 THRONE_SQUARES = {(11, 11), (11, 12), (12, 11), (12, 12)}
 
+# Territory passes & safe zones (loaded from settings.json)
+TERRITORY_PASSES = {}       # {"1": {"name": "Fire North", "zone": [[r,c],...], "owned": false}, ...}
+TERRITORY_SAFE_ZONES = {}   # {"yellow": [[r,c],...], "green": [...], ...}
+PASS_BLOCKED_SQUARES = set()  # computed: union of unowned pass zones + enemy safe zones
+
 BORDER_COLORS = {
     "yellow": (107, 223, 239),
     "green":  (100, 175, 160),  # recalibrated from live diagnostic data 2026-02-28
@@ -570,3 +575,25 @@ def set_territory_config(my_team, enemy_teams=None):
     else:
         ENEMY_TEAMS = [t for t in ALL_TEAMS if t != my_team]
     _log.info("Territory config: My team = %s, Enemies = %s", my_team, ENEMY_TEAMS)
+
+
+def recompute_pass_blocked():
+    """Rebuild PASS_BLOCKED_SQUARES from current passes and safe zones.
+
+    Blocked = union of (unowned pass zones) + (enemy safe zones).
+    Called on settings load, pass toggle, or team color change.
+    """
+    global PASS_BLOCKED_SQUARES
+    blocked = set()
+    # Unowned pass zones
+    for pass_info in TERRITORY_PASSES.values():
+        if not pass_info.get("owned", False):
+            for rc in pass_info.get("zone", []):
+                blocked.add(tuple(rc))
+    # Enemy safe zones (everything except own team)
+    for team, zone in TERRITORY_SAFE_ZONES.items():
+        if team != MY_TEAM_COLOR:
+            for rc in zone:
+                blocked.add(tuple(rc))
+    PASS_BLOCKED_SQUARES = blocked
+    _log.debug("Pass-blocked squares recomputed: %d blocked", len(blocked))
