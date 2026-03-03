@@ -1,157 +1,130 @@
 # Action Success Rates and Failure Patterns
 
-## Session 2026-03-02 (v2.0.6, Windows, device 127.0.0.1:5635, 15 min)
+## Aggregate Totals (Sessions 8-12, 2026-03-02, v2.0.6-v2.0.7)
 
-### Action Summary
+| Action | Attempts | Successes | Rate | Trend vs Prior |
+|--------|----------|-----------|------|----------------|
+| join_rally | 215 | 0 | **0%** | Same (0%) |
+| recall_tower | 14 | 3 | **21%** | NEW |
+| pvp_attack | 19 | 7 | **37%** | Worse (was ~50%) |
+| rally_eg | 25 | 10 | **40%** | NEW |
+| occupy_tower | 18 | 8 | **44%** | NEW |
+| rally_titan | 197 | 141 | **72%** | Improved (was 69%) |
+| restore_ap | 37 | 34 | 92% | Stable |
+| check_quests | 166 | 156 | 94% | Stable |
+| mine_mithril | 45 | 44 | 98% | Stable |
+| heal_all | 89 | 88 | 99% | Stable |
+| gather_gold | 33 | 33 | 100% | Stable |
 
-| Action       | Attempts | Success | Fail | Rate   | Avg Time | Notes                          |
-|--------------|----------|---------|------|--------|----------|--------------------------------|
-| heal_all     |    19    |   19    |   0  | 100%   |  2.0s    | Working perfectly               |
-| rally_titan  |    13    |    9    |   4  |  69%   | 19.4s    | Improved from previous sessions |
-| join_rally   |    10    |    0    |  10  |   0%   | 15.3s    | BROKEN -- 0% success            |
-| restore_ap   |     4    |    4    |   0  | 100%   | 15.4s    | Working perfectly               |
-| check_quests |     4    |    4    |   0  | 100%   | 141.8s   | Long but reliable               |
-| mine_mithril |     1    |    1    |   0  | 100%   | 67.0s    | Single successful run           |
+**6 devices tested**: :5635, :5555, :5625, :5645, :5655, :5585, emulator-5554
 
-### join_rally -- 0% success [CRITICAL]
+---
 
-**Error pattern**: All 10 failures logged as "unknown" with durations 11.4-27.0s.
+## join_rally -- 0% success [CRITICAL, CONFIRMED]
 
-**Timeline of failures** (from stats errors):
+**215/215 failures across all 7 devices, all 5 sessions.**
+
+The `jr_detail_load` transition (3s budget) NEVER succeeds. After tapping a join button on the
+war screen, `depart.png` never appears. Pattern:
+1. Protocol early bail-out works correctly (returns [] when no rallies, saves 20-30s)
+2. UI fallback: war screen scan finds join buttons, owner OCR reads names correctly
+3. Join button tapped, but rally is already full/departed by the time detail loads
+4. 38 individual depart-not-found failures in the log session alone
+
+**Session 12 log detail**: The 3 successful EG joins (20:08-20:15) suggest joining CAN work
+when rallies are fresh. The 38 failures clustered 19:46-20:04 were against already-full
+Morteza titan rallies. The issue may be timing (rallies filling faster than bot can tap)
+rather than a template/UI bug.
+
+**avg failure time**: 1.8s (with protocol) to 31.9s (UI-only scroll)
+
+---
+
+## recall_tower -- 21% success [HIGH]
+
+**3/14 successes. 11 consecutive failures in session 12 (emulator-5554).**
+
+Root cause: `statuses/defending.png` matches at only 52-60% on emulator-5554 (threshold 80%).
+Protocol troop data confirms a troop IS defending -- the vision template just doesn't match
+on this device. Device :5625 matches at 100%.
+
+**Cascade**: quest OCR detects "troop still defending", recall attempted, defending icon not
+found, recall returns False, next cycle repeats. 3 cycles observed (19:33, 19:36, 19:39).
+
+---
+
+## rally_eg -- 40% success [MODERATE]
+
+**10/25 successes across 5 devices.**
+
+Failure modes:
+- `eg_search_menu_open`: 3/25 (12%) met -- EG search menu rarely opens on first try
+- `eg_p6_boss_tap` / `eg_p6_attack_dialog`: 0/14 met across 3 devices -- P6 dialog never opens
+- P6 failure logged: "attack dialog never opened after 3 attempts -- aborting" (20:15)
+- `eg_proceed_to_depart`: 4/16 (25%) met on :5625
+
+---
+
+## pvp_attack -- 37% success [MODERATE]
+
+**7/19 successes across 4 devices.**
+
+Prior cross-session analysis showed 22x "attack menu did not open" + 56 "PVP: attack menu
+did not open" warnings. Tower state changes between navigation and tap. Depart threshold
+lowered to 0.7 (vs 0.8 standard) helps but doesn't solve the root cause.
+
+---
+
+## rally_titan -- 72% success [IMPROVED]
+
+**141/197 successes (was 69% in session 7). Per-device range: 63-83%.**
+
+| Device | Rate | Attempts |
+|--------|------|----------|
+| :5635 | 83% | 29 |
+| :5645 | 77% | 13 |
+| :5555 | 81% | 27 |
+| :5625 | 71% | 35 |
+| :5655 | 67% | 48 |
+| :5585 | 100% | 1 |
+| emulator-5554 | 63% | 43 |
+
+**titan_on_map_select: 0/218 met across all sessions.** The blind tap at (540,900) never
+triggers the timed_wait condition. When it DOES hit the titan, depart appears, but the
+timed_wait still reports 0% because the condition function checks for something else.
+Rally_titan succeeds via the retry-and-search loop, not via this transition.
+
+**2 full 3-retry exhaustions** in session 12 (emulator-5554 at 19:37 and 19:53, 51s and 56.5s).
+
+---
+
+## Failure Cascades (from session 12 logs)
+
+### Cascade 1 -- Morteza rally join failure chain (19:46-19:47)
+Frida detached at 19:43 → no protocol fast path → UI rally scan → all Morteza titan rallies
+already full → 38 depart-not-found failures across 2 devices simultaneously.
+
+### Cascade 2 -- WAR screen stuck (19:58)
+rally_titan completes → check_screen returns WAR → back_arrow tapped at 99% → screen stays WAR
+→ navigation recursion limit hit × 2 → eventually resolves on third attempt.
+
+### Cascade 3 -- Tower recall loop (19:33-19:39)
+Quest OCR detects defending troop → defending.png at 59% → recall fails → next cycle repeats × 3.
+
+### Cascade 4 -- P6 Evil Guard attack failure (20:15-20:16)
+EG tapped at coordinates → attack dialog never opens after 3 attempts → ERROR abort.
+
+---
+
+## Memory Spike Pattern [NEW, HIGH]
+
+Session 12 logs show extreme memory deltas:
 ```
-14:33:57  join_rally  15.2s  (first attempt)
-14:35:27  join_rally  11.7s
-14:36:25  join_rally  15.3s
-14:37:31  join_rally  27.0s  (longest -- likely more scrolling)
-14:40:26  join_rally  12.0s
-14:41:39  join_rally  11.6s
-14:42:11  join_rally  11.4s
-14:44:59  join_rally  12.1s
-14:45:34  join_rally  11.6s
-14:46:21  join_rally  25.5s
+20:04:05 [127.0.0.1:5625] check_quests completed: +5658.1 MB, RSS: 6173 MB
+20:07:45 [emulator-5554]   check_quests completed: +5623.4 MB, RSS: 6137 MB
+20:04:16 [127.0.0.1:5635]  check_quests completed: +1521.3 MB, RSS: 6130 MB
 ```
 
-**Root cause analysis**:
-- `jr_scroll_down_settle`: 0/18 met -- scroll animation never produces expected UI state
-- `jr_scroll_up_settle`: 0/10 met -- same issue in reverse direction
-- The join_rally function scrolls the war screen looking for join buttons but the scroll
-  settle condition never triggers, so it burns through the budget on every attempt
-- This correlates with 86x "Rally loop: could not join or start any rally" warnings in logs
-- **Recommendation**: Needs complete rework. Protocol fast-path (already implemented) should
-  be the primary path when available. UI fallback needs new scroll detection logic.
-
-### rally_titan -- 69% success [IMPROVED BUT STILL FAILING]
-
-**Error pattern**: 4 failures at 1.3-1.6s each (fast fails = titan walked off-center).
-
-**Timeline of failures**:
-```
-14:37:36  rally_titan  1.3s
-14:39:16  rally_titan  1.4s
-14:42:17  rally_titan  1.6s
-14:43:53  rally_titan  1.6s
-```
-
-**Analysis**:
-- `titan_on_map_select`: 0/10 met -- the timed_wait checking for titan popup after blind tap
-  never detects the popup. This is the known issue where blind tap (540,900) misses when
-  titan walks to a different position after search.
-- `titan_depart_settle`: 0/9 met -- depart button appears but settle condition not detected.
-- The retry loop (3 attempts) recovers from the first miss in most cases.
-- 69% success is improved from previous ~13% (post-revert to blind tap).
-- The search.png template at 66% confidence adds fragility to the entire flow.
-
-### check_quests -- 100% success, slow but reliable
-
-- 4/4 success, average 141.8s per call
-- Most time spent on quest OCR + dispatch + navigation cycles
-- 567.3s total (9.5 minutes) out of 15-minute session = 63% of runtime in quest checking
-
-### heal_all -- 100% success, fast
-
-- 19/19 success, 2.0s average -- very efficient
-- heal.png: 19 misses (expected -- no injured troops) + 2 hits (troops to heal)
-- All heal_* transitions are `lambda: False` sleeps, 0% met is expected
-
-### restore_ap -- 100% success
-
-- 4/4 success, average 15.4s per call
-- AP restoration working correctly through free restores + potions
-
-## Cross-Session Log Analysis (Mar 1 17:32 - Mar 2 14:48, ~21 hours)
-
-### Warning Frequency (top issues)
-
-| Count | Warning                                        | Severity |
-|-------|------------------------------------------------|----------|
-|  929  | navigation: Unknown screen / recovery          | HIGH     |
-|  591  | actions: Various action warnings                | HIGH     |
-|  162  | actions.quests: Mostly pvp_attack failures     | MEDIUM   |
-|  161  | protocol.interceptor: Frida connection fails   | LOW*     |
-|  114  | vision: Region misses + AP read fails          | MEDIUM   |
-|   77  | tunnel: Disconnect/reconnect cycles            | MEDIUM   |
-|   77  | actions.titans: rally_titan failures            | MEDIUM   |
-|   38  | actions.farming: Gather failures               | LOW      |
-|   21  | web: Dashboard warnings                        | LOW      |
-
-*Low severity because protocol is enabled but gadget not installed -- expected behavior.
-
-### Unknown Screen Detection (929 navigation warnings)
-
-| Count | Screen State                              | Notes                        |
-|-------|-------------------------------------------|------------------------------|
-|  242  | best: MAP at 54%                         | MAP with overlay/popup        |
-|  175  | best: TERRITORY at 63%                   | Territory screen variant      |
-|  115  | best: WAR at 61%                         | War screen loading/transition |
-|  109  | best: MAP at 53%                         | Another MAP variant           |
-|   88  | best: MAP at 55%                         | Another MAP variant           |
-|   27  | Recovery FAILED (all strategies)         | Unrecoverable UNKNOWN state   |
-|   17  | TERRITORY at 43%                         | Low confidence territory      |
-|   14  | WAR at 66%                               | War screen borderline         |
-|   12  | None at 0%                               | Completely unrecognized       |
-
-The high count of MAP-at-50-55% unknowns suggests popups or overlays on top of the MAP screen
-that reduce the map_screen.png confidence below the 80% threshold. The "Expedition Gold" popup
-and AP use banners are known offenders.
-
-### Navigation Errors
-
-| Count | Error                                    | Notes                        |
-|-------|------------------------------------------|------------------------------|
-|   60  | LOGGED OUT (ATTENTION popup detected)    | All on device 5585           |
-|    5  | Navigation recursion limit reached       | Max depth 3 hit              |
-|   26  | Verify FAILED: expected BATTLE_LIST      | Got MAP instead              |
-|   17  | Verify FAILED: expected WAR, got MAP     | Alliance button tap missed   |
-
-**Device 5585** has a severe stability issue -- 60 LOGGED OUT events suggests the game is
-crashing or being disconnected frequently on this device.
-
-### Specific Action Warning Patterns
-
-| Count | Warning                                  | Impact                       |
-|-------|------------------------------------------|------------------------------|
-|   93  | Not enough troops available              | Normal gate -- troops deployed|
-|   86  | Rally loop: could not join/start rally   | join_rally broken            |
-|   56  | PVP: attack menu did not open            | Tower state changed          |
-|   47  | Depart not found (titan attempt 1/3)     | Titan walked off-center      |
-|   32  | Tower quest: failed to deploy troop      | Tower occupy issues          |
-|   29  | Gather button not found after 2 attempts | Gold mine not visible        |
-|   26  | Failed to navigate to quest screen       | UNKNOWN screen blocking      |
-|   23  | PVP: depart button not found             | PVP panel issues             |
-|   22  | Reinforce button not found after tower   | Wrong tower type/state       |
-|   21  | Failed to find Titan select              | Search menu not opening      |
-|   16  | Failed to navigate to war screen         | Navigation failure           |
-|   16  | Depart button not found, backing out     | Rally join sub-failure       |
-|   11  | Lost war screen after failed join        | War screen navigation lost   |
-|   10  | Gather troop failed on retry             | Gather deploy issues         |
-|   10  | Depart not found (titan attempt 2/3)     | Second retry also failing    |
-
-### Device Activity Distribution
-
-| Device         | Log Lines | Notes                                    |
-|----------------|-----------|------------------------------------------|
-| 127.0.0.1:5625 |   28,299  | Most active (likely primary account)     |
-| 127.0.0.1:5645 |   21,834  | Active (Plippy)                          |
-| 127.0.0.1:5555 |   20,994  | Active (Nine)                            |
-| 127.0.0.1:5585 |    8,038  | Less active + 60 logged-out events       |
-| 127.0.0.1:5635 |    4,922  | Least active (diss1, stats session)      |
+Three bot restarts in 43 minutes (19:58, 20:01, 20:09) suggest OOM pressure when 3 devices
+run concurrent OCR. RSS plateaus at ~6.1 GB. Earlier in session, deltas were +10-100 MB.
+The spike correlates with the third device joining.

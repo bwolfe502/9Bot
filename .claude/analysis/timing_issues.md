@@ -1,106 +1,125 @@
 # Timing Issues
 
-## ADB Performance (session 2026-03-02, device 127.0.0.1:5635)
+## ADB Performance (Sessions 8-12, 2026-03-02)
 
-| Operation   | Count | Avg (s) | Max (s) | Slow (>2s) | Failures |
-|-------------|-------|---------|---------|------------|----------|
-| screenshot  |   769 |  0.312  |  0.73   |     0      |    0     |
-| tap         |   215 |  0.098  |  0.24   |     0      |    0     |
-| swipe       |    31 |  0.598  |  0.70   |     0      |    0     |
+### Per-device averages (session 10, 175 min, 6 devices)
 
-**Assessment**: ADB performance is excellent. No slow operations, zero failures.
-Screenshot avg 312ms is normal for TCP ADB over emulator.
+| Device | Screenshots | Avg (s) | Max (s) | Taps | Tap Avg |
+|--------|-------------|---------|---------|------|---------|
+| :5655 | 6,493 | 0.299 | 0.97 | 1,469 | 0.098 |
+| :5555 | 6,426 | 0.319 | 1.35 | 1,324 | 0.104 |
+| :5625 | 6,743 | 0.331 | 1.24 | 1,149 | 0.103 |
+| :5645 | 4,076 | 0.333 | 1.19 | 785 | 0.103 |
+| :5635 | 5,015 | 0.323 | 1.06 | 962 | 0.104 |
+| :5585 | 1,099 | 0.341 | 0.94 | 43 | 0.145 |
 
-## Transition Budget Analysis
+### emulator-5554 (session 12, local ADB -- fastest)
+| Op | Count | Avg (s) | Max (s) |
+|----|-------|---------|---------|
+| screenshot | 2,022 | **0.270** | 0.58 |
+| tap | 484 | 0.095 | 0.19 |
+| swipe | 16 | 0.568 | 0.63 |
 
-### CRITICAL: 0% met transitions (always expire)
+**Totals**: 32,268 screenshots, 6,325 taps, 558 swipes -- **zero failures, zero slow ops**.
+Local ADB (emulator-5554) is 15-20% faster than TCP devices.
 
-**Titan flow:**
-- `titan_on_map_select`: 0/10 met, budget=1.5s -- Blind tap (540,900) never hits titan popup.
-  This is the root cause of rally_titan's ~30% failure rate.
-- `titan_depart_settle`: 0/9 met, budget=1s -- Depart confirmation never detected after tap.
+---
 
-**Rally join flow:**
-- `jr_scroll_up_settle`: 0/10 met, budget=1.5s -- Scroll never produces expected result
-- `jr_scroll_down_settle`: 0/18 met, budget=1.5s -- Same issue, both directions
-- Combined 0/28 -- the entire scroll-based rally finding mechanism is non-functional.
+## Transition Budget Analysis (Session 10, 6 devices)
 
-**Heal flow (expected 0% -- `lambda: False` waits, just sleeps):**
-- `heal_dialog_open`: 0/2, budget=1s
-- `heal_confirm_ready`: 0/2, budget=1s
-- `heal_result_show`: 0/2, budget=1s
-- `heal_close_settle`: 0/2, budget=2s
-- **Not a real issue** -- heal_all succeeds 100% (19/19). These are intentional delays.
+### CRITICAL: 0% met transitions
 
-**Mithril flow (expected 0% -- `lambda: False` waits, just sleeps):**
-- `mithril_scroll_settle`: 0/3, budget=0.5s
-- `mithril_scroll_done`: 0/1, budget=1s
-- `mithril_tunnel_open`: 0/1, budget=2s
-- `mithril_advanced_open`: 0/1, budget=2s
-- `mithril_slot_tap`: 0/4, budget=1s
-- `mithril_recall_anim`: 0/3, budget=1.5s
-- `mithril_recall_settle`: 0/1, budget=1s
-- `mithril_mine_popup`: 0/4, budget=3s
-- `mithril_attack_to_depart`: 0/4, budget=2s
-- `mithril_deploy_anim`: 0/4, budget=2s
-- **Not a real issue** -- mine_mithril succeeds 100% (1/1). These are intentional delays.
+| Transition | Total Attempts | Met | Notes |
+|------------|---------------|-----|-------|
+| titan_on_map_select | 218 | 0 | Blind tap condition never triggers (see action_patterns) |
+| titan_depart_settle | 149 | 0 | Related to above -- depart checked too early |
+| jr_detail_load | 129 | 0 | Rally detail never loads (join_rally 0% root cause) |
+| eg_p6_boss_tap | 14 | 0 | P6 attack dialog never opens |
+| eg_p6_attack_dialog | 14 | 0 | Same -- P6 flow is broken |
+| recover_cancel | 7 | 0 | Cancel button never found in recovery |
 
-### WATCH: Below 80% met
+### BELOW 70%: Needs attention
 
-- `titan_search_menu_open`: 7/10 met (70%), budget=1.5s, avg=1.00s, max=1.23s
-  - 3 misses likely due to slow menu open on certain attempts.
-  - Budget is adequate (max 1.23s vs 1.5s). Misses may be from stale screenshots or lag.
+| Transition | Rate | Budget | Avg When Met | Devices |
+|------------|------|--------|-------------|---------|
+| titan_search_menu_open | 52-67% | 1.5s | 1.16s | All -- menu open is inconsistent |
+| eg_search_menu_open | 3/25 (12%) | 1.5s | -- | All -- EG search rarely opens |
+| recover_back arrow | 1/13 (8%) | 2.0s | 2.13s | Recovery back arrow rarely works |
+| eg_defending_to_depart | 3/19 (16%) | 1.0s | 0.87s | :5555 only |
+| eg_depart_retry_wait | 2/14 (14%) | 2.0s | 0.45s | :5555 only |
+| eg_proceed_to_depart | 4/16 (25%) | 2.0s | 1.14s | :5625 only |
+| probe_dialog_open | 46/93 (49%) | 2.5s | 1.5-1.6s | All devices, ~50% |
 
-### HEALTHY: Navigation transitions (all improved from previous sessions)
+### Budget Overruns (100% met but avg exceeds budget)
 
-| Transition               | Met  | Budget | Avg    | Max    | Headroom |
-|--------------------------|------|--------|--------|--------|----------|
-| verify_bl_screen         | 5/5  | 2.5s   | 1.64s  | 2.38s  | 0.86s    |
-| verify_aq_screen         | 5/5  | 2.0s   | 1.70s  | 2.48s  | 0.30s    |
-| nav_map_to_alliance      | 11/12| 2.0s   | 1.64s  | 2.40s  | 0.36s    |
-| nav_alliance_menu_load   | 11/12| 1.0s   | 0.82s  | 1.22s  | 0.18s    |
-| verify_war_screen        | 11/12| 1.5s   | 0.80s  | 1.13s  | 0.70s    |
-| nav_td_exit_to_map       | 11/11| 3.5s   | 1.91s  | 2.61s  | 1.59s    |
-| verify_kingdom_screen    | 1/1  | 5.0s   | 1.65s  | 1.65s  | 3.35s    |
-| nav_kingdom_to_map       | 1/1  | 3.0s   | 1.69s  | 1.69s  | 1.31s    |
-| recover_close X          | 1/1  | 2.0s   | 0.98s  | 0.98s  | 1.02s    |
-| titan_rally_tab_load     | 3/3  | 1.5s   | 1.02s  | 1.30s  | 0.48s    |
-| titan_search_complete    | 10/10| 2.0s   | 0.63s  | 1.00s  | 1.37s    |
-| titan_select_to_search   | 10/10| 1.0s   | 0.38s  | 0.56s  | 0.62s    |
+| Transition | Rate | Budget | Avg | Max | Devices |
+|------------|------|--------|-----|-----|---------|
+| verify_aq_screen | 100% | 2.0s | **2.3s** | 2.8s | :5555, :5635 |
+| nav_map_to_alliance | 100% | 2.0s | **2.1s** | 2.3s | :5635, :5555 |
+| nav_alliance_menu_load | 100% | 1.0s | **1.1s** | 1.2s | :5635, :5555 |
+| aq_claim_settle | 100% | 1.0s | **1.05s** | 1.4s | :5555, :5635 |
+| nav_td_to_map | 100% | 2.0s | **2.73s** | 3.0s | :5555 |
 
-**Notable improvements from previous sessions:**
-- `nav_kingdom_to_map`: Was 0-9% met at 1.0s budget. Now 1/1 at 3.0s budget. FIXED.
-- `nav_td_exit_to_map`: Was 71-78% met. Now 11/11 at 3.5s budget. FIXED.
+**Recommendation**: Widen `verify_aq_screen` to 3.0s, `nav_map_to_alliance` to 2.5s,
+`nav_alliance_menu_load` to 1.5s. These are succeeding but burning through adaptive
+budget -- will trigger tighter adaptive windows that eventually fail.
 
-**Tight headroom (watch for regression):**
-- `verify_aq_screen`: Only 0.30s headroom. One outlier at 2.48s (budget 2.0s).
-- `nav_alliance_menu_load`: Only 0.18s headroom. Max 1.22s vs 1.0s budget.
-  Consider widening to 1.5s.
+### Healthy (previously fixed, still good)
 
-## Tunnel Stability
+| Transition | Rate | Budget | Headroom |
+|------------|------|--------|----------|
+| nav_kingdom_to_map | 100% | 3.0s | +1.3s |
+| nav_td_exit_to_map | 100% | 3.5s | +1.6s |
+| titan_search_complete | 100% | 2.0s | +1.4s |
+| titan_select_to_search | 100% | 1.0s | +0.6s |
+| titan_rally_tab_load | 100% | 1.5s | +0.5s |
+| verify_bl_screen | 100% | 2.5s | +0.9s |
 
-- **77 tunnel warnings** across Mar 1 17:32 - Mar 2 14:48 (~21 hours)
-- 17 "no data in 90s" timeouts (tunnel idle disconnect)
-- 17 "BaseEventLoop.create_connection()" errors (network level)
-- 6 "server rejected WebSocket connection: HTTP 503" (relay overloaded)
-- Multiple server-initiated closes with short uptimes (5-61s)
-- 2 keepalive ping timeouts
-- **Assessment**: Tunnel is unstable. The relay server appears to close connections
-  aggressively (code=1000 after 5-60s). Possible causes: relay server memory pressure,
-  nginx timeout configuration, or bot not sending heartbeats fast enough.
+---
+
+## Tunnel Stability [ONGOING]
+
+Session 12 (43 min): 18+ "no data in 90s" reconnections. The relay connection drops every
+90 seconds due to idle timeout, reconnects in ~5s, then idles again. Constant cycle.
+
+Cross-session (21 hours): 77 tunnel warnings, 17 idle timeouts, 17 connection errors,
+6 HTTP 503s, multiple short-lived sessions (5-61s).
+
+**Root cause**: Missing server-side keepalive pings. Bot sends no heartbeat during idle.
+
+---
+
+## Memory [CONCERN]
+
+| Session | Duration | RSS (MB) | Peak (MB) | Notes |
+|---------|----------|----------|-----------|-------|
+| 8 | 5 min | 5,295 | 3,210 | Anomalous (snapshot timing) |
+| 9 | 15 min | 5,807 | 6,114 | Stable |
+| 10 | 175 min | 6,167 | 6,353 | 6 devices, stable |
+| 11 | 5 min | 507 | 29 | Fresh restart |
+| 12 | 50 min | 6,098 | 6,205 | 3 devices |
+
+**No memory leak** (peak/current ratio ~1.02-1.05x in long sessions). But absolute RSS of
+6+ GB is high. Log-reported deltas of +5658 MB per check_quests call suggest measurement
+artifact or gc spike during concurrent 3-device OCR. Three restarts in session 12
+(possibly OOM-triggered) warrant investigation.
+
+---
 
 ## Frida Protocol Interceptor
 
-- **161 errors** -- all `frida.TransportError: connection closed`
-- Connects every 10s, fails every time -- Frida Gadget not running in game process
-- 3 devices being forwarded (5555, 5635, 5645) but none have gadget active
-- **Assessment**: Protocol is enabled in settings but game APK not patched. Expected behavior
-  when protocol_enabled=True but gadget not installed. Consider disabling if not in use to
-  reduce log noise (161 errors + 161 warnings = 322 unnecessary log lines).
+Session 12: Frida detached at 19:43 (`application-requested`). After detachment, protocol
+fast path returned no data -- fell through correctly to UI-based scanning.
 
-## Memory
+Cross-session (21h): 161 Frida transport errors -- expected when gadget not installed on
+most devices. Protocol works correctly on emulator-5554 when gadget is running.
 
-- **Session memory**: 6081 MB RSS, peak 6091 MB (15-min session)
-- **Previous sessions**: RSS ~6000-6200 MB range (stable, no growth observed)
-- **Assessment**: High absolute value (6 GB) but stable. Typical for EasyOCR + OpenCV + multiple
-  emulator screenshots. No memory leak detected.
+---
+
+## LZ4 Package Missing [NEW, EASY FIX]
+
+~477 "lz4 package not installed" + ~477 "LZ4 decompression failed" warnings per session.
+Accounts for ~88% of all WARNING lines, drowning meaningful warnings.
+
+**Fix**: `pip install lz4`. Eliminates ~954 noise lines per session and enables
+CompressedMessage decoding from the protocol interceptor.

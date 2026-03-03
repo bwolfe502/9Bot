@@ -1,60 +1,77 @@
 # Training Data Patterns
 
-## Session 2026-03-02 (td_20260302_143146.jsonl)
+## Session 12: 2026-03-02 (2 JSONL files, 1440 entries)
 
-- **Total entries**: 485
-- **Type breakdown**: 358 screen, 123 template, 4 unknown-type entries
-- **Images captured**: 0 (no near-miss or low-confidence images saved this session)
+### Volume
+| Metric | Value |
+|--------|-------|
+| File 1 (td_20260302_190541.jsonl) | 292 KB, 1309 entries, 52 min |
+| File 2 (td_20260302_195819.jsonl) | 29 KB, 131 entries, 3 min |
+| Total JSONL | 321 KB |
+| Total images | 29 files (11 in JSONL, 18 orphans) |
+| Entry rate | 25-49/min |
 
-### Screen Detection (358 entries)
+### Type Distribution
+| Type | Count | % |
+|------|-------|---|
+| screen | 1,052 | 73% |
+| template | 377 | 26% |
+| ocr | **0** | **0%** |
 
-- **Unknown screens**: 1 (out of 358 = 0.3%)
-- **All screens correctly identified**: map_screen, bl_screen, aq_screen, alliance_screen,
-  war_screen, td_screen -- no misclassifications observed
-- **Score separation**: Good. Best screen typically 94-100%, runner-up 40-75%.
-  The largest runner-up gap is war_screen at 75% when alliance_screen is best (100%),
-  but this is expected (war tab is within alliance screen).
+### Device Distribution
+| Device | Entries | % |
+|--------|---------|---|
+| emulator-5554 | 1,166 | 81% |
+| 127.0.0.1:5625 | 274 | 19% |
+| 127.0.0.1:5635 | 0 (18 orphan images only) | 0% |
 
-### Template Patterns (123 entries)
+### Screen Detection (1,052 entries)
 
-**Misses (expected negatives):**
-| Template          | Count | Best Score | Notes                                |
-|-------------------|-------|------------|--------------------------------------|
-| heal.png          |   20  |    48%     | No injured troops -- correct miss    |
-| aq_claim.png      |    5  |    44%     | No claimable quests -- correct miss  |
-| mithril_return.png|    3  |    69%     | Mithril not ready -- correct miss    |
-| close_x.png       |    1  |    53%     | No close button visible -- normal    |
+| Screen | Detections | Hit Rate | Avg Score | Range |
+|--------|-----------|----------|-----------|-------|
+| map_screen | 586 | 100% | 97 | 95-99 |
+| bl_screen | 132 | 100% | 97 | 91-97 |
+| war_screen | 127 | 96.1% | 96 | 61-100 |
+| aq_screen | 119 | 97.5% | 98 | 55-100 |
+| alliance_screen | 48 | 100% | 100 | 100 |
+| td_screen | 30 | 100% | 100 | 90-100 |
+| kingdom_screen | 10 | 100% | 100 | 100 |
 
-**Borderline hits:**
-| Template          | Count | Score | Notes                                |
-|-------------------|-------|-------|--------------------------------------|
-| search.png        |   13  |  66%  | All at (654,1395). Custom 0.65 thresh|
+**8 UNKNOWN screens**: 3 aq_screen at 55-59% (popup overlay), 5 war_screen at 61% (transition frame)
 
-**Solid hits:**
-| Template               | Count | Score Range | Notes                   |
-|------------------------|-------|-------------|-------------------------|
-| back_arrow.png         |   34  | 100%        | Perfect                 |
-| rally_titan_select.png |   10  | 87%         | Stable on Windows       |
-| close_x.png            |    8  | 99-100%     | Two positions (450,499) |
-| bl_button.png          |    5  | 99%         | Stable                  |
-| mithril_attack.png     |    4  | 100%        | Perfect                 |
-| mithril_depart.png     |    4  | 98-100%     | Y varies (715-1250)     |
-| mithril_return.png     |    3  | 100%        | Perfect when present    |
-| heal.png               |    2  | 100%        | Perfect when injured    |
+### Template Analysis (377 entries, 16 unique templates)
 
-### Notable Patterns
+**High-concern (device-specific failures):**
+| Template | Hit Rate | Issue |
+|----------|----------|-------|
+| mithril_return.png | 26% (5/19) | 100% miss on emulator-5554, 100% hit on :5625 |
+| statuses/defending.png | 8% (1/12) | 100% miss on emulator-5554, hit on :5625 |
 
-1. **Repetitive cycles**: Training data shows a clear loop pattern:
-   MAP -> (heal check) -> (titan search) -> ALLIANCE -> WAR -> (scroll for rally) ->
-   back out -> MAP. This cycle repeats ~8 times in the 15-minute session.
+**Fragile:**
+| Template | Hit Rate | Issue |
+|----------|----------|-------|
+| search.png | 100% (50/50) | All at exactly 66%, threshold 0.65, 1-point margin |
+| back_arrow.png | 97% (84/87) | 3 near-misses at 65% (screen obstructed) |
 
-2. **No region drift detected**: All template hits within expected IMAGE_REGIONS bounds.
+**Expected misses (correct behavior):**
+| Template | Hit Rate | Notes |
+|----------|----------|-------|
+| aq_claim.png | 32% | Misses = no quest to claim (correct) |
+| heal.png | 29% | Misses = no injured troops (correct) |
+| close_x.png | 82% | Misses = no popup (correct) |
 
-3. **No image captures**: The training data collector was active but produced 0 images.
-   This means no near-misses (65-79% confidence) were detected outside of the known
-   search.png issue (which is at 66% but uses a custom 0.65 threshold, so it registers
-   as a hit, not a near-miss).
+**Reliable (100%):**
+bl_button.png, target_menu.png, attack_button.png, depart_pvp.png, mithril_attack.png,
+mithril_depart.png, detail_button.png, oneclickrecovery.png
 
-4. **Screen transition flow**: The JSONL clearly shows the navigation state machine working:
-   MAP(99%) -> alliance_screen(100%) -> war_screen(100%) -> back through td_screen(100%)
-   -> MAP(100%). Clean transitions with no confusion between screens.
+### Near-Misses (conf 65-79%)
+- **search.png**: 50 occurrences at exactly 66% (custom 0.65 threshold, so technically hits)
+- **back_arrow.png**: 3 occurrences at exactly 65% (misses -- screen obstructed)
+
+### Region Drift
+Zero entries in JSONL. One orphan region_drift image on disk (emulator-5554, 20:01:37).
+
+### Notable Gaps
+1. **Zero OCR entries**: Training data collector not capturing OCR decisions
+2. **18 orphan images**: From 127.0.0.1:5635 (17) + emulator-5554 (1), no JSONL entries
+3. **aq_screen/war_screen tight margin**: 6-9 point gap, narrowest pair in the system
