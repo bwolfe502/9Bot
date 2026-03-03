@@ -150,3 +150,49 @@ Quality-of-life features that make the bot feel polished.
 
 ### Security
 - [ ] Auto-screenshot on license fail — save console screenshot + timestamp after 3 invalid key attempts. Breadcrumb trail for key sharing/brute-force detection
+
+## Phase 7 — Cloud SaaS
+
+Host 9Bot in the cloud so users get a web URL with no local install. Full IP protection — users
+never see source code. Detailed analysis in `memory/saas_planning.md`.
+
+### Architecture
+Windows dedicated servers (Hetzner AX42, ~$55/mo) running 4 BlueStacks instances each.
+Dedicated instance per user (no time-sharing VMs). Users control via existing web dashboard.
+Docker for management plane (relay, orchestration API) — not for emulators.
+
+### Step 1 — Prove the model
+- [ ] Test BlueStacks CLI management — start/stop/create instances via command line
+- [ ] Prove on a home server or spare PC — cheapest way to validate (~$1-2/user/mo electricity only)
+- [ ] Run 4 beta users on it, validate performance and stability
+- [ ] Measure actual resource usage (RAM, CPU, disk) per instance
+- [ ] Investigate cloud phone services (Redfinger, etc.) as low-effort alternative
+
+### Step 2 — Orchestration
+- [ ] Orchestration API — assign users to servers/slots, start/stop instances remotely
+- [ ] Server provisioning script — automate BlueStacks + 9Bot setup on fresh Windows servers
+- [ ] Health monitoring — detect crashed instances, stalled bots, resource exhaustion
+- [ ] Capacity tracking — which servers have free slots
+
+### Step 3 — User onboarding
+- [ ] Game login flow — VNC-in-browser (noVNC) or remote desktop stream for first-time setup
+- [ ] User management — sign-up, billing, slot assignment
+- [ ] "Cloud mode" dashboard — hide local setup instructions, show instance status
+
+### Step 4 — Launch
+- [ ] Offer SaaS alongside local option
+- [ ] Pricing model (target ~$15-25/mo per user at ~$7-11 cost)
+- [ ] Coordinated game update patching across all instances
+- [ ] Data backup strategy for user game accounts
+
+### Open questions
+- [ ] BlueStacks licensing for commercial/cloud use
+- [ ] Game ToS implications of cloud hosting vs user's own machine
+- [ ] Billing integration (Stripe, etc.)
+- [ ] Android-x86 in Hyper-V as BlueStacks alternative (avoids licensing questions)
+- [ ] Cloud phone services (Redfinger) — validate ADB access and game compatibility
+
+### Future: Protocol-only mode
+Long-term aspiration — fully reverse-engineer the game protocol, eliminate the emulator entirely.
+Each user becomes a lightweight Python process (~$1-2/mo). Massive engineering effort but would
+make K8s auto-scaling viable. Existing Frida protocol interception is the foundation for this.
