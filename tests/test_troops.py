@@ -1089,7 +1089,7 @@ class TestGetProtocolTroopsHome:
         try:
             mock_state = MagicMock()
             mock_state.is_fresh.return_value = True
-            # 3 lineups: id=1 HOME(1), id=2 MARCHING(2), id=3 IDLE(0)
+            # 3 lineups: id=1 DEFENDER/home(1), id=2 OUT_CITY(2), id=3 ERR/home(0)
             lu1 = MagicMock(); lu1.state = 1
             lu2 = MagicMock(); lu2.state = 2
             lu3 = MagicMock(); lu3.state = 0
@@ -1097,7 +1097,7 @@ class TestGetProtocolTroopsHome:
             mock_state.lineup_states = {}
             startup._device_protocol = {"dev1": {"state": mock_state}}
             from startup import get_protocol_troops_home
-            assert get_protocol_troops_home("dev1") == 2  # HOME + IDLE
+            assert get_protocol_troops_home("dev1") == 2  # two ERR/home troops
         finally:
             startup._device_protocol = orig
 
@@ -1108,14 +1108,14 @@ class TestGetProtocolTroopsHome:
         try:
             mock_state = MagicMock()
             mock_state.is_fresh.return_value = True
-            # Lineup says HOME(1), but NewLineupStateNtf says MARCHING(2)
+            # Lineup says DEFENDER/home(1), but NewLineupStateNtf says OUT_CITY(2)
             lu1 = MagicMock(); lu1.state = 1
             ls1 = MagicMock(); ls1.state = 2
             mock_state.lineups = {1: lu1}
             mock_state.lineup_states = {1: ls1}
             startup._device_protocol = {"dev1": {"state": mock_state}}
             from startup import get_protocol_troops_home
-            assert get_protocol_troops_home("dev1") == 0  # overridden to MARCHING
+            assert get_protocol_troops_home("dev1") == 0  # overridden to OUT_CITY
         finally:
             startup._device_protocol = orig
 
@@ -1154,10 +1154,10 @@ class TestGetProtocolTroopSnapshot:
             now_ms = int(time.time() * 1000)
             mock_state.server_time = now_ms
 
-            lu1 = MagicMock(); lu1.state = 1  # HOME
-            lu2 = MagicMock(); lu2.state = 4  # GATHERING
+            lu1 = MagicMock(); lu1.state = 0  # ERR/home
+            lu2 = MagicMock(); lu2.state = 6  # GATHERING
 
-            ls2 = MagicMock(); ls2.state = 4; ls2.stateEndTs = now_ms + 300_000  # 300s from now
+            ls2 = MagicMock(); ls2.state = 6; ls2.stateEndTs = now_ms + 300_000  # 300s from now
 
             mock_state.lineups = {1: lu1, 2: lu2}
             mock_state.lineup_states = {2: ls2}
@@ -1206,8 +1206,8 @@ class TestGetProtocolTroopSnapshot:
             mock_state.is_fresh.return_value = True
             mock_state.server_time = None
 
-            lu1 = MagicMock(); lu1.state = 6  # DEFENDING
-            ls1 = MagicMock(); ls1.state = 6
+            lu1 = MagicMock(); lu1.state = 12  # BUILDING_DEFEND
+            ls1 = MagicMock(); ls1.state = 12
             ls1.stateEndTs = int(time.time() * 1000) + 120000  # 120s from now (ms)
 
             mock_state.lineups = {1: lu1}

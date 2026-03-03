@@ -271,20 +271,31 @@ _LINEUP_STATE_TO_ACTION = None  # lazy-built on first use
 
 
 def _get_action_map():
-    """Lazy-build LineupState→TroopAction mapping (avoids import at module level)."""
+    """Lazy-build LineupState→TroopAction mapping (avoids import at module level).
+
+    Values extracted from game binary via Frida IL2CPP API (LineupState enum).
+    """
     global _LINEUP_STATE_TO_ACTION
     if _LINEUP_STATE_TO_ACTION is not None:
         return _LINEUP_STATE_TO_ACTION
     from troops import TroopAction
     _LINEUP_STATE_TO_ACTION = {
-        0: TroopAction.HOME,       # IDLE → treat as home
-        1: TroopAction.HOME,       # HOME
-        2: TroopAction.MARCHING,   # MARCHING
-        3: TroopAction.BATTLING,   # BATTLING
-        4: TroopAction.GATHERING,  # GATHERING
-        5: TroopAction.RETURNING,  # RETURNING
-        6: TroopAction.DEFENDING,  # DEFENDING
-        7: TroopAction.RALLYING,   # RALLYING
+        0:  TroopAction.HOME,        # ERR — no deployment / idle
+        1:  TroopAction.HOME,        # DEFENDER — at home (available)
+        2:  TroopAction.MARCHING,    # OUT_CITY — marching to target
+        3:  TroopAction.STATIONING,  # CAMP — stationing at a camp
+        4:  TroopAction.RALLYING,    # RALLY — waiting in a rally
+        5:  TroopAction.DEFENDING,   # REINFORCE — reinforcing an ally
+        6:  TroopAction.GATHERING,   # GATHERING — gathering resources
+        7:  TroopAction.BATTLING,    # TROOP_FIGHT — in solo combat
+        8:  TroopAction.BATTLING,    # RALLY_FIGHT — in rally combat
+        9:  TroopAction.RETURNING,   # RETURN — marching home
+        10: TroopAction.MARCHING,    # BUILDING_BUILD — construction march
+        11: TroopAction.DEFENDING,   # BUILDING_OCCUPY — occupying a building
+        12: TroopAction.DEFENDING,   # BUILDING_DEFEND — defending a building
+        13: TroopAction.ADVENTURING, # MINE_EXPLORE — bizarre cave
+        14: TroopAction.MARCHING,    # PICKUP — collecting item
+        15: TroopAction.GATHERING,   # SCORE_GATHERING — event gathering
     }
     return _LINEUP_STATE_TO_ACTION
 
@@ -323,7 +334,7 @@ def get_protocol_troops_home(device=None):
         # removed on arrival), so missing entry → trust Lineup.state.
         ls = lineup_states.get(lid)
         effective_state = ls.state if ls is not None else lu.state
-        if effective_state in (0, 1):  # IDLE or HOME
+        if effective_state in (0, 1):  # ERR/idle or DEFENDER = home
             home_count += 1
     return home_count
 

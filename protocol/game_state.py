@@ -792,10 +792,8 @@ class GameState:
                 lu = self._lineups.get(info.lineupID)
                 if lu is not None:
                     lu.state = info.state
-                # HOME/IDLE → troop is back; remove state entry so the
-                # Lineup.state (which we just updated) is the source of truth.
-                # Keeping stale MARCHING/GATHERING entries was causing phantom
-                # deployed troops on the dashboard.
+                # ERR (0) or DEFENDER (1) = troop at home; remove state entry
+                # so Lineup.state (which we just updated) is the source of truth.
                 if info.state in (0, 1):
                     self._lineup_states.pop(info.lineupID, None)
                 else:
