@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import logging
+log = logging.getLogger("startup")
 import platform
 import subprocess
 import threading
@@ -351,12 +352,20 @@ def get_protocol_troop_snapshot(device):
     """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
     state = _get_device_state(device)
     if state is None:
+        log.debug("proto_snapshot[%s]: no device state", device)
         return None
     if not state.is_fresh("lineups", max_age_s=30.0):
+        try:
+            age = state.last_update("lineups")
+            age_s = f"{time.time() - age:.1f}s ago" if age else "never"
+        except Exception:
+            age_s = "unknown"
+        log.debug("proto_snapshot[%s]: lineups stale (%s)", device, age_s)
         return None
     lineups = state.lineups
     lineup_states = state.lineup_states
     if not lineups:
+        log.debug("proto_snapshot[%s]: lineups empty", device)
         return None
 
     from troops import TroopAction, TroopStatus, DeviceTroopSnapshot

@@ -6,29 +6,21 @@
 {% if not device_filter %}
 <!-- Access -->
 {% if relay_url %}
-<div class="access-card">
-    <span class="access-icon">&#128241;</span>
-    <div class="access-info">
-        <span class="access-label">Remote Access</span>
-        <span class="access-status">
-            <span class="tunnel-dot tunnel-connecting" id="access-dot"></span>
-            <span class="tunnel-label tunnel-label-connecting" id="access-status-text">Connecting...</span>
-        </span>
-    </div>
-    <div class="access-actions">
-        <button type="button" class="access-btn" onclick="copyAccessUrl(this, '{{ relay_url }}')" title="Copy URL">Copy</button>
-        <button type="button" class="access-btn" onclick="showQr('{{ relay_url }}')" title="QR Code">QR</button>
+<div class="access-strip">
+    <span class="tunnel-dot tunnel-connecting" id="access-dot"></span>
+    <span class="tunnel-label tunnel-label-connecting" id="access-status-text">Connecting...</span>
+    <div class="access-strip-btns">
+        <button type="button" class="access-strip-btn" onclick="copyAccessUrl(this, '{{ relay_url }}')" title="Copy URL">Copy</button>
+        <button type="button" class="access-strip-btn" onclick="showQr('{{ relay_url }}')" title="QR Code">QR</button>
     </div>
 </div>
 {% else %}
-<div class="access-card">
-    <span class="access-icon">&#128241;</span>
-    <div class="access-info">
-        <span class="access-label">Local Network</span>
-    </div>
-    <div class="access-actions">
-        <button type="button" class="access-btn" onclick="copyAccessUrl(this, 'http://{{ local_ip }}:8080')" title="Copy URL">Copy</button>
-        <button type="button" class="access-btn" onclick="showQr('http://{{ local_ip }}:8080')" title="QR Code">QR</button>
+<div class="access-strip">
+    <span class="tunnel-dot tunnel-disabled"></span>
+    <span class="tunnel-label tunnel-label-disabled">Local</span>
+    <div class="access-strip-btns">
+        <button type="button" class="access-strip-btn" onclick="copyAccessUrl(this, 'http://{{ local_ip }}:8080')" title="Copy URL">Copy</button>
+        <button type="button" class="access-strip-btn" onclick="showQr('http://{{ local_ip }}:8080')" title="QR Code">QR</button>
     </div>
 </div>
 {% endif %}
@@ -628,7 +620,7 @@ function refreshStatus() {
                     gameBtn.classList.remove('emu-step-game-ready');
                     gameBtn.innerHTML = '<span class="emu-step-num">2</span> Restart Game';
                     gameBtn.setAttribute('onclick', "restartGame(this, '" + dev.id + "')");
-                    // Add Live View button if missing
+                    // Add Live View button if missing (game just started)
                     var btns = card.querySelector('.live-view-buttons');
                     if (btns && !btns.querySelector('.live-view-toggle')) {
                         var lv = document.createElement('button');
@@ -1094,7 +1086,7 @@ function loadChatFeed(deviceId, feedEl) {
         renderChatFeed(cached.messages, feedEl);
         return;
     }
-    fetch(RELAY_PREFIX + '/api/chat?device=' + encodeURIComponent(deviceId))
+    fetch(API_PREFIX + '/api/chat?device=' + encodeURIComponent(deviceId) + (API_SUFFIX ? '&' + API_SUFFIX.slice(1) : ''))
         .then(function(r) { return r.json(); })
         .then(function(data) {
             var msgs = (data.messages || []).filter(function(m) { return m.payload_type !== 11; });
@@ -1190,8 +1182,9 @@ function toggleChatSystem(btn) {
 
 function loadChatMessages() {
     if (!_chatDeviceId) return;
-    var url = RELAY_PREFIX + '/api/chat?device=' + encodeURIComponent(_chatDeviceId);
+    var url = API_PREFIX + '/api/chat?device=' + encodeURIComponent(_chatDeviceId);
     if (_chatChannel) url += '&channel=' + encodeURIComponent(_chatChannel);
+    if (API_SUFFIX) url += '&' + API_SUFFIX.slice(1);
     fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -1332,7 +1325,17 @@ function switchShareTab(mode) {
 }
 function _renderShareUrl() {
     var url = _shareMode === 'readonly' ? _shareUrls.readonly : _shareUrls.full;
-    document.getElementById('share-url').textContent = url || 'Not available';
+    var urlEl = document.getElementById('share-url');
+    if (url) {
+        urlEl.innerHTML = '';
+        var a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.textContent = url;
+        urlEl.appendChild(a);
+    } else {
+        urlEl.textContent = 'Not available';
+    }
     var img = document.getElementById('share-qr-img');
     if (url) {
         img.src = RELAY_PREFIX + '/api/qr?url=' + encodeURIComponent(url);

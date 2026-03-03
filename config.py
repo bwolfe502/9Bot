@@ -282,6 +282,7 @@ SETTINGS_RULES = {
     "auto_upload_logs":      {"type": bool},
     "collect_training_data": {"type": bool},
     "protocol_enabled":      {"type": bool},
+    "chat_mirror":           {"type": bool},
     # Ints — type + optional min/max
     "ap_gem_limit":          {"type": int, "min": 0, "max": 3500},
     "min_troops":            {"type": int, "min": 0, "max": 5},

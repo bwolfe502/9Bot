@@ -2,7 +2,6 @@
 {% block title_suffix %} - Settings{% endblock %}
 
 {% block content %}
-<h1>Settings</h1>
 
 <!-- Device Tabs -->
 {% if all_devices %}
@@ -14,227 +13,356 @@
 </div>
 {% endif %}
 
-<form method="post" action="/settings">
-    <!-- General -->
-    <div class="card">
-        <h3>General</h3>
-        <label class="setting-row">
-            <input type="checkbox" name="auto_heal" {% if settings.auto_heal %}checked{% endif %}>
-            Auto Heal
-        </label>
-        <label class="setting-row">
-            <input type="checkbox" name="verbose_logging" {% if settings.verbose_logging %}checked{% endif %}>
-            Verbose Logging
-        </label>
-        <label class="setting-row">
-            <input type="checkbox" name="web_dashboard" {% if settings.web_dashboard %}checked{% endif %}>
-            Web Dashboard Enabled
-        </label>
+    <!-- Game Mode -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Game Mode</div>
+        <div class="settings-row settings-row-inline" data-key="mode">
+            <span class="settings-row-label">Game Mode</span>
+            <select class="settings-select" onchange="saveSetting('mode', this.value)">
+                <option value="bl" {% if settings.mode == 'bl' %}selected{% endif %}>Broken Lands</option>
+                <option value="rw" {% if settings.mode == 'rw' %}selected{% endif %}>Home Server</option>
+            </select>
+        </div>
+        <div class="settings-row settings-row-inline" data-key="pass_mode">
+            <span class="settings-row-label">Pass Mode</span>
+            <select class="settings-select" onchange="saveSetting('pass_mode', this.value)">
+                <option value="Rally Joiner" {% if settings.pass_mode == 'Rally Joiner' %}selected{% endif %}>Rally Joiner</option>
+                <option value="Rally Starter" {% if settings.pass_mode == 'Rally Starter' %}selected{% endif %}>Rally Starter</option>
+            </select>
+        </div>
+        <div class="settings-row settings-row-inline" data-key="my_team">
+            <span class="settings-row-label">My Team</span>
+            <select class="settings-select" onchange="saveSetting('my_team', this.value)">
+                {% for color in ['yellow', 'red', 'blue', 'green'] %}
+                <option value="{{ color }}" {% if settings.my_team == color %}selected{% endif %}>{{ color|capitalize }}</option>
+                {% endfor %}
+            </select>
+        </div>
     </div>
 
-    <!-- Remote Access -->
-    <div class="card">
-        <h3>Remote Access</h3>
-        <label class="setting-row">
-            <input type="checkbox" name="remote_access" {% if settings.remote_access %}checked{% endif %}>
-            Enable Remote Access
-        </label>
-        <p style="color:#667;font-size:12px;padding-top:6px;margin:0">Requires restart to take effect.</p>
-        <label class="setting-row" style="margin-top:12px">
-            <input type="checkbox" name="auto_upload_logs" {% if settings.auto_upload_logs %}checked{% endif %}>
-            Auto-Upload Bug Reports
-        </label>
-        <label class="setting-row indent">
-            <input type="number" name="upload_interval_hours" class="input-sm"
-                   min="1" max="168" value="{{ settings.upload_interval_hours }}">
-            <span class="unit">hours</span>
-        </label>
-        <p style="color:#667;font-size:12px;padding-top:6px;margin:0">Periodically uploads logs and debug data for troubleshooting. Requires restart.</p>
-        <label class="setting-row" style="margin-top:12px">
-            <input type="checkbox" name="collect_training_data" {% if settings.collect_training_data %}checked{% endif %}>
-            Collect Training Data
-        </label>
-        <p style="color:#667;font-size:12px;padding-top:6px;margin:0">Log template match, OCR, and screen detection decisions for AI training. Included in bug report uploads.</p>
+    <!-- Quest Behavior -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Quest Behavior</div>
+        <div class="settings-row" data-key="auto_heal">
+            <span class="settings-row-label">Auto Heal</span>
+            <button type="button" class="toggle{% if settings.auto_heal %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'auto_heal')"></button>
+        </div>
+        <div class="settings-row" data-key="eg_rally_own">
+            <span class="settings-row-label">Rally Own Evil Guard</span>
+            <button type="button" class="toggle{% if settings.eg_rally_own %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'eg_rally_own')"></button>
+        </div>
+        <div class="settings-row" data-key="titan_rally_own">
+            <span class="settings-row-label">Rally Own Titans</span>
+            <button type="button" class="toggle{% if settings.titan_rally_own %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'titan_rally_own')"></button>
+        </div>
+        <div class="settings-row" data-key="tower_quest_enabled">
+            <span class="settings-row-label">
+                Tower Quest
+                <span class="settings-row-hint">Mark tower with target marker first</span>
+            </span>
+            <button type="button" class="toggle{% if settings.tower_quest_enabled %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'tower_quest_enabled')"></button>
+        </div>
     </div>
 
-    <!-- Auto Quest -->
-    <div class="card">
-        <h3>Auto Quest</h3>
-        <label class="setting-row">
-            <input type="checkbox" name="eg_rally_own" {% if settings.eg_rally_own %}checked{% endif %}>
-            Rally Own Evil Guard
-        </label>
-        <label class="setting-row">
-            <input type="checkbox" name="titan_rally_own" {% if settings.titan_rally_own %}checked{% endif %}>
-            Rally Own Titans
-        </label>
-        <label class="setting-row">
-            <input type="checkbox" name="gather_enabled" {% if settings.gather_enabled %}checked{% endif %}>
-            Gather Gold
-        </label>
-        <div class="setting-row indent">
-            <label>Mine Level:
-                <select name="gather_mine_level" class="select-sm">
-                    {% for lv in [4, 5, 6] %}
-                    <option value="{{ lv }}" {% if settings.gather_mine_level == lv %}selected{% endif %}>{{ lv }}</option>
-                    {% endfor %}
-                </select>
-            </label>
+    <!-- Gathering -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Gathering</div>
+        <div class="settings-row" data-key="gather_enabled">
+            <span class="settings-row-label">Gather Gold</span>
+            <button type="button" class="toggle{% if settings.gather_enabled %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'gather_enabled')"></button>
         </div>
-        <div class="setting-row indent">
-            <label>Max Troops:
-                <select name="gather_max_troops" class="select-sm">
-                    {% for n in [1, 2, 3, 4, 5] %}
-                    <option value="{{ n }}" {% if settings.gather_max_troops == n %}selected{% endif %}>{{ n }}</option>
-                    {% endfor %}
-                </select>
-            </label>
+        <div class="settings-row settings-row-inline settings-row-indent{% if not settings.gather_enabled %} setting-disabled{% endif %}"
+             data-key="gather_mine_level" data-depends-on="gather_enabled">
+            <span class="settings-row-label">Mine Level</span>
+            <select class="settings-select" onchange="saveSetting('gather_mine_level', parseInt(this.value))">
+                {% for lv in [4, 5, 6] %}
+                <option value="{{ lv }}" {% if settings.gather_mine_level == lv %}selected{% endif %}>{{ lv }}</option>
+                {% endfor %}
+            </select>
         </div>
-        <label class="setting-row">
-            <input type="checkbox" name="tower_quest_enabled" {% if settings.tower_quest_enabled %}checked{% endif %}>
-            Tower Quest <span style="color:#888;font-size:0.8em">(mark tower with target marker first)</span>
-        </label>
+        <div class="settings-row settings-row-inline settings-row-indent{% if not settings.gather_enabled %} setting-disabled{% endif %}"
+             data-key="gather_max_troops" data-depends-on="gather_enabled">
+            <span class="settings-row-label">Max Gather Troops</span>
+            <select class="settings-select" onchange="saveSetting('gather_max_troops', parseInt(this.value))">
+                {% for n in [1, 2, 3, 4, 5] %}
+                <option value="{{ n }}" {% if settings.gather_max_troops == n %}selected{% endif %}>{{ n }}</option>
+                {% endfor %}
+            </select>
+        </div>
     </div>
 
     <!-- AP Restoration -->
-    <div class="card">
-        <h3>AP Restoration</h3>
-        <label class="setting-row">
-            <input type="checkbox" name="auto_restore_ap" {% if settings.auto_restore_ap %}checked{% endif %}>
-            Auto Restore AP
-        </label>
-        <label class="setting-row indent">
-            <input type="checkbox" name="ap_use_free" {% if settings.ap_use_free %}checked{% endif %}>
-            Use Free Restores
-        </label>
-        <label class="setting-row indent">
-            <input type="checkbox" name="ap_use_potions" {% if settings.ap_use_potions %}checked{% endif %}>
-            Use Potions
-        </label>
-        <label class="setting-row indent">
-            <input type="checkbox" name="ap_allow_large_potions" {% if settings.ap_allow_large_potions %}checked{% endif %}>
-            Allow Large Potions
-        </label>
-        <label class="setting-row indent">
-            <input type="checkbox" name="ap_use_gems" {% if settings.ap_use_gems %}checked{% endif %}>
-            Use Gems
-        </label>
-        <div class="setting-row indent">
-            <label>Gem Limit:
-                <input type="number" name="ap_gem_limit" value="{{ settings.ap_gem_limit }}"
-                       min="0" max="3500" class="input-sm">
-            </label>
+    <div class="card settings-card">
+        <div class="settings-card-header">AP Restoration</div>
+        <div class="settings-row" data-key="auto_restore_ap">
+            <span class="settings-row-label">Auto Restore AP</span>
+            <button type="button" class="toggle{% if settings.auto_restore_ap %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'auto_restore_ap')"></button>
+        </div>
+        <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
+             data-key="ap_use_free" data-depends-on="auto_restore_ap">
+            <span class="settings-row-label">Use Free Restores</span>
+            <button type="button" class="toggle{% if settings.ap_use_free %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'ap_use_free')"></button>
+        </div>
+        <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
+             data-key="ap_use_potions" data-depends-on="auto_restore_ap">
+            <span class="settings-row-label">Use Potions</span>
+            <button type="button" class="toggle{% if settings.ap_use_potions %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'ap_use_potions')"></button>
+        </div>
+        <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
+             data-key="ap_allow_large_potions" data-depends-on="auto_restore_ap">
+            <span class="settings-row-label">Allow Large Potions</span>
+            <button type="button" class="toggle{% if settings.ap_allow_large_potions %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'ap_allow_large_potions')"></button>
+        </div>
+        <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
+             data-key="ap_use_gems" data-depends-on="auto_restore_ap">
+            <span class="settings-row-label">Use Gems</span>
+            <button type="button" class="toggle{% if settings.ap_use_gems %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'ap_use_gems')"></button>
+        </div>
+        <div class="settings-row settings-row-inline settings-row-indent{% if not settings.auto_restore_ap or not settings.ap_use_gems %} setting-disabled{% endif %}"
+             data-key="ap_gem_limit" data-depends-on="ap_use_gems">
+            <span class="settings-row-label">Gem Limit</span>
+            <input type="number" value="{{ settings.ap_gem_limit }}"
+                   min="0" max="3500" class="input-sm"
+                   onchange="saveSetting('ap_gem_limit', parseInt(this.value))">
         </div>
     </div>
 
     <!-- Troops & Timing -->
-    <div class="card">
-        <h3>Troops & Timing</h3>
-        <div class="setting-row">
-            <label>Min Troops:
-                <input type="number" name="min_troops" value="{{ settings.min_troops }}"
-                       min="0" max="5" class="input-sm">
-            </label>
+    <div class="card settings-card">
+        <div class="settings-card-header">Troops & Timing</div>
+        <div class="settings-row settings-row-inline" data-key="min_troops">
+            <span class="settings-row-label">Min Troops</span>
+            <input type="number" value="{{ settings.min_troops }}"
+                   min="0" max="5" class="input-sm"
+                   onchange="saveSetting('min_troops', parseInt(this.value))">
         </div>
-        <div class="setting-row">
-            <label>Randomize +/-:
-                <input type="number" name="variation" value="{{ settings.variation }}"
-                       min="0" class="input-sm">
-                <span class="unit">seconds</span>
-            </label>
+        <div class="settings-row settings-row-inline" data-key="variation">
+            <span class="settings-row-label">Randomize +/-</span>
+            <div class="settings-row-input">
+                <input type="number" value="{{ settings.variation }}"
+                       min="0" class="input-sm"
+                       onchange="saveSetting('variation', parseInt(this.value))">
+                <span class="unit">sec</span>
+            </div>
         </div>
-    </div>
-
-    <!-- Intervals -->
-    <div class="card">
-        <h3>Intervals</h3>
-        <div class="setting-row">
-            <label>Titan:
-                <input type="number" name="titan_interval" value="{{ settings.titan_interval }}"
-                       min="1" class="input-sm">
-                <span class="unit">s</span>
-            </label>
-        </div>
-        <div class="setting-row">
-            <label>Groot:
-                <input type="number" name="groot_interval" value="{{ settings.groot_interval }}"
-                       min="1" class="input-sm">
-                <span class="unit">s</span>
-            </label>
-        </div>
-        <div class="setting-row">
-            <label>Reinforce:
-                <input type="number" name="reinforce_interval" value="{{ settings.reinforce_interval }}"
-                       min="1" class="input-sm">
-                <span class="unit">s</span>
-            </label>
-        </div>
-        <div class="setting-row">
-            <label>Pass:
-                <input type="number" name="pass_interval" value="{{ settings.pass_interval }}"
-                       min="1" class="input-sm">
-                <span class="unit">s</span>
-            </label>
-        </div>
-        <div class="setting-row">
-            <label>Mithril:
-                <input type="number" name="mithril_interval" value="{{ settings.mithril_interval }}"
-                       min="1" class="input-sm">
-                <span class="unit">min</span>
-            </label>
-        </div>
-    </div>
-
-    <!-- Mode & Teams -->
-    <div class="card">
-        <h3>Mode & Teams</h3>
-        <div class="setting-row">
-            <label>Pass Mode:
-                <select name="pass_mode" class="select-sm">
-                    <option value="Rally Joiner" {% if settings.pass_mode == 'Rally Joiner' %}selected{% endif %}>Rally Joiner</option>
-                    <option value="Rally Starter" {% if settings.pass_mode == 'Rally Starter' %}selected{% endif %}>Rally Starter</option>
-                </select>
-            </label>
-        </div>
-        <div class="setting-row">
-            <label>Game Mode:
-                <select name="mode" class="select-sm">
-                    <option value="bl" {% if settings.mode == 'bl' %}selected{% endif %}>Broken Lands</option>
-                    <option value="rw" {% if settings.mode == 'rw' %}selected{% endif %}>Home Server</option>
-                </select>
-            </label>
-        </div>
-        <div class="setting-row">
-            <label>My Team:
-                <select name="my_team" class="select-sm">
-                    {% for color in ['yellow', 'red', 'blue', 'green'] %}
-                    <option value="{{ color }}" {% if settings.my_team == color %}selected{% endif %}>{{ color|capitalize }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-        </div>
-        <!-- Enemy teams auto-derived: all teams except my_team -->
-    </div>
-
-    <!-- Device Troops -->
-    <div class="card">
-        <h3>Device Troops</h3>
         {% if device_troops %}
+        <div class="settings-card-subheader" style="margin-top:6px">Device Troops</div>
         {% for dev_id, count in device_troops.items() %}
-        <div class="setting-row">
-            <label>{{ device_names.get(dev_id, dev_id.split(":")[-1]) }}:
-                <input type="number" name="dt_{{ dev_id }}" value="{{ count }}"
-                       min="1" max="5" class="input-sm">
-            </label>
+        <div class="settings-row settings-row-inline">
+            <span class="settings-row-label">{{ device_names.get(dev_id, dev_id.split(":")[-1]) }}</span>
+            <input type="number" value="{{ count }}"
+                   min="1" max="5" class="input-sm"
+                   onchange="saveDeviceTroops('{{ dev_id }}', parseInt(this.value))">
         </div>
         {% endfor %}
-        {% else %}
-        <p class="muted">No devices detected yet.</p>
         {% endif %}
+        <div class="settings-card-subheader" style="margin-top:6px">Intervals</div>
+        <div class="settings-row settings-row-inline" data-key="titan_interval">
+            <span class="settings-row-label">Titan</span>
+            <div class="settings-row-input">
+                <input type="number" value="{{ settings.titan_interval }}"
+                       min="1" class="input-sm"
+                       onchange="saveSetting('titan_interval', parseInt(this.value))">
+                <span class="unit">sec</span>
+            </div>
+        </div>
+        <div class="settings-row settings-row-inline" data-key="groot_interval">
+            <span class="settings-row-label">Groot</span>
+            <div class="settings-row-input">
+                <input type="number" value="{{ settings.groot_interval }}"
+                       min="1" class="input-sm"
+                       onchange="saveSetting('groot_interval', parseInt(this.value))">
+                <span class="unit">sec</span>
+            </div>
+        </div>
+        <div class="settings-row settings-row-inline" data-key="reinforce_interval">
+            <span class="settings-row-label">Reinforce</span>
+            <div class="settings-row-input">
+                <input type="number" value="{{ settings.reinforce_interval }}"
+                       min="1" class="input-sm"
+                       onchange="saveSetting('reinforce_interval', parseInt(this.value))">
+                <span class="unit">sec</span>
+            </div>
+        </div>
+        <div class="settings-row settings-row-inline" data-key="pass_interval">
+            <span class="settings-row-label">Pass</span>
+            <div class="settings-row-input">
+                <input type="number" value="{{ settings.pass_interval }}"
+                       min="1" class="input-sm"
+                       onchange="saveSetting('pass_interval', parseInt(this.value))">
+                <span class="unit">sec</span>
+            </div>
+        </div>
+        <div class="settings-row settings-row-inline" data-key="mithril_interval">
+            <span class="settings-row-label">Mithril</span>
+            <div class="settings-row-input">
+                <input type="number" value="{{ settings.mithril_interval }}"
+                       min="1" class="input-sm"
+                       onchange="saveSetting('mithril_interval', parseInt(this.value))">
+                <span class="unit">min</span>
+            </div>
+        </div>
     </div>
 
-    <button type="submit" class="btn btn-primary btn-full">Save Settings</button>
-</form>
+    <!-- Connectivity -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Connectivity</div>
+        <div class="settings-row" data-key="remote_access">
+            <span class="settings-row-label">
+                Remote Access
+                <span class="settings-row-hint">Requires restart</span>
+            </span>
+            <button type="button" class="toggle{% if settings.remote_access %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'remote_access')"></button>
+        </div>
+        <div class="settings-row" data-key="auto_upload_logs">
+            <span class="settings-row-label">
+                Auto-Upload Bug Reports
+                <span class="settings-row-hint">Periodic upload for troubleshooting</span>
+            </span>
+            <button type="button" class="toggle{% if settings.auto_upload_logs %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'auto_upload_logs')"></button>
+        </div>
+        <div class="settings-row settings-row-inline settings-row-indent{% if not settings.auto_upload_logs %} setting-disabled{% endif %}"
+             data-key="upload_interval_hours" data-depends-on="auto_upload_logs">
+            <span class="settings-row-label">Upload Interval</span>
+            <div class="settings-row-input">
+                <input type="number" min="1" max="168" class="input-sm"
+                       value="{{ settings.upload_interval_hours }}"
+                       onchange="saveSetting('upload_interval_hours', parseInt(this.value))">
+                <span class="unit">hours</span>
+            </div>
+        </div>
+    </div>
 
-<a href="/territory" class="btn btn-full" style="display:block;text-align:center;margin-top:12px;background:#2a2a4a;color:#aab;border:1px solid #3a3a5a;">Territory Grid</a>
+    <!-- Advanced -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Advanced</div>
+        <div class="settings-row" data-key="verbose_logging">
+            <span class="settings-row-label">Verbose Logging</span>
+            <button type="button" class="toggle{% if settings.verbose_logging %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'verbose_logging')"></button>
+        </div>
+        <div class="settings-row" data-key="collect_training_data">
+            <span class="settings-row-label">
+                Collect Training Data
+                <span class="settings-row-hint">Template match & OCR decisions for AI training</span>
+            </span>
+            <button type="button" class="toggle{% if settings.collect_training_data %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'collect_training_data')"></button>
+        </div>
+        <div class="settings-row" data-key="web_dashboard">
+            <span class="settings-row-label">Web Dashboard</span>
+            <button type="button" class="toggle{% if settings.web_dashboard %} on{% endif %}"
+                    onclick="toggleAndSave(this, 'web_dashboard')"></button>
+        </div>
+    </div>
+
+<a href="/territory" class="btn btn-full btn-territory">Territory Grid</a>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Dependency map: child → parent
+var DEPS = {
+    'gather_mine_level': 'gather_enabled',
+    'gather_max_troops': 'gather_enabled',
+    'ap_use_free': 'auto_restore_ap',
+    'ap_use_potions': 'auto_restore_ap',
+    'ap_allow_large_potions': 'auto_restore_ap',
+    'ap_use_gems': 'auto_restore_ap',
+    'ap_gem_limit': 'ap_use_gems',
+    'upload_interval_hours': 'auto_upload_logs'
+};
+
+function toggleAndSave(btn, key) {
+    btn.classList.toggle('on');
+    var val = btn.classList.contains('on');
+    saveSetting(key, val);
+    updateDeps(key, val);
+}
+
+function saveSetting(key, value) {
+    var row = document.querySelector('[data-key="' + key + '"]');
+    fetch(RELAY_PREFIX + '/api/settings/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: key, value: value})
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (row) showIndicator(row, data.ok);
+    }).catch(function() {
+        if (row) showIndicator(row, false);
+    });
+}
+
+function saveDeviceTroops(devId, count) {
+    // Device troops are saved via the special device_troops key
+    fetch(RELAY_PREFIX + '/api/settings/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: 'device_troops_' + devId, value: count})
+    }).then(function(r) {
+        if (!r.ok) {
+            // Fallback: save entire device_troops dict
+            // Collect all device troop inputs
+            var dt = {};
+            document.querySelectorAll('[onchange*="saveDeviceTroops"]').forEach(function(inp) {
+                var m = inp.getAttribute('onchange').match(/saveDeviceTroops\('([^']+)'/);
+                if (m) dt[m[1]] = parseInt(inp.value) || 5;
+            });
+            return fetch(RELAY_PREFIX + '/api/settings/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({key: 'device_troops', value: dt})
+            });
+        }
+    }).catch(function() {});
+}
+
+function showIndicator(row, ok) {
+    // Remove any existing indicator
+    var old = row.querySelector('.save-indicator');
+    if (old) old.remove();
+    var span = document.createElement('span');
+    span.className = 'save-indicator ' + (ok ? 'save-ok' : 'save-err');
+    span.textContent = ok ? '\u2713' : '\u2717';
+    row.appendChild(span);
+    setTimeout(function() { span.remove(); }, 1200);
+}
+
+function updateDeps(key, value) {
+    // Find all children of this key and enable/disable
+    Object.keys(DEPS).forEach(function(child) {
+        if (DEPS[child] === key) {
+            var rows = document.querySelectorAll('[data-key="' + child + '"]');
+            rows.forEach(function(row) {
+                if (value) {
+                    row.classList.remove('setting-disabled');
+                } else {
+                    row.classList.add('setting-disabled');
+                }
+            });
+            // Recurse: if this child is itself a parent, check its current state
+            var childRow = document.querySelector('[data-key="' + child + '"]');
+            if (childRow) {
+                var childToggle = childRow.querySelector('.toggle');
+                if (childToggle) {
+                    var childOn = value && childToggle.classList.contains('on');
+                    updateDeps(child, childOn);
+                }
+            }
+        }
+    });
+}
+</script>
 {% endblock %}

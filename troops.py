@@ -401,8 +401,9 @@ def read_panel_statuses(device, screen=None) -> Optional[DeviceTroopSnapshot]:
                 log.debug("Panel status (protocol): %s", snapshot.troops)
                 _store_snapshot(device, snapshot)
                 return snapshot
+            log.debug("Protocol snapshot returned None, falling back to vision")
         except Exception:
-            pass
+            log.debug("Protocol snapshot error, falling back to vision", exc_info=True)
 
     if screen is None:
         screen = load_screenshot(device)

@@ -179,9 +179,88 @@ def cleanup_dead_tasks():
 # Settings helpers
 # ---------------------------------------------------------------------------
 
-from settings import SETTINGS_FILE, DEFAULTS, load_settings as _load_settings, save_settings as _save_settings
+from settings import SETTINGS_FILE, DEFAULTS, load_settings as _load_settings, save_settings as _save_settings, DEVICE_OVERRIDABLE_KEYS
 
 from startup import apply_settings as _apply_settings
+
+_settings_lock = threading.Lock()  # serialize all settings mutations
+
+
+def _ajax_save_setting(key, value):
+    """Validate and save a single global setting. Returns (ok, error_msg)."""
+    from config import SETTINGS_RULES, validate_settings
+    # Handle per-device troop count: device_troops_<device_id>
+    if key.startswith("device_troops_"):
+        dev_id = key[len("device_troops_"):]
+        try:
+            count = int(value)
+        except (ValueError, TypeError):
+            return False, "Expected integer for troop count"
+        if count < 1 or count > 5:
+            return False, "Troop count must be 1-5"
+        with _settings_lock:
+            settings = _load_settings()
+            dt = settings.setdefault("device_troops", {})
+            dt[dev_id] = count
+            _apply_settings(settings)
+            _save_settings(settings)
+        return True, None
+    rule = SETTINGS_RULES.get(key)
+    if rule is None and key != "device_troops":
+        return False, f"Unknown setting: {key}"
+    # Coerce value to expected type
+    if rule:
+        expected = rule["type"]
+        if expected is bool:
+            value = bool(value)
+        elif expected is int:
+            try:
+                value = int(value)
+            except (ValueError, TypeError):
+                return False, f"{key}: expected integer"
+        elif expected is str:
+            value = str(value)
+    with _settings_lock:
+        settings = _load_settings()
+        settings[key] = value
+        settings, warnings = validate_settings(settings, DEFAULTS)
+        for w in warnings:
+            if key in w:
+                return False, w
+        _apply_settings(settings)
+        _save_settings(settings)
+    return True, None
+
+
+def _ajax_save_device_setting(device_id, key, value):
+    """Validate and save a single per-device override. Returns (ok, error_msg)."""
+    from config import SETTINGS_RULES, validate_settings
+    if key not in DEVICE_OVERRIDABLE_KEYS:
+        return False, f"Not overridable: {key}"
+    rule = SETTINGS_RULES.get(key)
+    if rule:
+        expected = rule["type"]
+        if expected is bool:
+            value = bool(value)
+        elif expected is int:
+            try:
+                value = int(value)
+            except (ValueError, TypeError):
+                return False, f"{key}: expected integer"
+        elif expected is str:
+            value = str(value)
+    with _settings_lock:
+        settings = _load_settings()
+        ds = settings.setdefault("device_settings", {})
+        dev = ds.setdefault(device_id, {})
+        dev[key] = value
+        settings, warnings = validate_settings(settings, DEFAULTS)
+        for w in warnings:
+            if key in w:
+                return False, w
+        _apply_settings(settings)
+        _save_settings(settings)
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -691,6 +770,90 @@ def create_app():
         _save_settings(settings)
         return redirect(url_for("settings_page"))
 
+    # --- AJAX settings API ---
+
+    @app.route("/api/settings/save", methods=["POST"])
+    def api_settings_save():
+        """Save a single global setting via AJAX."""
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        value = data.get("value")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        ok, err = _ajax_save_setting(key, value)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+        return jsonify(ok=True)
+
+    @app.route("/api/settings/device/<device_id>/save", methods=["POST"])
+    def api_device_settings_save(device_id):
+        """Save a single per-device override via AJAX."""
+        detected = _cached_devices()[0]
+        if device_id not in detected:
+            abort(404)
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        value = data.get("value")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        ok, err = _ajax_save_device_setting(device_id, key, value)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+        return jsonify(ok=True)
+
+    @app.route("/api/settings/device/<device_id>/reset-key", methods=["POST"])
+    def api_device_settings_reset_key(device_id):
+        """Reset a single per-device override to global default."""
+        detected = _cached_devices()[0]
+        if device_id not in detected:
+            abort(404)
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            dev = ds.get(device_id, {})
+            dev.pop(key, None)
+            if not dev or all(k in ("shared_modes", "shared_actions") for k in dev):
+                # Only access control keys left — keep them, remove config overrides
+                pass
+            ds[device_id] = dev
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
+
+    @app.route("/api/settings/device/<device_id>/reset-all", methods=["POST"])
+    def api_device_settings_reset_all(device_id):
+        """Reset all per-device overrides (preserving access control)."""
+        detected = _cached_devices()[0]
+        if device_id not in detected:
+            abort(404)
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            existing = ds.get(device_id, {})
+            # Preserve shared_modes/shared_actions (owner-only access control)
+            preserved = {}
+            if "shared_modes" in existing:
+                preserved["shared_modes"] = existing["shared_modes"]
+            if "shared_actions" in existing:
+                preserved["shared_actions"] = existing["shared_actions"]
+            if preserved:
+                ds[device_id] = preserved
+            else:
+                ds.pop(device_id, None)
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
+
     @app.route("/settings/device/<device_id>")
     def device_settings_page(device_id):
         """Per-device settings page with override toggles."""
@@ -729,7 +892,8 @@ def create_app():
                       "titan_rally_own", "gather_enabled", "tower_quest_enabled"}
         for key in bool_keys & DEVICE_OVERRIDABLE_KEYS:
             if f"override_{key}" in request.form:
-                overrides[key] = key in request.form
+                val = request.form.get(key, "")
+                overrides[key] = bool(val and val != "")
 
         # Integer overridable keys
         int_keys = {"ap_gem_limit", "min_troops", "mithril_interval",
@@ -749,7 +913,8 @@ def create_app():
                     overrides[key] = val
 
         # Shared permissions (not config overrides — access control)
-        if "permissions_enabled" in request.form:
+        perm_val = request.form.get("permissions_enabled", "")
+        if perm_val and perm_val != "":
             # Collect checked auto-mode keys
             shared_modes = []
             for key in ALL_AUTO_MODE_KEYS:
@@ -1402,6 +1567,12 @@ def create_app():
                 thread = val.get("thread")
                 if thread and thread.is_alive() and key.startswith(device):
                     active.append(key)
+        # Chat mirroring: if chat_mirror enabled and any device has protocol, this device gets chat
+        settings = _load_settings()
+        chat_mirror = settings.get("chat_mirror", True)
+        any_protocol = bool(config.PROTOCOL_ACTIVE_DEVICES)
+        info["chat_available"] = (device in config.PROTOCOL_ACTIVE_DEVICES) or (chat_mirror and any_protocol)
+
         return jsonify({"devices": [info], "tasks": active,
                         "tunnel": tunnel_status(),
                         "upload": _upload_status()})
@@ -1533,6 +1704,53 @@ def create_app():
         """Stop emulator for this device."""
         return _do_emulator_stop(device_id=device)
 
+    @app.route("/d/<dhash>/api/chat")
+    @require_device_token
+    def device_api_chat(dhash, device=None, token=None, readonly=False):
+        """Chat messages for this device (with mirroring from protocol-active devices)."""
+        channel = request.args.get("channel")
+        from startup import get_protocol_chat_messages
+        messages = get_protocol_chat_messages(device)
+        mirror_source = None
+        if not messages and device not in config.PROTOCOL_ACTIVE_DEVICES:
+            settings = _load_settings()
+            if settings.get("chat_mirror", True):
+                for active_dev in config.PROTOCOL_ACTIVE_DEVICES:
+                    mirrored = get_protocol_chat_messages(active_dev)
+                    if mirrored:
+                        messages = [m for m in mirrored
+                                    if isinstance(m, dict)
+                                    and m.get("channel", "").upper() != "PRIVATE"]
+                        mirror_source = active_dev
+                        break
+        if channel:
+            ch_upper = channel.upper()
+            if ch_upper == "UNION":
+                messages = [m for m in messages
+                            if isinstance(m, dict)
+                            and m.get("channel", "").upper().startswith("UNION")]
+            else:
+                messages = [m for m in messages
+                            if isinstance(m, dict)
+                            and m.get("channel", "").upper() == ch_upper]
+        serializable = []
+        for m in messages:
+            if isinstance(m, dict):
+                serializable.append({
+                    "content": m.get("content", ""),
+                    "sender": m.get("sender", ""),
+                    "channel": m.get("channel", ""),
+                    "channel_type": m.get("channel_type", 0),
+                    "timestamp": m.get("timestamp", 0),
+                    "union_name": m.get("union_name", ""),
+                    "payload_type": m.get("payload_type", 0),
+                })
+        serializable.sort(key=lambda m: m.get("timestamp", 0))
+        result = {"messages": serializable, "count": len(serializable)}
+        if mirror_source:
+            result["mirrored"] = True
+        return jsonify(result)
+
     @app.route("/d/<dhash>/api/screenshot")
     @require_device_token
     def device_screenshot(dhash, device=None, token=None, readonly=False):
@@ -1634,7 +1852,8 @@ def create_app():
                       "titan_rally_own", "gather_enabled", "tower_quest_enabled"}
         for key in bool_keys & DEVICE_OVERRIDABLE_KEYS:
             if f"override_{key}" in request.form:
-                overrides[key] = key in request.form
+                val = request.form.get(key, "")
+                overrides[key] = bool(val and val != "")
 
         # Integer overridable keys
         int_keys = {"ap_gem_limit", "min_troops", "mithril_interval",
@@ -1695,6 +1914,70 @@ def create_app():
         _apply_settings(settings)
         _save_settings(settings)
         return redirect(f"/d/{dhash}/settings?token={token}")
+
+    # --- Device-scoped AJAX settings API (friend view) ---
+
+    @app.route("/d/<dhash>/api/settings/save", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_api_settings_save(dhash, device=None, token=None, readonly=False):
+        """Save a single per-device override via AJAX (friend view)."""
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        value = data.get("value")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        ok, err = _ajax_save_device_setting(device, key, value)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+        return jsonify(ok=True)
+
+    @app.route("/d/<dhash>/api/settings/reset-key", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_api_settings_reset_key(dhash, device=None, token=None, readonly=False):
+        """Reset a single per-device override (friend view)."""
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            dev = ds.get(device, {})
+            dev.pop(key, None)
+            ds[device] = dev
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
+
+    @app.route("/d/<dhash>/api/settings/reset-all", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_api_settings_reset_all(dhash, device=None, token=None, readonly=False):
+        """Reset all per-device overrides (friend view)."""
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            existing = ds.get(device, {})
+            preserved = {}
+            if "shared_modes" in existing:
+                preserved["shared_modes"] = existing["shared_modes"]
+            if "shared_actions" in existing:
+                preserved["shared_actions"] = existing["shared_actions"]
+            if preserved:
+                ds[device] = preserved
+            else:
+                ds.pop(device, None)
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
 
     # --- Calibrate routes ---
 
