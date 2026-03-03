@@ -200,6 +200,10 @@ TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires tar
 PROTOCOL_ENABLED = False
 PROTOCOL_ACTIVE_DEVICES = set()  # {device_id} — devices with running protocol interceptor
 
+# Emulator boot tracking
+EMULATOR_STARTING = {}  # {device_id: {"instance": str, "started_at": float}}
+EMULATOR_RECENTLY_STARTED = {}  # {device_id: float timestamp} — cleared after game start
+
 # Per-device lock — prevents concurrent tasks from controlling the same device
 import threading
 _device_locks = {}

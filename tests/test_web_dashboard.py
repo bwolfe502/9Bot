@@ -46,6 +46,8 @@ def clean_running_tasks():
     """Clear running_tasks before and after each test."""
     config.running_tasks.clear()
     config.DEVICE_STATUS.clear()
+    config.EMULATOR_STARTING.clear()
+    config.EMULATOR_RECENTLY_STARTED.clear()
     yield
     # Stop all tasks and clean up
     for key, info in list(config.running_tasks.items()):
@@ -53,6 +55,15 @@ def clean_running_tasks():
             info["stop_event"].set()
     config.running_tasks.clear()
     config.DEVICE_STATUS.clear()
+    config.EMULATOR_STARTING.clear()
+    config.EMULATOR_RECENTLY_STARTED.clear()
+
+
+@pytest.fixture(autouse=True)
+def mock_offline_instances():
+    """Mock get_offline_instances to return [] — tests don't use BlueStacks."""
+    with patch("web.dashboard.get_offline_instances", return_value=[]):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -901,12 +912,14 @@ class TestDeviceScopedRoutes:
     @patch("license.get_license_key", return_value="test-key-xyz")
     @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
     @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
-    def test_device_index_hides_settings_nav(self, _inst, _devs, _key, client):
-        """Friend view should not show Settings or Restart."""
+    def test_device_index_hides_owner_nav(self, _inst, _devs, _key, client):
+        """Friend view should not show Restart/Quit but should show Settings."""
         dhash, token = self._get_hash_and_token(self.DEVICE)
         resp = client.get(f"/d/{dhash}?token={token}")
-        assert b"/settings" not in resp.data
         assert b"confirmRestart" not in resp.data
+        assert b"confirmQuit" not in resp.data
+        # Device-scoped settings link should be present
+        assert f"/d/{dhash}/settings".encode() in resp.data
 
     @patch("license.get_license_key", return_value="test-key-xyz")
     @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
@@ -937,6 +950,86 @@ class TestDeviceScopedRoutes:
         """Owner view should show Share button on device cards."""
         resp = client.get("/")
         assert b"Share" in resp.data
+
+    # --- Device-scoped settings tests ---
+
+    @patch("license.get_license_key", return_value="test-key-xyz")
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
+    def test_device_settings_full_access(self, _inst, _devs, _key, client):
+        """Full-access token can view device settings."""
+        dhash, token = self._get_hash_and_token(self.DEVICE)
+        resp = client.get(f"/d/{dhash}/settings?token={token}")
+        assert resp.status_code == 200
+        assert b"Override" in resp.data
+
+    @patch("license.get_license_key", return_value="test-key-xyz")
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
+    def test_device_settings_readonly_rejected(self, _inst, _devs, _key, client):
+        """Read-only token cannot access device settings."""
+        from startup import device_hash, generate_device_ro_token
+        dhash = device_hash(self.DEVICE)
+        ro_token = generate_device_ro_token(self.DEVICE)
+        resp = client.get(f"/d/{dhash}/settings?token={ro_token}")
+        assert resp.status_code == 403
+
+    @patch("license.get_license_key", return_value="test-key-xyz")
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
+    def test_device_settings_invalid_token(self, _inst, _devs, _key, client):
+        """Invalid token cannot access device settings."""
+        from startup import device_hash
+        dhash = device_hash(self.DEVICE)
+        resp = client.get(f"/d/{dhash}/settings?token=0000000000000000")
+        assert resp.status_code == 403
+
+    @patch("license.get_license_key", return_value="test-key-xyz")
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
+    @patch("web.dashboard._save_settings")
+    @patch("web.dashboard._apply_settings")
+    def test_device_settings_save(self, _apply, _save, _inst, _devs, _key, client):
+        """POST to device settings saves and redirects back."""
+        dhash, token = self._get_hash_and_token(self.DEVICE)
+        resp = client.post(f"/d/{dhash}/settings?token={token}", data={
+            "override_auto_heal": "on",
+            "auto_heal": "on",
+        })
+        assert resp.status_code == 302
+        assert f"/d/{dhash}/settings" in resp.headers["Location"]
+
+    @patch("license.get_license_key", return_value="test-key-xyz")
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
+    @patch("web.dashboard._save_settings")
+    @patch("web.dashboard._apply_settings")
+    def test_device_settings_reset(self, _apply, _save, _inst, _devs, _key, client):
+        """POST to device settings reset redirects back."""
+        dhash, token = self._get_hash_and_token(self.DEVICE)
+        resp = client.post(f"/d/{dhash}/settings/reset?token={token}")
+        assert resp.status_code == 302
+        assert f"/d/{dhash}/settings" in resp.headers["Location"]
+
+    @patch("license.get_license_key", return_value="test-key-xyz")
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
+    def test_device_settings_hides_shared_permissions(self, _inst, _devs, _key, client):
+        """Shared settings view should not show Shared Permissions section."""
+        dhash, token = self._get_hash_and_token(self.DEVICE)
+        resp = client.get(f"/d/{dhash}/settings?token={token}")
+        assert resp.status_code == 200
+        assert b"Shared Permissions" not in resp.data
+
+    @patch("license.get_license_key", return_value="test-key-xyz")
+    @patch("web.dashboard.get_devices", return_value=["127.0.0.1:9999"])
+    @patch("web.dashboard.get_emulator_instances", return_value={"127.0.0.1:9999": "MuMu"})
+    def test_device_settings_has_back_link(self, _inst, _devs, _key, client):
+        """Shared settings view should have a back link to the device dashboard."""
+        dhash, token = self._get_hash_and_token(self.DEVICE)
+        resp = client.get(f"/d/{dhash}/settings?token={token}")
+        assert resp.status_code == 200
+        assert b"Back to Dashboard" in resp.data
 
 
 class TestDeviceSettingsRoutes:

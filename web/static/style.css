@@ -117,56 +117,6 @@ nav {
     background: #1e3a5f;
 }
 
-.nav-restart {
-    background: #b71c1c;
-    color: #fff;
-    border: none;
-    padding: 7px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    flex-shrink: 0;
-    margin-left: 8px;
-    transition: all 0.15s ease;
-    -webkit-tap-highlight-color: transparent;
-}
-
-.nav-restart:active {
-    background: #d32f2f;
-    transform: scale(0.95);
-}
-
-.nav-restart:disabled {
-    opacity: 0.6;
-    cursor: default;
-}
-
-.nav-quit {
-    background: #424242;
-    color: #ccc;
-    border: none;
-    padding: 7px 14px;
-    border-radius: 8px;
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    flex-shrink: 0;
-    margin-left: 4px;
-    transition: all 0.15s ease;
-    -webkit-tap-highlight-color: transparent;
-}
-
-.nav-quit:active {
-    background: #616161;
-    transform: scale(0.95);
-}
-
-.nav-quit:disabled {
-    opacity: 0.6;
-    cursor: default;
-}
-
 /* Main content */
 main {
     max-width: 960px;
@@ -597,6 +547,10 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 .status-text.status-error {
     color: #ff5252;
     font-weight: 700;
+}
+
+.status-text.status-offline {
+    color: #667;
 }
 
 /* Section labels inside cards */
@@ -1141,28 +1095,6 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     margin-bottom: 4px;
 }
 
-/* Summary bar */
-.summary-bar {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
-    flex-wrap: wrap;
-}
-
-.badge {
-    background: #1e3a5f;
-    padding: 6px 12px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: 600;
-    color: #ccd;
-}
-
-.badge-active {
-    background: #2e7d32;
-    color: #fff;
-}
-
 /* Settings */
 .setting-row {
     display: flex;
@@ -1230,21 +1162,6 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     white-space: pre-wrap;
     word-break: break-all;
 }
-
-/* Compat classes */
-.device-panel { max-width: 600px; margin: 0 auto; }
-.dp-card { background: #181830; padding: 10px 16px 12px; border-bottom: 1px solid rgba(255,255,255,0.06); }
-.dp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.dp-name { font-size: 14px; font-weight: 700; color: #fff; }
-.dp-status { font-size: 12px; font-weight: 500; color: #64d8ff; }
-.dp-troops { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.device-status { font-size: 14px; color: #778; padding: 4px 0; }
-.device-status.status-active { color: #64d8ff; font-weight: 500; }
-.task-card { display: flex; justify-content: space-between; align-items: center; }
-.quest-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; font-size: 13px; }
-.quest-type { color: #bbc; text-transform: capitalize; }
-.quest-count { color: #e0e0f0; }
-.quest-pending { color: #ffb74d; font-size: 12px; }
 
 /* ============================================================
    Territory Grid Manager
@@ -1523,6 +1440,147 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 .restart-game-btn:disabled {
     opacity: 0.5;
     cursor: default;
+}
+
+/* Offline device card */
+.device-card-offline {
+    border-left-color: #555;
+}
+
+/* Emulator step buttons (two side-by-side numbered steps on both offline and online cards) */
+.emu-steps {
+    display: flex;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+/* Compact variant for online cards — unobtrusive at bottom */
+.emu-steps-compact {
+    margin-top: 8px;
+    opacity: 0.55;
+    transition: opacity 0.2s ease;
+}
+.emu-steps-compact:hover {
+    opacity: 1;
+}
+.emu-steps-compact .emu-step-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+}
+.emu-steps-compact .emu-step-num {
+    display: none;
+}
+
+.emu-step-btn {
+    flex: 1;
+    padding: 9px 12px;
+    font-size: 13px;
+    font-weight: 700;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+    border: 1px solid;
+    text-align: center;
+}
+
+.emu-step-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    font-size: 11px;
+    font-weight: 800;
+    margin-right: 4px;
+    vertical-align: middle;
+    line-height: 1;
+}
+
+/* Step 1: Start Emulator (green) */
+.emu-step-emu {
+    color: #69db7c;
+    background: rgba(105,219,124,0.06);
+    border-color: rgba(105,219,124,0.15);
+}
+.emu-step-emu .emu-step-num {
+    background: rgba(105,219,124,0.2);
+    color: #69db7c;
+}
+.emu-step-emu:hover {
+    background: rgba(105,219,124,0.12);
+    border-color: rgba(105,219,124,0.3);
+}
+.emu-step-emu:active {
+    background: rgba(105,219,124,0.18);
+}
+.emu-step-emu.emu-starting {
+    color: #ffd43b;
+    background: rgba(255,212,59,0.06);
+    border-color: rgba(255,212,59,0.15);
+    animation: emu-pulse 1.5s ease-in-out infinite;
+}
+.emu-step-emu.emu-starting .emu-step-num {
+    background: rgba(255,212,59,0.2);
+    color: #ffd43b;
+}
+
+/* Step 2: Start Game / Restart Game (amber base — fix-it action) */
+.emu-step-game {
+    color: #ffb74d;
+    background: rgba(255,183,77,0.06);
+    border-color: rgba(255,183,77,0.15);
+}
+.emu-step-game .emu-step-num {
+    background: rgba(255,183,77,0.2);
+    color: #ffb74d;
+}
+.emu-step-game:hover:not(:disabled) {
+    background: rgba(255,183,77,0.12);
+    border-color: rgba(255,183,77,0.3);
+}
+.emu-step-game:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+/* Step 2 ready: Start Game available (green) */
+.emu-step-game.emu-step-game-ready {
+    color: #69db7c;
+    background: rgba(105,219,124,0.06);
+    border-color: rgba(105,219,124,0.15);
+}
+.emu-step-game.emu-step-game-ready .emu-step-num {
+    background: rgba(105,219,124,0.2);
+    color: #69db7c;
+}
+.emu-step-game.emu-step-game-ready:hover {
+    background: rgba(105,219,124,0.12);
+    border-color: rgba(105,219,124,0.3);
+}
+
+/* Step 1 online: Stop Emulator (red) */
+.emu-step-stop {
+    color: #ff6b6b;
+    background: rgba(255,107,107,0.06);
+    border-color: rgba(255,107,107,0.15);
+}
+.emu-step-stop .emu-step-num {
+    background: rgba(255,107,107,0.2);
+    color: #ff6b6b;
+}
+.emu-step-stop:hover {
+    background: rgba(255,107,107,0.12);
+    border-color: rgba(255,107,107,0.3);
+}
+.emu-step-stop:active {
+    background: rgba(255,107,107,0.18);
+}
+
+@keyframes emu-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
 }
 
 .live-view-container {

@@ -5,6 +5,7 @@
 <h1>{{ device_name }}</h1>
 
 <!-- Device Tabs -->
+{% if not device_filter %}
 <div class="settings-tabs">
     <a href="/settings" class="settings-tab">Global</a>
     {% for dev in all_devices %}
@@ -12,12 +13,13 @@
        class="settings-tab{% if dev.id == device_id %} active{% endif %}">{{ dev.name }}</a>
     {% endfor %}
 </div>
+{% endif %}
 
 <p style="color:#667;font-size:12px;margin:8px 0 16px">
     Toggle <strong style="color:#64d8ff">Override</strong> to set a device-specific value. Unset overrides use the global default.
 </p>
 
-<form method="post" action="/settings/device/{{ device_id }}">
+<form method="post" action="{{ form_action|default('/settings/device/' + device_id) }}">
     <!-- General -->
     <div class="card">
         <h3>General</h3>
@@ -326,7 +328,8 @@
         </div>
     </div>
 
-    <!-- Shared User Permissions -->
+    <!-- Shared User Permissions (owner only) -->
+    {% if not device_filter %}
     <div class="card">
         <h3>Shared Permissions</h3>
         <p style="color:#667;font-size:12px;margin:0 0 10px">
@@ -370,17 +373,25 @@
             {% endfor %}
         </div>
     </div>
+    {% endif %}
 
     <button type="submit" class="btn btn-primary btn-full">Save Device Settings</button>
 </form>
 
-<form method="post" action="/settings/device/{{ device_id }}/reset" style="margin-top:8px">
+<form method="post" action="{{ reset_action|default('/settings/device/' + device_id + '/reset') }}" style="margin-top:8px">
     <button type="submit" class="btn btn-full"
             style="background:#2a2a4a;color:#ff6b6b;border:1px solid rgba(255,107,107,0.2)"
             onclick="return confirm('Reset all overrides for this device to global defaults?')">
         Reset All Overrides
     </button>
 </form>
+
+{% if device_filter %}
+<a href="/d/{{ device_hash }}?token={{ device_token }}" class="btn btn-full"
+   style="display:block;text-align:center;margin-top:8px;background:#2a2a4a;color:#64d8ff;border:1px solid rgba(100,216,255,0.2);text-decoration:none">
+    Back to Dashboard
+</a>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
