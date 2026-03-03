@@ -28,6 +28,11 @@
     <div style="color:#555;text-align:center;padding:40px 0">Select a device to view chat</div>
 </div>
 
+<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+    <button id="system-toggle" class="chat-tab" onclick="toggleSystem(this)" title="Show/hide system notification messages (BizarreCave, etc.)">Show System</button>
+    <span id="system-count" style="color:#555;font-size:11px"></span>
+</div>
+
 <style>
 .chat-tab {
     background: transparent;
@@ -47,7 +52,8 @@
 .chat-sender { color: #4caaff; margin-right: 4px; }
 .chat-sender-union { color: #555; font-size: 11px; margin-right: 4px; }
 .chat-content { color: #ddd; }
-.chat-system { color: #ff9f43; }
+.chat-system { color: #ff9f43; font-size: 12px; }
+.chat-coord { color: #8be9fd; }
 </style>
 
 {% endblock %}
@@ -56,13 +62,26 @@
 <script>
 var _chatChannel = '';
 var _chatPollId = null;
-var _lastCount = 0;
+var _showSystem = false;
+var _lastMessages = [];
 
 function setChannel(btn, channel) {
     _chatChannel = channel;
-    document.querySelectorAll('.chat-tab').forEach(function(t) { t.classList.remove('active'); });
+    document.querySelectorAll('#channel-tabs .chat-tab').forEach(function(t) { t.classList.remove('active'); });
     btn.classList.add('active');
     loadChat();
+}
+
+function toggleSystem(btn) {
+    _showSystem = !_showSystem;
+    btn.textContent = _showSystem ? 'Hide System' : 'Show System';
+    if (_showSystem) {
+        btn.classList.add('active');
+    } else {
+        btn.classList.remove('active');
+    }
+    renderMessages(_lastMessages);
+    updateStatus(_lastMessages);
 }
 
 function loadChat() {
@@ -73,29 +92,45 @@ function loadChat() {
     fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            _lastMessages = data.messages;
             renderMessages(data.messages);
-            document.getElementById('chat-status').textContent =
-                data.count + ' messages' + (_chatChannel ? ' (' + _chatChannel + ')' : '');
+            updateStatus(data.messages);
         })
         .catch(function(e) {
             document.getElementById('chat-status').textContent = 'Error loading chat';
         });
 }
 
+function updateStatus(messages) {
+    var systemCount = messages.filter(function(m) { return m.payload_type === 11; }).length;
+    var visible = _showSystem ? messages : messages.filter(function(m) { return m.payload_type !== 11; });
+    var status = visible.length + ' messages';
+    if (_chatChannel) status += ' (' + _chatChannel + ')';
+    document.getElementById('chat-status').textContent = status;
+    document.getElementById('system-count').textContent =
+        systemCount > 0 ? systemCount + ' system messages' : '';
+}
+
 function renderMessages(messages) {
     var container = document.getElementById('chat-messages');
     var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
     container.textContent = '';
-    if (messages.length === 0) {
+    // Apply system filter
+    var filtered = _showSystem ? messages : messages.filter(function(m) { return m.payload_type !== 11; });
+    if (filtered.length === 0) {
         var empty = document.createElement('div');
         empty.style.cssText = 'color:#555;text-align:center;padding:40px 0';
-        empty.textContent = 'No messages yet. Protocol must be enabled and game chat active.';
+        empty.textContent = messages.length > 0
+            ? 'All messages are system notifications. Click "Show System" below to view them.'
+            : 'No messages yet. Protocol must be enabled and game chat active.';
         container.appendChild(empty);
         return;
     }
-    messages.forEach(function(msg) {
+    filtered.forEach(function(msg) {
         var div = document.createElement('div');
         div.className = 'chat-msg';
+        var isSystem = msg.payload_type === 11;
+        var isCoord = msg.payload_type === 5;
 
         // Timestamp
         var time = document.createElement('span');
@@ -122,13 +157,13 @@ function renderMessages(messages) {
 
         // Sender
         var sender = document.createElement('span');
-        sender.className = msg.payload_type === 11 ? 'chat-system' : 'chat-sender';
-        sender.textContent = (msg.sender || 'System') + ': ';
+        sender.className = isSystem ? 'chat-system' : 'chat-sender';
+        sender.textContent = (msg.sender || (isSystem ? 'System' : '???')) + ': ';
         div.appendChild(sender);
 
         // Content
         var content = document.createElement('span');
-        content.className = msg.payload_type === 11 ? 'chat-system' : 'chat-content';
+        content.className = isSystem ? 'chat-system' : (isCoord ? 'chat-coord' : 'chat-content');
         content.textContent = msg.content;
         div.appendChild(content);
 

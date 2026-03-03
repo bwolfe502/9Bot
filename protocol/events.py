@@ -18,6 +18,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import Any, Callable, Dict, List, Optional
@@ -44,6 +45,8 @@ __all__ = [
     # Classes
     "EventBus",
     "MessageRouter",
+    # Helpers
+    "parse_chat_msgval",
 ]
 
 log = logging.getLogger(__name__)
@@ -297,13 +300,111 @@ class MessageRouter:
 #  Transform helpers
 # ------------------------------------------------------------------ #
 
+def parse_chat_msgval(msgval: str) -> dict:
+    """Parse ChatPayload.msgVal JSON and extract display-friendly fields.
+
+    The game's ``msgVal`` field contains a JSON string whose structure
+    varies by message type:
+
+    - Text (payloadTypeInEnum=1):
+      ``{"content":"hello","sourceLanguage":"","payloadTypeInEnum":1}``
+    - Userdefined (payloadTypeInEnum=5, coordinate shares):
+      ``{"data":"{...shareCoordinateData...}","payloadTypeInEnum":5}``
+    - System notifications (BizarreCave etc.):
+      ``{"noticeId":"BizarreCave_Complete","args":["Name","x,y"]}``
+
+    Returns dict: ``{content: str, payload_type: int}``.
+    """
+    result: Dict[str, Any] = {"content": msgval, "payload_type": 0}
+    if not msgval:
+        return result
+
+    try:
+        parsed = json.loads(msgval)
+    except (json.JSONDecodeError, TypeError):
+        return result
+    if not isinstance(parsed, dict):
+        return result
+
+    # Real payload type lives inside the JSON.
+    result["payload_type"] = parsed.get("payloadTypeInEnum", 0)
+
+    # Text message — has "content" key.
+    if "content" in parsed:
+        result["content"] = parsed["content"]
+        return result
+
+    # System notification (BizarreCave, alliance gifts, etc.)
+    if "noticeId" in parsed:
+        notice_id = parsed["noticeId"]
+        player_head = parsed.get("playerHead") or {}
+        name = player_head.get("name", "") if isinstance(player_head, dict) else ""
+        args = parsed.get("args", [])
+        parts = [notice_id]
+        if name:
+            parts.append(name)
+        if isinstance(args, list):
+            parts.extend(str(a) for a in args)
+        result["content"] = " | ".join(parts)
+        result["payload_type"] = 11  # Force SYSTEM type
+        return result
+
+    # Userdefined — coordinate share, alliance help, etc.
+    if "data" in parsed:
+        try:
+            data_str = parsed["data"]
+            data = json.loads(data_str) if isinstance(data_str, str) else data_str
+            share_cv = data.get("shareCoordinateContentValue") or {}
+            share = share_cv.get("shareCoordinateData")
+            if share and isinstance(share, dict):
+                unit_name = share.get("unitName", "Shared location")
+                x = share.get("coordX", 0)
+                y = share.get("coordY", 0)
+                result["content"] = f"{unit_name} ({x}, {y})"
+                return result
+        except (json.JSONDecodeError, TypeError, AttributeError):
+            pass
+
+    return result
+
+
+def _extract_sender_from_meta(meta: str) -> dict:
+    """Try to extract sender info from ChatPayload.meta JSON.
+
+    Returns dict with ``sender``, ``sender_id``, ``union_name`` keys,
+    all defaulting to empty string / 0 if meta is empty or unparseable.
+    """
+    result: Dict[str, Any] = {"sender": "", "sender_id": 0, "union_name": ""}
+    if not meta:
+        return result
+    try:
+        parsed = json.loads(meta)
+    except (json.JSONDecodeError, TypeError):
+        return result
+    if not isinstance(parsed, dict):
+        return result
+
+    # Try common patterns for sender info in meta.
+    result["sender"] = (
+        parsed.get("name", "")
+        or parsed.get("playerName", "")
+        or parsed.get("senderName", "")
+    )
+    result["sender_id"] = (
+        parsed.get("playerID", 0)       # ChatPullMsgAck meta format
+        or parsed.get("playerId", 0)
+        or parsed.get("ID", 0)
+    )
+    result["union_name"] = parsed.get("unionName", "") or parsed.get("allianceName", "")
+    return result
+
+
 def _extract_chat_payload(msg: object) -> dict:
     """Extract structured chat fields from a ChatOneMsgNtf.
 
-    Navigates the nested dataclass chain:
-    ``ChatOneMsgNtf.msg.payload.msgVal`` for text,
-    ``ChatOneMsgNtf.msg.playerInfo.head.name`` for sender,
-    ``ChatOneMsgNtf.channelType`` for channel.
+    Navigates the nested dataclass chain, parses the ``msgVal`` JSON
+    to extract the actual text content, and resolves the sender from
+    ``playerInfo`` with fallback to the ``meta`` JSON field.
 
     Returns a flat dict suitable for storage and API serialization.
     """
@@ -326,6 +427,7 @@ def _extract_chat_payload(msg: object) -> dict:
     # Timestamp (epoch milliseconds)
     result["timestamp"] = getattr(chat_msg, "timeStamp", 0)
     result["source_type"] = getattr(chat_msg, "sourceType", 0)
+    result["history_id"] = getattr(chat_msg, "historyId", "")
 
     # Sender info: ChatOneMsg.playerInfo → PlayerHeadInfo → UnifyPlayerHead
     player_info = getattr(chat_msg, "playerInfo", None)
@@ -339,11 +441,22 @@ def _extract_chat_payload(msg: object) -> dict:
         result["sender_id"] = 0
         result["union_name"] = ""
 
-    # Message content: ChatOneMsg.payload → ChatPayload.msgVal
+    # Message content: ChatOneMsg.payload → ChatPayload
     payload = getattr(chat_msg, "payload", None)
     if payload is not None:
-        result["content"] = getattr(payload, "msgVal", "")
-        result["payload_type"] = getattr(payload, "payloadTypeEnum", 0)
+        raw_msgval = getattr(payload, "msgVal", "")
+        raw_meta = getattr(payload, "meta", "")
+        parsed = parse_chat_msgval(raw_msgval)
+        result["content"] = parsed["content"]
+        result["payload_type"] = parsed["payload_type"]
+
+        # Sender fallback: if playerInfo was empty, try meta JSON.
+        if not result["sender"]:
+            meta_sender = _extract_sender_from_meta(raw_meta)
+            if meta_sender["sender"]:
+                result["sender"] = meta_sender["sender"]
+                result["sender_id"] = result["sender_id"] or meta_sender["sender_id"]
+                result["union_name"] = result["union_name"] or meta_sender["union_name"]
     else:
         result["content"] = ""
         result["payload_type"] = 0

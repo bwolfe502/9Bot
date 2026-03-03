@@ -103,6 +103,8 @@ class GameState:
         self._entities: Dict[Any, dict] = {}                # entity id -> raw dict
         self._attacks: List[Intelligence] = []
         self._chat: Deque[Any] = collections.deque(maxlen=_CHAT_MAXLEN)
+        self._chat_seen_ids: set = set()  # historyId dedup for ChatPullMsgAck
+        self._player_names: Dict[str, str] = {}  # playerID (str) → display name
         self._city_burning_flag: bool = False
         self._buffs: List[dict] = []
         self._battle_results: Deque[Any] = collections.deque(maxlen=_BATTLE_MAXLEN)
@@ -366,40 +368,119 @@ class GameState:
                     self._touch("ap")
             self._touch("resources")
 
+    def _cache_player_name(self, player_id: Any, name: str) -> None:
+        """Cache a player ID → display name mapping (caller must hold _lock)."""
+        if player_id and name:
+            self._player_names[str(player_id)] = name
+
     def _on_chat_message(self, msg: Any) -> None:
         """EVT_CHAT_MESSAGE — payload is a dict (transformed) or raw object."""
         with self._lock:
+            # Track history_id for dedup against later ChatPullMsgAck.
+            if isinstance(msg, dict):
+                hid = msg.get("history_id", "")
+                if hid:
+                    self._chat_seen_ids.add(hid)
+                # Cache sender name from live messages (they have playerInfo).
+                sender = msg.get("sender", "")
+                sender_id = msg.get("sender_id") or msg.get("from_id", "")
+                self._cache_player_name(sender_id, sender)
             self._chat.append(msg)
             self._touch("chat")
 
     def _on_chat_history(self, msg: Any) -> None:
-        """msg:ChatPullMsgAck — historical messages from chat pull."""
+        """msg:ChatPullMsgAck — historical messages from chat pull.
+
+        Uses :func:`parse_chat_msgval` to extract display-friendly content
+        from the JSON-encoded ``msgVal`` field.  Deduplicates via
+        ``historyId`` to prevent re-appending when the game opens the
+        same chat channel multiple times.
+
+        The server does NOT include ``playerInfo`` in history messages —
+        only ``fromId`` (numeric player ID) and ``meta`` JSON (which has
+        ``playerID`` but no name).  We resolve sender names through:
+
+        1. ``playerInfo`` (if present — future-proof)
+        2. ``meta`` JSON (``name`` / ``playerName`` / ``senderName``)
+        3. Player name cache (populated from live ``ChatOneMsgNtf``)
+        4. ``fromId`` as final fallback (shows ``"Player#12345"``)
+        """
         from .messages import ChatPullMsgAck, ChatChannelType
+        from .events import parse_chat_msgval, _extract_sender_from_meta
         if not isinstance(msg, ChatPullMsgAck):
             return
+        added = 0
         with self._lock:
             for chat_one_msg in (msg.msgList or []):
+                # Dedup by historyId.
+                hid = getattr(chat_one_msg, "historyId", "")
+                if hid and hid in self._chat_seen_ids:
+                    continue
+                if hid:
+                    self._chat_seen_ids.add(hid)
+
                 payload = getattr(chat_one_msg, "payload", None)
                 player_info = getattr(chat_one_msg, "playerInfo", None)
                 head = getattr(player_info, "head", None) if player_info else None
+
                 channel_type = getattr(msg, "channelType", 0)
                 try:
                     channel_name = ChatChannelType(channel_type).name
                 except ValueError:
                     channel_name = str(channel_type)
+
+                # Parse msgVal JSON for real content + payload type.
+                raw_msgval = payload.msgVal if payload else ""
+                parsed = parse_chat_msgval(raw_msgval)
+
+                # -- Sender resolution chain --
+                sender = head.name if head else ""
+                sender_id = getattr(player_info, "ID", 0) if player_info else 0
+                union_name = getattr(player_info, "unionName", "") if player_info else ""
+                from_id = getattr(chat_one_msg, "fromId", "")
+
+                # 1) Try meta JSON (has playerID but usually no name).
+                if not sender and payload:
+                    meta = getattr(payload, "meta", "")
+                    meta_sender = _extract_sender_from_meta(meta)
+                    sender = meta_sender["sender"]
+                    sender_id = sender_id or meta_sender["sender_id"]
+                    union_name = union_name or meta_sender["union_name"]
+
+                # 2) Try player name cache (populated from live messages).
+                if not sender and from_id:
+                    sender = self._player_names.get(str(from_id), "")
+
+                # 3) Final fallback: show numeric ID.
+                if not sender and from_id:
+                    sender = f"Player#{from_id}"
+
+                # Resolve sender_id from fromId if still missing.
+                if not sender_id and from_id:
+                    try:
+                        sender_id = int(from_id)
+                    except (ValueError, TypeError):
+                        pass
+
+                # Cache any resolved name for future lookups.
+                if sender and not sender.startswith("Player#"):
+                    self._cache_player_name(from_id or sender_id, sender)
+
                 entry = {
-                    "content": payload.msgVal if payload else "",
-                    "sender": head.name if head else "",
+                    "content": parsed["content"],
+                    "sender": sender,
                     "channel": channel_name,
                     "channel_type": channel_type,
                     "timestamp": getattr(chat_one_msg, "timeStamp", 0),
-                    "payload_type": payload.payloadTypeEnum if payload else 0,
-                    "sender_id": getattr(player_info, "ID", 0) if player_info else 0,
-                    "union_name": getattr(player_info, "unionName", "") if player_info else "",
+                    "payload_type": parsed["payload_type"],
+                    "sender_id": sender_id,
+                    "union_name": union_name,
+                    "history_id": hid,
                     "raw": chat_one_msg,
                 }
                 self._chat.append(entry)
-            if msg.msgList:
+                added += 1
+            if added:
                 self._touch("chat")
 
     def _on_attack_incoming(self, msg: Any) -> None:
