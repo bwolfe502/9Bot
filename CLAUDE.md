@@ -24,7 +24,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `navigation.py` | Screen detection + state-machine navigation | `check_screen`, `navigate` |
 | `troops.py` | Troop counting (pixel/protocol), status model, healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
 | `training.py` | Training data collector (JSONL + images) | `configure`, `log_template`, `log_ocr`, `log_screen`, `save_training_image`, `get_training_stats`, `shutdown` |
-| `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
+| `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `scan_targets`, `_pick_target`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
 | `protocol/` | Frida Gadget protocol interception (package) | Re-exports all public classes via `__init__.py` |
 | `protocol/interceptor.py` | Frida connection + hook loading | `ProtocolInterceptor` (start/stop/stats) |
 | `protocol/frida_hook.js` | Frida Gadget hook script (loaded into game) | Hooks `TFW.NetMsgData.FromByte/MakeByte` via IL2CPP runtime API |
@@ -266,8 +266,59 @@ LineupState enum (extracted from game binary via Frida IL2CPP API):
 - `diagnose_grid(device)`: diagnostic tool — screenshots all 576 squares, classifies each using the same
   `_get_border_color` + `_classify_square_team` pipeline as `attack_territory`, logs a 24-row character grid
   (Y/G/R/B/?/T), team counts, unknown BGR values with nearest-color distances, and saves annotated debug
-  image to `debug/territory_diag_{device}.png`. `sample_specific_squares` is retained as an alias for
+  image to `debug/territory_diag_{device}.png` and structured JSON to
+  `data/territory_diag_{device}_{timestamp}.json`. `sample_specific_squares` is retained as an alias for
   backward compatibility.
+
+### Auto Occupy System (territory.py + runners.py)
+
+**Game mechanics**: Territory has a 24x24 grid of towers. Each tower has a border color
+(yellow/green/red/blue) showing ownership. To capture: teleport near an enemy tower, tap it,
+attack/reinforce, deploy troops. Capture timer: 4h total, swings 2h each way.
+
+**Tower states and actions**:
+- Empty enemy tower → reinforce (occupy and start capture timer)
+- Enemy-occupied tower → attack to clear, then reinforce
+- Friendly tower on frontline → reinforce to stack defense
+
+**Architecture**: `auto_occupy_loop(device, stop_check)` is the main loop. Per-device cooperative
+stop via `stop_check` callback (from `threading.Event.is_set`). No global flags — the old
+`config.auto_occupy_running` global was removed. `run_auto_occupy` in `runners.py` passes
+`stop_event.is_set` directly.
+
+**Target selection** (`scan_targets` + `_pick_target`):
+1. **Priority 1**: Unflagged enemy squares adjacent to own territory (best — no one marching there)
+2. **Priority 2**: Flagged enemy squares adjacent to own territory (fallback — someone else attacking)
+3. **Priority 3**: Friendly frontline squares (reinforce when no enemy targets)
+`MANUAL_ATTACK_SQUARES` replaces all auto-detected targets. `MANUAL_IGNORE_SQUARES` filters them.
+
+**`attack_territory(device)`** — Navigates to TERRITORY screen, calls `scan_targets` to classify
+all 576 squares, picks target via `_pick_target`, taps target square on grid (camera trick —
+centers camera on tower). Returns `(row, col, action_type)` or `None`. Side effect: stores
+target in `config.LAST_ATTACKED_SQUARE[device]`.
+
+**Cycle flow**:
+1. Check dead → revive if needed (picks new target after revive)
+2. Navigate to MAP, heal, check troops home
+3. `attack_territory` — scan grid, pick target, tap grid square
+4. `teleport(device)` — camera trick positions us near tower
+5. Death check after teleport
+6. Navigate back to TERRITORY, re-tap target square (re-centers camera)
+7. `_tap_tower_and_detect_menu` — tap tower at (540, 900), detect attack/reinforce button
+8. `_do_depart` — tap action button, wait for depart, handle `depart_anyway.png` fallback
+9. Wait for troops, repeat
+
+**Error recovery**:
+- **Death**: `_check_and_revive()` detects `dead.png`, taps to revive, waits for MAP (30s timeout)
+- **Teleport fail**: 3 consecutive fails → tries different target. Counter resets on success.
+- **Menu fail**: `_tap_tower_and_detect_menu` returns None → saves failure screenshot, skips cycle
+- **Nav fail**: BACK key recovery, retry once, skip cycle on second failure
+- **Depart fail**: heal first if auto_heal on, then `depart_anyway.png` fallback
+- **Exception**: caught, logged, failure screenshot saved, continues loop
+
+**Status messages**: "Checking Troops...", "Scanning Territory...", "Targeting (R,C)...",
+"Teleporting...", "Attacking Tower...", "Reinforcing Tower...", "Deploying...",
+"Reviving...", "Waiting for Troops...", "No Targets..."
 
 ### Territory Coordinate Scanner (territory.py)
 Maps grid squares to world coordinates via `scan_territory_coordinates(device)` (clicks each square,
