@@ -276,6 +276,12 @@ only 4 corners for calibration.
 - 30-minute expiry, reset on auto-quest start. Per-device, session-scoped.
 
 ### Quest Dispatch (actions/quests.py)
+**Quest classification**: `_classify_quest_text(text)` maps OCR quest names to `QuestType` using keyword
+matching. Priority order: "titan" → TITAN, "evil"/"guard" → EVIL_GUARD, "pvp"/"attack"/"enemy" → PVP,
+"gather" → GATHER, "occupy"/"fortress" → FORTRESS, "tower" → TOWER. Order matters — "Defeat Titans"
+matches TITAN (not PVP) because "titan" is checked first. "defeat" was intentionally removed from PVP
+keywords to prevent false positives from event quests (e.g. "Defeat Frost Giants").
+
 **Dispatch priority chain**: PVP attack → Tower quest → EG/Titan rallies → pending rally wait → gather gold.
 PVP and Tower run first because they're quick single-troop dispatches (no AP, no waiting).
 PVP dispatches a troop then continues to other quests while it marches (non-blocking).
@@ -477,7 +483,7 @@ threads and clears all statuses. Dashboard JS `_stoppingModes` prevents toggle f
 ## Tests
 
 ```bash
-py -m pytest          # run all ~852 tests
+py -m pytest          # run all ~989 tests
 py -m pytest -x       # stop on first failure
 py -m pytest -k name  # filter by test name
 ```

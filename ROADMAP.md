@@ -29,17 +29,17 @@ Build confidence that everything works before shipping updates.
 
 ### Critical Test Gaps (P0)
 - [x] `test_combat.py` — _check_dead, _find_green_pixel, _detect_player_at_eg, teleport (49 tests). Still missing: attack, phantom_clash, reinforce_throne, target
-- [ ] `test_evil_guard.py` — rally_eg 7-phase state machine, _handle_ap_popup, probe_priest (963 LOC, 7 tests — expand coverage)
-- [ ] `test_titans.py` — rally_titan, restore_ap flow, gem limit logic, _close_ap_menu (425 LOC, 0% coverage)
+- [x] `test_evil_guard.py` — expanded to 30 tests: _handle_ap_popup, search_eg_reset, _probe_priest, rally_eg guards/stop_check, EG_PRIEST_POSITIONS sanity
+- [x] `test_titans.py` — 47 tests: rally_titan (16), restore_ap (4), _restore_ap_from_open_menu (15), _close_ap_menu (3), _read_ap_from_menu (4), _read_gem_cost (5)
 - [x] `test_territory.py` — _classify_square_team, _get_border_color, _has_flag, _is_adjacent_to_my_territory, attack_territory, auto_occupy_loop (66 tests)
 
 ### Major Test Gaps (P1)
-- [ ] Expand `test_quests.py` — check_quests orchestration, tower quest flow, claim rewards, OCR parsing
-- [ ] Expand `test_rallies.py` — join_rally, join_war_rallies, _ocr_error_banner
-- [ ] `test_farming.py` — mine_mithril, mine_mithril_if_due interval logic, _set_gather_level, gather.png template tap (gather_gold updated to use wait_for_image_and_tap)
+- [x] Expand `test_quests.py` — 42 new tests: _ocr_quest_rows (10), _claim_quest_rewards (4), _wait_for_rallies (5), _run_rally_loop (5), _check_quests_legacy (3), get_quest_tracking_state (5), get_quest_last_checked (3), _is_troop_defending_relaxed (4), _recall_tap_sequence (3)
+- [x] Expand `test_rallies.py` — 17 new tests: _on_war_screen (3), _ocr_error_banner (5), join_war_rallies guards (6), join_rally entry guards (3)
+- [x] `test_farming.py` — 22 tests: _is_mine_occupied (6), _set_gather_level (3), mine_mithril (4), mine_mithril_if_due (4), mithril constants (5)
 
 ### Infrastructure
-- [x] Audit existing test suite — 658 tests, well-structured
+- [x] Audit existing test suite — 989 tests (was 658 at start of Phase 2), well-structured
 - [ ] Add live testing suite — integration tests that run against a real emulator
 - [ ] Establish pre-release checklist — full test pass, live smoke test, version bump verification
 - [ ] Actionable test data — coverage reports, structured failure output, clear pass/fail signals

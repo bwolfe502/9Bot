@@ -1,16 +1,25 @@
 """Tests for check_quests helper functions extracted in Phase 2.
 
-Tests _deduplicate_quests (pure function) and _get_actionable_quests.
+Tests _deduplicate_quests, _get_actionable_quests, _ocr_quest_rows,
+_claim_quest_rewards, _wait_for_rallies, _run_rally_loop, _check_quests_legacy,
+get_quest_tracking_state, get_quest_last_checked, _is_troop_defending_relaxed.
 """
 import time
+import numpy as np
 from unittest.mock import patch, MagicMock, call
 
-from config import QuestType
+from config import QuestType, Screen
 from actions.quests import (_deduplicate_quests, _get_actionable_quests,
                             _all_quests_visually_complete, _quest_rallies_pending,
                             check_quests, _quest_last_seen, _quest_target,
                             _attack_pvp_tower, _pvp_last_dispatch, _PVP_COOLDOWN_S,
-                            _marker_errors)
+                            _marker_errors, _quest_pending_since,
+                            _quest_last_checked,
+                            get_quest_tracking_state, get_quest_last_checked,
+                            _claim_quest_rewards, _is_troop_defending_relaxed,
+                            _wait_for_rallies, _run_rally_loop,
+                            _check_quests_legacy, _ocr_quest_rows,
+                            _recall_tap_sequence)
 
 
 # ============================================================
@@ -803,3 +812,542 @@ class TestRecallStrayStationed:
              patch("time.sleep"):
             _recall_stray_stationed(mock_device, stop_check=lambda: True)
             mock_wait_tap.assert_not_called()
+
+
+# ============================================================
+# get_quest_tracking_state
+# ============================================================
+
+class TestGetQuestTrackingState:
+    def test_no_data_returns_empty(self, mock_device):
+        assert get_quest_tracking_state(mock_device) == []
+
+    def test_pending_rallies_included(self, mock_device):
+        _quest_rallies_pending[(mock_device, QuestType.TITAN)] = 3
+        _quest_pending_since[(mock_device, QuestType.TITAN)] = time.time() - 30
+        _quest_last_seen[(mock_device, QuestType.TITAN)] = 5
+        _quest_target[(mock_device, QuestType.TITAN)] = 15
+        result = get_quest_tracking_state(mock_device)
+        assert len(result) == 1
+        assert result[0]["quest_type"] == str(QuestType.TITAN)
+        assert result[0]["pending"] == 3
+        assert result[0]["last_seen"] == 5
+        assert result[0]["target"] == 15
+        assert result[0]["pending_age"] is not None
+
+    def test_last_seen_without_pending(self, mock_device):
+        """Quest types with last_seen but no pending are included with pending=0."""
+        _quest_last_seen[(mock_device, QuestType.GATHER)] = 100
+        _quest_target[(mock_device, QuestType.GATHER)] = 200000
+        result = get_quest_tracking_state(mock_device)
+        assert len(result) == 1
+        assert result[0]["pending"] == 0
+        assert result[0]["pending_age"] is None
+        assert result[0]["last_seen"] == 100
+
+    def test_other_device_excluded(self, mock_device, mock_device_b):
+        _quest_last_seen[(mock_device_b, QuestType.TITAN)] = 10
+        result = get_quest_tracking_state(mock_device)
+        assert result == []
+
+    def test_mixed_pending_and_seen(self, mock_device):
+        """Both pending and non-pending quest types for same device."""
+        _quest_rallies_pending[(mock_device, QuestType.TITAN)] = 2
+        _quest_pending_since[(mock_device, QuestType.TITAN)] = time.time()
+        _quest_last_seen[(mock_device, QuestType.TITAN)] = 8
+        _quest_last_seen[(mock_device, QuestType.GATHER)] = 50
+        result = get_quest_tracking_state(mock_device)
+        types = {r["quest_type"] for r in result}
+        assert len(result) == 2
+        assert str(QuestType.TITAN) in types
+        assert str(QuestType.GATHER) in types
+
+
+# ============================================================
+# get_quest_last_checked
+# ============================================================
+
+class TestGetQuestLastChecked:
+    def test_never_checked_returns_none(self, mock_device):
+        assert get_quest_last_checked(mock_device) is None
+
+    def test_recently_checked(self, mock_device):
+        _quest_last_checked[mock_device] = time.time() - 30
+        result = get_quest_last_checked(mock_device)
+        assert result is not None
+        assert 29 <= result <= 31
+
+    def test_other_device_not_found(self, mock_device, mock_device_b):
+        _quest_last_checked[mock_device_b] = time.time()
+        assert get_quest_last_checked(mock_device) is None
+
+
+# ============================================================
+# _ocr_quest_rows
+# ============================================================
+
+class TestOcrQuestRows:
+    def _make_screen(self):
+        return np.zeros((1920, 1080, 3), dtype=np.uint8)
+
+    @patch("actions.quests.load_screenshot", return_value=None)
+    def test_no_screenshot_returns_none(self, mock_load, mock_device):
+        assert _ocr_quest_rows(mock_device) is None
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_empty_ocr_returns_none(self, mock_load, mock_cv2, mock_device):
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=[""]):
+            assert _ocr_quest_rows(mock_device) is None
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_basic_titan_parse(self, mock_load, mock_cv2, mock_device):
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=["Defeat Titans(3/5)"]):
+            result = _ocr_quest_rows(mock_device)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["quest_type"] == QuestType.TITAN
+        assert result[0]["current"] == 3
+        # Target capped to 15 (OCR showed 5 but cap overrides)
+        assert result[0]["target"] == 15
+        assert result[0]["completed"] is False
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_ocr_o_to_zero_fix(self, mock_load, mock_cv2, mock_device):
+        """OCR reads 'o'/'O' as digits → corrected to '0'."""
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=["Gather(o/2OO,OOO)"]):
+            result = _ocr_quest_rows(mock_device)
+        assert result is not None
+        assert result[0]["quest_type"] == QuestType.GATHER
+        assert result[0]["current"] == 0
+        assert result[0]["target"] == 1000000  # cap override
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_multiple_quests(self, mock_load, mock_cv2, mock_device):
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=[
+            "Defeat Titans(3/15) Evil Guard(1/3) Gather(50000/200,000)"
+        ]):
+            result = _ocr_quest_rows(mock_device)
+        assert len(result) == 3
+        types = [q["quest_type"] for q in result]
+        assert QuestType.TITAN in types
+        assert QuestType.EVIL_GUARD in types
+        assert QuestType.GATHER in types
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_target_cap_overrides(self, mock_load, mock_cv2, mock_device):
+        """All target caps applied correctly."""
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=[
+            "Defeat Titans(3/5) Evil Guard(1/1) "
+            "Occupy Fortress(100/300) Attack Enemy(0/1) Gather(0/5)"
+        ]):
+            result = _ocr_quest_rows(mock_device)
+        caps = {q["quest_type"]: q["target"] for q in result}
+        assert caps[QuestType.TITAN] == 15        # 5 < 15 → overridden
+        assert caps[QuestType.EVIL_GUARD] == 3     # always 3
+        assert caps[QuestType.FORTRESS] == 1800    # always 1800
+        assert caps[QuestType.PVP] == 500000000    # always 500M
+        assert caps[QuestType.GATHER] == 1000000   # always 1M
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_completed_detection(self, mock_load, mock_cv2, mock_device):
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=["Evil Guard(3/3)"]):
+            result = _ocr_quest_rows(mock_device)
+        assert result[0]["completed"] is True
+        assert result[0]["current"] == 3
+        assert result[0]["target"] == 3
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_no_patterns_returns_none(self, mock_load, mock_cv2, mock_device):
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=["some random text no quests here"]):
+            assert _ocr_quest_rows(mock_device) is None
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_titan_target_15_not_overridden(self, mock_load, mock_cv2, mock_device):
+        """Titan target of 15 or higher is trusted (not overridden)."""
+        mock_load.return_value = self._make_screen()
+        mock_cv2.cvtColor.return_value = np.zeros((100, 100), dtype=np.uint8)
+        mock_cv2.resize.return_value = np.zeros((200, 200), dtype=np.uint8)
+        mock_cv2.imwrite = MagicMock()
+        with patch("vision.ocr_read", return_value=["Defeat Titans(3/20)"]):
+            result = _ocr_quest_rows(mock_device)
+        assert result[0]["target"] == 20  # 20 >= 15, not overridden
+
+
+# ============================================================
+# _claim_quest_rewards
+# ============================================================
+
+class TestClaimQuestRewards:
+    def test_no_claim_button(self, mock_device):
+        with patch("actions.quests.tap_image", return_value=False):
+            assert _claim_quest_rewards(mock_device) == 0
+
+    def test_single_reward(self, mock_device):
+        tap_calls = [0]
+        def tap_side_effect(name, device):
+            tap_calls[0] += 1
+            return tap_calls[0] <= 1  # True once, then False
+        with patch("actions.quests.tap_image", side_effect=tap_side_effect), \
+             patch("actions.quests.timed_wait"), \
+             patch("actions.quests.check_screen", return_value=Screen.ALLIANCE_QUEST):
+            assert _claim_quest_rewards(mock_device) == 1
+
+    def test_multiple_rewards(self, mock_device):
+        tap_calls = [0]
+        def tap_side_effect(name, device):
+            tap_calls[0] += 1
+            return tap_calls[0] <= 3
+        with patch("actions.quests.tap_image", side_effect=tap_side_effect), \
+             patch("actions.quests.timed_wait"), \
+             patch("actions.quests.check_screen", return_value=Screen.ALLIANCE_QUEST):
+            assert _claim_quest_rewards(mock_device) == 3
+
+    def test_stop_check_aborts(self, mock_device):
+        with patch("actions.quests.tap_image", return_value=True), \
+             patch("actions.quests.timed_wait"), \
+             patch("actions.quests.check_screen", return_value=Screen.ALLIANCE_QUEST):
+            result = _claim_quest_rewards(mock_device, stop_check=lambda: True)
+            assert result == -1
+
+
+# ============================================================
+# _is_troop_defending_relaxed
+# ============================================================
+
+class TestIsTroopDefendingRelaxed:
+    def test_fresh_snapshot_defending(self, mock_device):
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+        troops = [TroopStatus(action=TroopAction.DEFENDING)]
+        snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
+        # Make snapshot fresh (age < 120s)
+        with patch("actions.quests.get_troop_status", return_value=snapshot):
+            assert _is_troop_defending_relaxed(mock_device) is True
+
+    def test_fresh_snapshot_not_defending(self, mock_device):
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+        troops = [TroopStatus(action=TroopAction.HOME)]
+        snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
+        with patch("actions.quests.get_troop_status", return_value=snapshot):
+            assert _is_troop_defending_relaxed(mock_device) is False
+
+    def test_stale_snapshot_falls_to_panel(self, mock_device):
+        """Snapshot older than 120s falls through to panel read."""
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+        troops = [TroopStatus(action=TroopAction.DEFENDING)]
+        old_snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
+        # Force age > 120
+        old_snapshot.timestamp = time.time() - 200
+
+        fresh_snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
+        with patch("actions.quests.get_troop_status", return_value=old_snapshot), \
+             patch("actions.quests.read_panel_statuses", return_value=fresh_snapshot):
+            assert _is_troop_defending_relaxed(mock_device) is True
+
+    def test_no_snapshot_no_panel(self, mock_device):
+        with patch("actions.quests.get_troop_status", return_value=None), \
+             patch("actions.quests.read_panel_statuses", return_value=None):
+            assert _is_troop_defending_relaxed(mock_device) is False
+
+
+# ============================================================
+# _wait_for_rallies
+# ============================================================
+
+class TestWaitForRallies:
+    def test_panel_read_fails(self, mock_device):
+        """Panel read failure returns immediately."""
+        with patch("actions.quests.read_panel_statuses", return_value=None), \
+             patch("actions.quests.config") as mock_config:
+            mock_config.set_device_status = MagicMock()
+            _wait_for_rallies(mock_device, stop_check=None)
+
+    def test_no_rallying_troops_clears_pending(self, mock_device):
+        """No rallying troops → false positive, clears pending counts."""
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+        # Set up phantom pending
+        _quest_rallies_pending[(mock_device, QuestType.TITAN)] = 2
+        _quest_pending_since[(mock_device, QuestType.TITAN)] = time.time()
+
+        snapshot = DeviceTroopSnapshot(
+            device=mock_device,
+            troops=[TroopStatus(action=TroopAction.HOME) for _ in range(5)],
+        )
+        with patch("actions.quests.read_panel_statuses", return_value=snapshot), \
+             patch("actions.quests._interruptible_sleep", return_value=False), \
+             patch("actions.quests.config") as mock_config, \
+             patch("actions.quests.stats") as mock_stats:
+            mock_config.set_device_status = MagicMock()
+            mock_config.RALLY_WAIT_POLL_INTERVAL = 5
+            _wait_for_rallies(mock_device, stop_check=None)
+
+        # Pending should be cleared
+        assert _quest_rallies_pending[(mock_device, QuestType.TITAN)] == 0
+
+    def test_rallying_drops_returns(self, mock_device):
+        """Rallying count drops → completion detected, returns."""
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+
+        snap_2rally = DeviceTroopSnapshot(
+            device=mock_device,
+            troops=[TroopStatus(action=TroopAction.RALLYING),
+                    TroopStatus(action=TroopAction.RALLYING),
+                    TroopStatus(action=TroopAction.HOME)],
+        )
+        snap_1rally = DeviceTroopSnapshot(
+            device=mock_device,
+            troops=[TroopStatus(action=TroopAction.RALLYING),
+                    TroopStatus(action=TroopAction.HOME),
+                    TroopStatus(action=TroopAction.HOME)],
+        )
+        call_count = [0]
+        def panel_side_effect(device):
+            call_count[0] += 1
+            return snap_2rally if call_count[0] <= 1 else snap_1rally
+
+        with patch("actions.quests.read_panel_statuses", side_effect=panel_side_effect), \
+             patch("actions.quests._interruptible_sleep", return_value=False), \
+             patch("actions.quests.config") as mock_config, \
+             patch("actions.quests.stats") as mock_stats, \
+             patch("actions.quests.time.time", return_value=1000.0):
+            mock_config.set_device_status = MagicMock()
+            mock_config.RALLY_WAIT_POLL_INTERVAL = 5
+            _wait_for_rallies(mock_device, stop_check=None)
+
+        mock_stats.record_action.assert_called()
+
+    def test_stop_check_aborts(self, mock_device):
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+        snapshot = DeviceTroopSnapshot(
+            device=mock_device,
+            troops=[TroopStatus(action=TroopAction.RALLYING)],
+        )
+        with patch("actions.quests.read_panel_statuses", return_value=snapshot), \
+             patch("actions.quests.config") as mock_config:
+            mock_config.set_device_status = MagicMock()
+            _wait_for_rallies(mock_device, stop_check=lambda: True)
+
+    def test_timeout_returns(self, mock_device):
+        """Rally wait exceeds PENDING_TIMEOUT_S → returns."""
+        from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
+        snapshot = DeviceTroopSnapshot(
+            device=mock_device,
+            troops=[TroopStatus(action=TroopAction.RALLYING)],
+        )
+        # time.time() starts past timeout
+        times = [1000.0, 1000.0 + 400, 1000.0 + 400, 1000.0 + 400]
+        time_iter = iter(times)
+        with patch("actions.quests.read_panel_statuses", return_value=snapshot), \
+             patch("actions.quests._interruptible_sleep", return_value=False), \
+             patch("actions.quests.config") as mock_config, \
+             patch("actions.quests.time.time", side_effect=lambda: next(time_iter)):
+            mock_config.set_device_status = MagicMock()
+            mock_config.RALLY_WAIT_POLL_INTERVAL = 5
+            _wait_for_rallies(mock_device, stop_check=None)
+
+
+# ============================================================
+# _run_rally_loop
+# ============================================================
+
+class TestRunRallyLoop:
+    def test_stop_check_returns_true(self, mock_device):
+        actionable = [
+            {"quest_type": QuestType.TITAN, "current": 0, "target": 15,
+             "completed": False},
+        ]
+        with patch("actions.quests.navigate", return_value=True), \
+             patch("actions.quests.config") as mock_config:
+            mock_config.get_device_config.return_value = False
+            mock_config.MAX_RALLY_ATTEMPTS = 15
+            mock_config.set_device_status = MagicMock()
+            result = _run_rally_loop(mock_device, actionable, stop_check=lambda: True)
+        assert result is True
+
+    def test_all_covered_breaks(self, mock_device):
+        """All rally quests covered by pending → exits loop."""
+        _quest_rallies_pending[(mock_device, QuestType.TITAN)] = 15
+        actionable = [
+            {"quest_type": QuestType.TITAN, "current": 0, "target": 15,
+             "completed": False},
+        ]
+        with patch("actions.quests.navigate", return_value=True), \
+             patch("actions.quests.heal_all"), \
+             patch("actions.quests.config") as mock_config, \
+             patch("actions.rallies.join_rally") as mock_join:
+            mock_config.get_device_config.return_value = False
+            mock_config.MAX_RALLY_ATTEMPTS = 15
+            mock_config.set_device_status = MagicMock()
+            result = _run_rally_loop(mock_device, actionable)
+        assert result is False
+        mock_join.assert_not_called()
+
+    @patch("actions.quests._record_rally_started")
+    def test_joins_rally_records(self, mock_record, mock_device):
+        """Successful join → records rally started."""
+        actionable = [
+            {"quest_type": QuestType.TITAN, "current": 0, "target": 15,
+             "completed": False},
+        ]
+        with patch("actions.quests.navigate", return_value=True), \
+             patch("actions.quests.heal_all"), \
+             patch("actions.rallies.join_rally", return_value=QuestType.TITAN) as mock_join, \
+             patch("actions.quests.config") as mock_config:
+            mock_config.get_device_config.return_value = False
+            mock_config.MAX_RALLY_ATTEMPTS = 1  # 1 iteration
+            mock_config.set_device_status = MagicMock()
+            _run_rally_loop(mock_device, actionable)
+        mock_record.assert_called_with(mock_device, QuestType.TITAN)
+
+    @patch("actions.quests._record_rally_started")
+    def test_starts_own_titan(self, mock_record, mock_device):
+        """No rally to join + titan_rally_own enabled → starts own titan rally."""
+        actionable = [
+            {"quest_type": QuestType.TITAN, "current": 0, "target": 15,
+             "completed": False},
+        ]
+        with patch("actions.quests.navigate", return_value=True), \
+             patch("actions.quests.heal_all"), \
+             patch("actions.rallies.join_rally", return_value=None), \
+             patch("actions.titans.rally_titan", return_value=True) as mock_rt, \
+             patch("actions.quests.config") as mock_config:
+            def cfg_side(dev, key):
+                if key == "auto_heal":
+                    return False
+                if key == "titan_rally_own":
+                    return True
+                return False
+            mock_config.get_device_config.side_effect = cfg_side
+            mock_config.MAX_RALLY_ATTEMPTS = 1
+            mock_config.set_device_status = MagicMock()
+            _run_rally_loop(mock_device, actionable)
+        mock_rt.assert_called_once()
+        mock_record.assert_called_with(mock_device, QuestType.TITAN)
+
+    def test_no_rally_own_disabled_breaks(self, mock_device):
+        """No rally to join + own rally disabled → breaks."""
+        actionable = [
+            {"quest_type": QuestType.TITAN, "current": 0, "target": 15,
+             "completed": False},
+        ]
+        with patch("actions.quests.navigate", return_value=True), \
+             patch("actions.quests.heal_all"), \
+             patch("actions.rallies.join_rally", return_value=None), \
+             patch("actions.quests.config") as mock_config:
+            mock_config.get_device_config.return_value = False
+            mock_config.MAX_RALLY_ATTEMPTS = 5
+            mock_config.set_device_status = MagicMock()
+            result = _run_rally_loop(mock_device, actionable)
+        assert result is False
+
+
+# ============================================================
+# _check_quests_legacy
+# ============================================================
+
+class TestCheckQuestsLegacy:
+    @patch("actions.quests.load_screenshot", return_value=None)
+    def test_no_screenshot_returns(self, mock_load, mock_device):
+        _check_quests_legacy(mock_device, None)
+        # Should return without error
+
+    @patch("actions.quests.cv2")
+    @patch("actions.quests.load_screenshot")
+    def test_no_active_quests(self, mock_load, mock_cv2, mock_device):
+        """No quest templates above threshold → no actions taken."""
+        mock_load.return_value = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        mock_cv2.matchTemplate.return_value = np.array([[0.3]])
+        mock_cv2.minMaxLoc.return_value = (0, 0.3, None, None)
+        mock_cv2.TM_CCOEFF_NORMED = 5
+        with patch("actions.quests.get_template", return_value=np.zeros((20, 20, 3), dtype=np.uint8)), \
+             patch("actions.rallies.join_rally") as mock_join:
+            _check_quests_legacy(mock_device, None)
+            mock_join.assert_not_called()
+
+    def test_stop_check_respected(self, mock_device):
+        """Stop check fires before processing quests."""
+        screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
+        with patch("actions.quests.load_screenshot", return_value=screen), \
+             patch("actions.quests.cv2") as mock_cv2, \
+             patch("actions.quests.get_template", return_value=np.zeros((20, 20, 3), dtype=np.uint8)):
+            # Make all templates score 0.9 (above threshold)
+            mock_cv2.matchTemplate.return_value = np.array([[0.9]])
+            mock_cv2.minMaxLoc.return_value = (0, 0.9, None, None)
+            mock_cv2.TM_CCOEFF_NORMED = 5
+            with patch("actions.rallies.join_rally") as mock_join:
+                _check_quests_legacy(mock_device, stop_check=lambda: True)
+                mock_join.assert_not_called()
+
+
+# ============================================================
+# _recall_tap_sequence
+# ============================================================
+
+class TestRecallTapSequence:
+    def test_happy_path(self, mock_device):
+        """Full sequence completes."""
+        from botlog import get_logger
+        log = get_logger("actions", mock_device)
+        with patch("actions.quests.logged_tap"), \
+             patch("actions.quests.wait_for_image_and_tap", return_value=True), \
+             patch("actions.quests.tap_image"), \
+             patch("actions.quests.save_failure_screenshot"), \
+             patch("actions.quests.time.sleep"):
+            result = _recall_tap_sequence(mock_device, log)
+        assert result is True
+
+    def test_detail_not_found(self, mock_device):
+        """detail_button.png not found → returns False."""
+        from botlog import get_logger
+        log = get_logger("actions", mock_device)
+        with patch("actions.quests.logged_tap"), \
+             patch("actions.quests.wait_for_image_and_tap", return_value=False), \
+             patch("actions.quests.save_failure_screenshot") as mock_save, \
+             patch("actions.quests.time.sleep"):
+            result = _recall_tap_sequence(mock_device, log)
+        assert result is False
+        mock_save.assert_called_once()
+
+    def test_stop_check_aborts(self, mock_device):
+        """Stop check after initial tap → returns False."""
+        from botlog import get_logger
+        log = get_logger("actions", mock_device)
+        with patch("actions.quests.logged_tap"), \
+             patch("actions.quests.time.sleep"):
+            result = _recall_tap_sequence(mock_device, log, stop_check=lambda: True)
+        assert result is False
