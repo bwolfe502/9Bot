@@ -24,9 +24,13 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, a
 # ---------------------------------------------------------------------------
 # 9Bot imports (same as main.py)
 # ---------------------------------------------------------------------------
+import subprocess
 import config
-from config import (running_tasks, QuestType, RallyType)
-from devices import get_devices, get_emulator_instances, auto_connect_emulators
+from config import (running_tasks, QuestType, RallyType, adb_path)
+from devices import (get_devices, get_emulator_instances, auto_connect_emulators,
+                     get_bluestacks_config, get_bluestacks_running,
+                     start_bluestacks_instance, stop_bluestacks_instance,
+                     get_instance_for_device, get_offline_instances)
 from navigation import check_screen
 from vision import load_screenshot, restart_game, adb_tap
 from troops import troops_avail, heal_all, get_troop_status
@@ -175,9 +179,88 @@ def cleanup_dead_tasks():
 # Settings helpers
 # ---------------------------------------------------------------------------
 
-from settings import SETTINGS_FILE, DEFAULTS, load_settings as _load_settings, save_settings as _save_settings
+from settings import SETTINGS_FILE, DEFAULTS, load_settings as _load_settings, save_settings as _save_settings, DEVICE_OVERRIDABLE_KEYS
 
 from startup import apply_settings as _apply_settings
+
+_settings_lock = threading.Lock()  # serialize all settings mutations
+
+
+def _ajax_save_setting(key, value):
+    """Validate and save a single global setting. Returns (ok, error_msg)."""
+    from config import SETTINGS_RULES, validate_settings
+    # Handle per-device troop count: device_troops_<device_id>
+    if key.startswith("device_troops_"):
+        dev_id = key[len("device_troops_"):]
+        try:
+            count = int(value)
+        except (ValueError, TypeError):
+            return False, "Expected integer for troop count"
+        if count < 1 or count > 5:
+            return False, "Troop count must be 1-5"
+        with _settings_lock:
+            settings = _load_settings()
+            dt = settings.setdefault("device_troops", {})
+            dt[dev_id] = count
+            _apply_settings(settings)
+            _save_settings(settings)
+        return True, None
+    rule = SETTINGS_RULES.get(key)
+    if rule is None and key != "device_troops":
+        return False, f"Unknown setting: {key}"
+    # Coerce value to expected type
+    if rule:
+        expected = rule["type"]
+        if expected is bool:
+            value = bool(value)
+        elif expected is int:
+            try:
+                value = int(value)
+            except (ValueError, TypeError):
+                return False, f"{key}: expected integer"
+        elif expected is str:
+            value = str(value)
+    with _settings_lock:
+        settings = _load_settings()
+        settings[key] = value
+        settings, warnings = validate_settings(settings, DEFAULTS)
+        for w in warnings:
+            if key in w:
+                return False, w
+        _apply_settings(settings)
+        _save_settings(settings)
+    return True, None
+
+
+def _ajax_save_device_setting(device_id, key, value):
+    """Validate and save a single per-device override. Returns (ok, error_msg)."""
+    from config import SETTINGS_RULES, validate_settings
+    if key not in DEVICE_OVERRIDABLE_KEYS:
+        return False, f"Not overridable: {key}"
+    rule = SETTINGS_RULES.get(key)
+    if rule:
+        expected = rule["type"]
+        if expected is bool:
+            value = bool(value)
+        elif expected is int:
+            try:
+                value = int(value)
+            except (ValueError, TypeError):
+                return False, f"{key}: expected integer"
+        elif expected is str:
+            value = str(value)
+    with _settings_lock:
+        settings = _load_settings()
+        ds = settings.setdefault("device_settings", {})
+        dev = ds.setdefault(device_id, {})
+        dev[key] = value
+        settings, warnings = validate_settings(settings, DEFAULTS)
+        for w in warnings:
+            if key in w:
+                return False, w
+        _apply_settings(settings)
+        _save_settings(settings)
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -271,12 +354,16 @@ def create_app():
         cleanup_dead_tasks()
         devs, instances = _cached_devices()
         device_info = []
+        emu_running = _device_cache.get("emu_running", {})
         for d in devs:
+            emu_inst = get_instance_for_device(d)
             device_info.append({
                 "id": d,
                 "name": instances.get(d, d),
                 "status": config.DEVICE_STATUS.get(d, "Idle"),
                 "troops": config.DEVICE_TOTAL_TROOPS.get(d, 5),
+                "emu_instance": emu_inst,
+                "recently_started": _is_recently_started(d),
             })
         active_tasks = []
         for key, info in list(running_tasks.items()):
@@ -298,15 +385,28 @@ def create_app():
             scheme = "https" if is_secure else "http"
             relay_url = f"{scheme}://{host}/{bot_name}"
 
-        # Build per-device share data (device_hash + tokens)
+        # Add offline BlueStacks instances
+        offline_instances = get_offline_instances()
+        for inst in offline_instances:
+            device_info.append({
+                "id": inst["device_id"],
+                "name": inst["display_name"],
+                "status": "Starting Emulator..." if inst["device_id"] in config.EMULATOR_STARTING else "Offline",
+                "troops": 0,
+                "offline": True,
+                "instance": inst["instance"],
+            })
+
+        # Build per-device share data (device_hash + tokens) — all devices incl. offline
         from startup import device_hash, generate_device_token, generate_device_ro_token
         share_data = {}
-        for d in devs:
+        share_url_base = relay_url or f"http://{get_local_ip()}:8080"
+        for di in device_info:
+            d = di["id"]
             dh = device_hash(d)
             dt = generate_device_token(d)
             dt_ro = generate_device_ro_token(d)
             if dh and dt:
-                share_url_base = relay_url or f"http://{get_local_ip()}:8080"
                 share_data[d] = {
                     "hash": dh,
                     "token": dt,
@@ -380,13 +480,23 @@ def create_app():
         import training
         training_stats = training.get_training_stats()
         settings = _load_settings()
+        # Per-device protocol status
+        protocol_devices = []
+        for d in detected:
+            dev_enabled = config.get_device_config(d, "protocol_enabled")
+            dev_active = d in config.PROTOCOL_ACTIVE_DEVICES
+            protocol_devices.append({
+                "id": d, "name": d.split(":")[-1] if ":" in d else d,
+                "enabled": dev_enabled, "active": dev_active,
+            })
         return render_template("debug.html",
                                devices=device_info,
                                tasks=active_tasks,
                                debug_actions=ONESHOT_DEBUG,
                                log_lines=lines,
                                training_stats=training_stats,
-                               protocol_enabled=settings.get("protocol_enabled", False))
+                               protocol_enabled=settings.get("protocol_enabled", False),
+                               protocol_devices=protocol_devices)
 
     @app.route("/logs")
     def logs_page():
@@ -406,7 +516,7 @@ def create_app():
     # --- API routes ---
 
     # Cache device list to avoid spamming ADB on every poll
-    _device_cache = {"devices": [], "instances": {}, "ts": 0}
+    _device_cache = {"devices": [], "instances": {}, "emu_running": {}, "ts": 0}
     _DEVICE_CACHE_TTL = 15  # seconds
 
     def _cached_devices():
@@ -414,8 +524,21 @@ def create_app():
         if now - _device_cache["ts"] > _DEVICE_CACHE_TTL:
             _device_cache["devices"] = get_devices()
             _device_cache["instances"] = get_emulator_instances()
+            _device_cache["emu_running"] = get_bluestacks_running()
             _device_cache["ts"] = now
         return _device_cache["devices"], _device_cache["instances"]
+
+    _RECENTLY_STARTED_MAX_AGE = 300  # seconds (5 min)
+
+    def _is_recently_started(device_id):
+        """Check if a device was recently started from emulator boot."""
+        ts = config.EMULATOR_RECENTLY_STARTED.get(device_id)
+        if ts is None:
+            return False
+        if time.time() - ts > _RECENTLY_STARTED_MAX_AGE:
+            config.EMULATOR_RECENTLY_STARTED.pop(device_id, None)
+            return False
+        return True
 
     def _device_status_info(d, instances):
         """Build status dict for a single device."""
@@ -437,15 +560,21 @@ def create_app():
             elapsed = time.time() - mithril_anchor
             remaining = interval * 60 - elapsed
             mithril_next = max(0, int(remaining))
+        emu_instance = get_instance_for_device(d)
+        emu_running = (emu_instance is not None
+                       and emu_instance in _device_cache.get("emu_running", {}))
         return {
             "id": d,
             "name": instances.get(d, d),
             "status": config.DEVICE_STATUS.get(d, "Idle"),
             "troops": troops_list,
             "snapshot_age": snapshot_age,
+            "troop_source": snapshot.source if snapshot else None,
             "quests": get_quest_tracking_state(d),
             "quest_age": get_quest_last_checked(d),
             "mithril_next": mithril_next,
+            "emu_running": emu_running,
+            "recently_started": _is_recently_started(d),
         }
 
     @app.route("/api/status")
@@ -453,6 +582,31 @@ def create_app():
         cleanup_dead_tasks()
         devs, instances = _cached_devices()
         device_info = [_device_status_info(d, instances) for d in devs]
+        # Chat mirroring: if enabled and any device has protocol, all devices get chat
+        settings = _load_settings()
+        chat_mirror = settings.get("chat_mirror", True)
+        any_protocol = bool(config.PROTOCOL_ACTIVE_DEVICES)
+        for di in device_info:
+            di["chat_available"] = di.get("protocol_active", False) or (chat_mirror and any_protocol)
+        # Include offline BlueStacks instances
+        offline_instances = get_offline_instances()
+        for inst in offline_instances:
+            did = inst["device_id"]
+            starting = did in config.EMULATOR_STARTING
+            device_info.append({
+                "id": did,
+                "name": inst["display_name"],
+                "status": "Starting Emulator..." if starting else "Offline",
+                "troops": [],
+                "snapshot_age": None,
+                "quests": [],
+                "quest_age": None,
+                "mithril_next": None,
+                "emu_running": False,
+                "offline": True,
+                "emu_starting": starting,
+                "protocol_active": False,
+            })
         active = []
         for key, info in list(running_tasks.items()):
             if isinstance(info, dict):
@@ -580,8 +734,10 @@ def create_app():
                      "ap_allow_large_potions", "ap_use_gems", "verbose_logging",
                      "eg_rally_own", "titan_rally_own", "web_dashboard", "gather_enabled",
                      "tower_quest_enabled", "remote_access", "auto_upload_logs",
-                     "collect_training_data"]:
-            settings[key] = key in request.form
+                     "collect_training_data", "chat_mirror"]:
+            # Toggle switches send hidden input with value "on"; checkboxes send key presence
+            val = request.form.get(key, "")
+            settings[key] = bool(val and val != "")
 
         for key in ["ap_gem_limit", "min_troops", "variation", "titan_interval",
                      "groot_interval", "reinforce_interval", "pass_interval",
@@ -613,6 +769,90 @@ def create_app():
         _apply_settings(settings)
         _save_settings(settings)
         return redirect(url_for("settings_page"))
+
+    # --- AJAX settings API ---
+
+    @app.route("/api/settings/save", methods=["POST"])
+    def api_settings_save():
+        """Save a single global setting via AJAX."""
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        value = data.get("value")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        ok, err = _ajax_save_setting(key, value)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+        return jsonify(ok=True)
+
+    @app.route("/api/settings/device/<device_id>/save", methods=["POST"])
+    def api_device_settings_save(device_id):
+        """Save a single per-device override via AJAX."""
+        detected = _cached_devices()[0]
+        if device_id not in detected:
+            abort(404)
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        value = data.get("value")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        ok, err = _ajax_save_device_setting(device_id, key, value)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+        return jsonify(ok=True)
+
+    @app.route("/api/settings/device/<device_id>/reset-key", methods=["POST"])
+    def api_device_settings_reset_key(device_id):
+        """Reset a single per-device override to global default."""
+        detected = _cached_devices()[0]
+        if device_id not in detected:
+            abort(404)
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            dev = ds.get(device_id, {})
+            dev.pop(key, None)
+            if not dev or all(k in ("shared_modes", "shared_actions") for k in dev):
+                # Only access control keys left — keep them, remove config overrides
+                pass
+            ds[device_id] = dev
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
+
+    @app.route("/api/settings/device/<device_id>/reset-all", methods=["POST"])
+    def api_device_settings_reset_all(device_id):
+        """Reset all per-device overrides (preserving access control)."""
+        detected = _cached_devices()[0]
+        if device_id not in detected:
+            abort(404)
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            existing = ds.get(device_id, {})
+            # Preserve shared_modes/shared_actions (owner-only access control)
+            preserved = {}
+            if "shared_modes" in existing:
+                preserved["shared_modes"] = existing["shared_modes"]
+            if "shared_actions" in existing:
+                preserved["shared_actions"] = existing["shared_actions"]
+            if preserved:
+                ds[device_id] = preserved
+            else:
+                ds.pop(device_id, None)
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
 
     @app.route("/settings/device/<device_id>")
     def device_settings_page(device_id):
@@ -652,7 +892,8 @@ def create_app():
                       "titan_rally_own", "gather_enabled", "tower_quest_enabled"}
         for key in bool_keys & DEVICE_OVERRIDABLE_KEYS:
             if f"override_{key}" in request.form:
-                overrides[key] = key in request.form
+                val = request.form.get(key, "")
+                overrides[key] = bool(val and val != "")
 
         # Integer overridable keys
         int_keys = {"ap_gem_limit", "min_troops", "mithril_interval",
@@ -672,7 +913,8 @@ def create_app():
                     overrides[key] = val
 
         # Shared permissions (not config overrides — access control)
-        if "permissions_enabled" in request.form:
+        perm_val = request.form.get("permissions_enabled", "")
+        if perm_val and perm_val != "":
             # Collect checked auto-mode keys
             shared_modes = []
             for key in ALL_AUTO_MODE_KEYS:
@@ -751,12 +993,112 @@ def create_app():
 
     @app.route("/api/protocol-toggle", methods=["POST"])
     def api_protocol_toggle():
-        """Toggle protocol_enabled setting (debug page)."""
+        """Toggle protocol_enabled for a specific device or globally."""
+        device_id = request.form.get("device_id")
         settings = _load_settings()
-        settings["protocol_enabled"] = not settings.get("protocol_enabled", False)
-        _apply_settings(settings)
-        _save_settings(settings)
-        return jsonify({"ok": True, "enabled": settings["protocol_enabled"]})
+        if device_id:
+            # Per-device toggle
+            ds = settings.setdefault("device_settings", {})
+            dev_settings = ds.setdefault(device_id, {})
+            current = dev_settings.get(
+                "protocol_enabled", settings.get("protocol_enabled", False))
+            dev_settings["protocol_enabled"] = not current
+            _apply_settings(settings)
+            _save_settings(settings)
+            return jsonify({"ok": True, "enabled": dev_settings["protocol_enabled"],
+                            "device_id": device_id})
+        else:
+            # Global toggle (legacy)
+            settings["protocol_enabled"] = not settings.get("protocol_enabled", False)
+            _apply_settings(settings)
+            _save_settings(settings)
+            return jsonify({"ok": True, "enabled": settings["protocol_enabled"]})
+
+    @app.route("/api/chat")
+    def api_chat():
+        """Return recent chat messages for a device.
+
+        If the device has no protocol but chat_mirror is enabled, returns
+        messages from a protocol-active device (excluding PRIVATE channel).
+        """
+        device_id = request.args.get("device")
+        channel = request.args.get("channel")  # optional filter
+        if not device_id:
+            return jsonify({"error": "device parameter required"}), 400
+        from startup import get_protocol_chat_messages
+        messages = get_protocol_chat_messages(device_id)
+        # Chat mirroring: if this device has no protocol messages, pull from
+        # a protocol-active device (exclude PRIVATE channel for privacy)
+        mirror_source = None
+        if not messages and device_id not in config.PROTOCOL_ACTIVE_DEVICES:
+            settings = _load_settings()
+            if settings.get("chat_mirror", True):
+                for active_dev in config.PROTOCOL_ACTIVE_DEVICES:
+                    mirrored = get_protocol_chat_messages(active_dev)
+                    if mirrored:
+                        messages = [m for m in mirrored
+                                    if isinstance(m, dict)
+                                    and m.get("channel", "").upper() != "PRIVATE"]
+                        mirror_source = active_dev
+                        break
+        # Filter by channel if specified
+        if channel:
+            ch_upper = channel.upper()
+            if ch_upper == "UNION":
+                # Include UNION_R4 (R4+ officer chat) under Alliance tab
+                messages = [m for m in messages
+                            if isinstance(m, dict)
+                            and m.get("channel", "").upper().startswith("UNION")]
+            else:
+                messages = [m for m in messages
+                            if isinstance(m, dict)
+                            and m.get("channel", "").upper() == ch_upper]
+        # Serialize for JSON (strip raw objects)
+        serializable = []
+        for m in messages:
+            if isinstance(m, dict):
+                serializable.append({
+                    "content": m.get("content", ""),
+                    "sender": m.get("sender", ""),
+                    "channel": m.get("channel", ""),
+                    "channel_type": m.get("channel_type", 0),
+                    "timestamp": m.get("timestamp", 0),
+                    "union_name": m.get("union_name", ""),
+                    "payload_type": m.get("payload_type", 0),
+                })
+        serializable.sort(key=lambda m: m.get("timestamp", 0))
+        result = {"messages": serializable, "count": len(serializable)}
+        if mirror_source:
+            result["mirrored"] = True
+        return jsonify(result)
+
+    @app.route("/api/protocol-status")
+    def api_protocol_status():
+        """Return per-device protocol status for the debug page."""
+        detected, _ = _cached_devices()
+        settings = _load_settings()
+        devices_status = []
+        for dev in detected:
+            enabled = config.get_device_config(dev, "protocol_enabled")
+            active = dev in config.PROTOCOL_ACTIVE_DEVICES
+            from startup import get_protocol_stats
+            stats = get_protocol_stats(dev)
+            devices_status.append({
+                "device_id": dev,
+                "enabled": enabled,
+                "active": active,
+                "connected": stats is not None and stats.get("uptime_s", 0) > 0,
+                "stats": stats,
+            })
+        return jsonify({"devices": devices_status})
+
+    @app.route("/chat")
+    def chat_page():
+        """Chat viewer page — shows live game chat from protocol-enabled devices."""
+        detected, _ = _cached_devices()
+        device_info = [{"id": d, "name": d.split(":")[-1] if ":" in d else d}
+                       for d in detected]
+        return render_template("chat.html", devices=device_info)
 
     @app.route("/api/upload-logs", methods=["POST"])
     def api_upload_logs():
@@ -927,8 +1269,137 @@ def create_app():
             if key.startswith(device):
                 stop_task(key)
         config.DEVICE_STATUS.pop(device, None)
+        config.EMULATOR_RECENTLY_STARTED.pop(device, None)
         restart_game(device)
         return jsonify(ok=True)
+
+    # --- Emulator control ---
+
+    def _do_emulator_start(device_id="", instance_name=""):
+        """Core logic for starting a BlueStacks emulator instance."""
+
+        # Resolve instance name from device ID if needed
+        if device_id and not instance_name:
+            conf = get_bluestacks_config()
+            for iname, info in conf.items():
+                try:
+                    if int(info.get("adb_port", "0")) == int(device_id.split(":")[-1]):
+                        instance_name = iname
+                        break
+                except (ValueError, IndexError):
+                    pass
+
+        if not instance_name:
+            return jsonify(ok=False, error="Could not resolve instance"), 400
+
+        # Build device_id from instance config if not provided
+        if not device_id:
+            conf = get_bluestacks_config()
+            info = conf.get(instance_name, {})
+            port = info.get("adb_port")
+            if port:
+                device_id = f"127.0.0.1:{port}"
+            else:
+                return jsonify(ok=False, error="No ADB port for instance"), 400
+
+        # Check not already running or starting
+        running = get_bluestacks_running()
+        if instance_name in running:
+            return jsonify(ok=False, error="Instance already running"), 409
+        if device_id in config.EMULATOR_STARTING:
+            return jsonify(ok=False, error="Instance already starting"), 409
+
+        config.EMULATOR_STARTING[device_id] = {
+            "instance": instance_name,
+            "started_at": time.time(),
+        }
+        config.set_device_status(device_id, "Starting Emulator...")
+
+        def _boot_and_wait():
+            try:
+                proc = start_bluestacks_instance(instance_name)
+                if proc is None:
+                    config.EMULATOR_STARTING.pop(device_id, None)
+                    config.set_device_status(device_id, "Start Failed")
+                    return
+
+                config.set_device_status(device_id, "Waiting for ADB...")
+                # Poll for ADB connection
+                deadline = time.time() + 120
+                connected = False
+                while time.time() < deadline:
+                    time.sleep(3)
+                    try:
+                        result = subprocess.run(
+                            [adb_path, "connect", device_id],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if "connected" in result.stdout.lower():
+                            # Verify device actually responds
+                            check = subprocess.run(
+                                [adb_path, "-s", device_id, "shell", "echo", "ok"],
+                                capture_output=True, text=True, timeout=5,
+                            )
+                            if check.returncode == 0:
+                                connected = True
+                                break
+                    except (subprocess.TimeoutExpired, Exception):
+                        pass
+
+                config.EMULATOR_STARTING.pop(device_id, None)
+                _device_cache["ts"] = 0  # bust cache
+                if connected:
+                    _log.info("Emulator '%s' is now connected as %s",
+                              instance_name, device_id)
+                    config.EMULATOR_RECENTLY_STARTED[device_id] = time.time()
+                    config.clear_device_status(device_id)
+                else:
+                    _log.warning("Emulator '%s' started but ADB not connected "
+                                 "after 120s", instance_name)
+                    config.set_device_status(device_id, "ADB Timeout")
+            except Exception as e:
+                _log.error("Emulator boot thread error: %s", e)
+                config.EMULATOR_STARTING.pop(device_id, None)
+                config.set_device_status(device_id, "Start Failed")
+
+        threading.Thread(target=_boot_and_wait, daemon=True).start()
+        return jsonify(ok=True, device=device_id, instance=instance_name)
+
+    @app.route("/api/emulator/start", methods=["POST"])
+    def api_emulator_start():
+        """Start a BlueStacks emulator instance (owner route)."""
+        return _do_emulator_start(
+            device_id=request.form.get("device", ""),
+            instance_name=request.form.get("instance", ""),
+        )
+
+    def _do_emulator_stop(device_id):
+        """Core logic for stopping a BlueStacks emulator instance."""
+        if not device_id:
+            return jsonify(ok=False, error="Missing device"), 400
+
+        instance_name = get_instance_for_device(device_id)
+        if not instance_name:
+            return jsonify(ok=False, error="Not a BlueStacks device"), 400
+
+        # Stop all bot tasks on this device first
+        for key in list(running_tasks.keys()):
+            if key.startswith(device_id):
+                stop_task(key)
+        config.DEVICE_STATUS.pop(device_id, None)
+
+        killed = stop_bluestacks_instance(instance_name)
+        _device_cache["ts"] = 0  # bust cache
+        if killed:
+            _log.info("Emulator '%s' stopped", instance_name)
+            return jsonify(ok=True)
+        else:
+            return jsonify(ok=False, error="Failed to stop instance"), 500
+
+    @app.route("/api/emulator/stop", methods=["POST"])
+    def api_emulator_stop():
+        """Stop a BlueStacks emulator instance (owner route)."""
+        return _do_emulator_stop(device_id=request.form.get("device", ""))
 
     # --- Device-scoped routes (friend view) ---
 
@@ -939,6 +1410,11 @@ def create_app():
         for d in devs:
             if _dh(d) == dhash:
                 return d
+        # Also check offline BlueStacks instances
+        for inst in get_offline_instances():
+            did = inst["device_id"]
+            if _dh(did) == dhash:
+                return did
         return None
 
     def require_device_token(f):
@@ -980,13 +1456,35 @@ def create_app():
     def device_index(dhash, device=None, token=None, readonly=False):
         """Friend's filtered dashboard — single device only."""
         cleanup_dead_tasks()
-        _, instances = _cached_devices()
-        device_info = [{
-            "id": device,
-            "name": instances.get(device, device),
-            "status": config.DEVICE_STATUS.get(device, "Idle"),
-            "troops": config.DEVICE_TOTAL_TROOPS.get(device, 5),
-        }]
+        devs, instances = _cached_devices()
+        is_offline = device not in devs
+        if is_offline:
+            # Offline device — find display name from BlueStacks config
+            display_name = device
+            instance_name = None
+            for inst in get_offline_instances():
+                if inst["device_id"] == device:
+                    display_name = inst["display_name"]
+                    instance_name = inst["instance"]
+                    break
+            device_info = [{
+                "id": device,
+                "name": display_name,
+                "status": "Starting Emulator..." if device in config.EMULATOR_STARTING else "Offline",
+                "troops": 0,
+                "offline": True,
+                "instance": instance_name,
+            }]
+        else:
+            emu_inst = get_instance_for_device(device)
+            device_info = [{
+                "id": device,
+                "name": instances.get(device, device),
+                "status": config.DEVICE_STATUS.get(device, "Idle"),
+                "troops": config.DEVICE_TOTAL_TROOPS.get(device, 5),
+                "emu_instance": emu_inst,
+                "recently_started": _is_recently_started(device),
+            }]
         active_tasks = []
         for key, info in list(running_tasks.items()):
             if isinstance(info, dict):
@@ -1040,16 +1538,41 @@ def create_app():
         """Status for one device only."""
         cleanup_dead_tasks()
         devs, instances = _cached_devices()
-        info = _device_status_info(device, instances)
-        # Override status if emulator is no longer connected
         if device not in devs:
-            info["status"] = "Emulator Offline"
+            # Offline device
+            starting = device in config.EMULATOR_STARTING
+            info = {
+                "id": device,
+                "name": device,
+                "status": "Starting Emulator..." if starting else "Offline",
+                "troops": [],
+                "snapshot_age": None,
+                "quests": [],
+                "quest_age": None,
+                "mithril_next": None,
+                "emu_running": False,
+                "offline": True,
+                "emu_starting": starting,
+            }
+            # Try to get display name from BlueStacks config
+            for inst in get_offline_instances():
+                if inst["device_id"] == device:
+                    info["name"] = inst["display_name"]
+                    break
+        else:
+            info = _device_status_info(device, instances)
         active = []
         for key, val in list(running_tasks.items()):
             if isinstance(val, dict):
                 thread = val.get("thread")
                 if thread and thread.is_alive() and key.startswith(device):
                     active.append(key)
+        # Chat mirroring: if chat_mirror enabled and any device has protocol, this device gets chat
+        settings = _load_settings()
+        chat_mirror = settings.get("chat_mirror", True)
+        any_protocol = bool(config.PROTOCOL_ACTIVE_DEVICES)
+        info["chat_available"] = (device in config.PROTOCOL_ACTIVE_DEVICES) or (chat_mirror and any_protocol)
+
         return jsonify({"devices": [info], "tasks": active,
                         "tunnel": tunnel_status(),
                         "upload": _upload_status()})
@@ -1163,8 +1686,70 @@ def create_app():
             if key.startswith(device):
                 stop_task(key)
         config.DEVICE_STATUS.pop(device, None)
+        config.EMULATOR_RECENTLY_STARTED.pop(device, None)
         restart_game(device)
         return jsonify(ok=True)
+
+    @app.route("/d/<dhash>/api/emulator/start", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_emulator_start(dhash, device=None, token=None, readonly=False):
+        """Start emulator for this device."""
+        return _do_emulator_start(device_id=device)
+
+    @app.route("/d/<dhash>/api/emulator/stop", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_emulator_stop(dhash, device=None, token=None, readonly=False):
+        """Stop emulator for this device."""
+        return _do_emulator_stop(device_id=device)
+
+    @app.route("/d/<dhash>/api/chat")
+    @require_device_token
+    def device_api_chat(dhash, device=None, token=None, readonly=False):
+        """Chat messages for this device (with mirroring from protocol-active devices)."""
+        channel = request.args.get("channel")
+        from startup import get_protocol_chat_messages
+        messages = get_protocol_chat_messages(device)
+        mirror_source = None
+        if not messages and device not in config.PROTOCOL_ACTIVE_DEVICES:
+            settings = _load_settings()
+            if settings.get("chat_mirror", True):
+                for active_dev in config.PROTOCOL_ACTIVE_DEVICES:
+                    mirrored = get_protocol_chat_messages(active_dev)
+                    if mirrored:
+                        messages = [m for m in mirrored
+                                    if isinstance(m, dict)
+                                    and m.get("channel", "").upper() != "PRIVATE"]
+                        mirror_source = active_dev
+                        break
+        if channel:
+            ch_upper = channel.upper()
+            if ch_upper == "UNION":
+                messages = [m for m in messages
+                            if isinstance(m, dict)
+                            and m.get("channel", "").upper().startswith("UNION")]
+            else:
+                messages = [m for m in messages
+                            if isinstance(m, dict)
+                            and m.get("channel", "").upper() == ch_upper]
+        serializable = []
+        for m in messages:
+            if isinstance(m, dict):
+                serializable.append({
+                    "content": m.get("content", ""),
+                    "sender": m.get("sender", ""),
+                    "channel": m.get("channel", ""),
+                    "channel_type": m.get("channel_type", 0),
+                    "timestamp": m.get("timestamp", 0),
+                    "union_name": m.get("union_name", ""),
+                    "payload_type": m.get("payload_type", 0),
+                })
+        serializable.sort(key=lambda m: m.get("timestamp", 0))
+        result = {"messages": serializable, "count": len(serializable)}
+        if mirror_source:
+            result["mirrored"] = True
+        return jsonify(result)
 
     @app.route("/d/<dhash>/api/screenshot")
     @require_device_token
@@ -1221,6 +1806,178 @@ def create_app():
 
         return Response(generate(),
                         mimetype="multipart/x-mixed-replace; boundary=frame")
+
+    # --- Device-scoped settings routes (friend view) ---
+
+    @app.route("/d/<dhash>/settings")
+    @require_device_token
+    @require_full_access
+    def device_settings(dhash, device=None, token=None, readonly=False):
+        """Per-device settings page accessible via shared token."""
+        detected, instances = _cached_devices()
+        settings = _load_settings()
+        dev_overrides = settings.get("device_settings", {}).get(device, {})
+        mode = settings.get("mode", "bl")
+        auto_groups = AUTO_MODES_BL if mode == "bl" else AUTO_MODES_HS
+        return render_template("settings_device.html",
+                               device_id=device,
+                               device_name=instances.get(device, device.split(":")[-1]),
+                               all_devices=[],
+                               overrides=dev_overrides,
+                               globals=settings,
+                               auto_groups=auto_groups,
+                               all_actions=ONESHOT_FARM + ONESHOT_WAR,
+                               form_action=f"/d/{dhash}/settings?token={token}",
+                               reset_action=f"/d/{dhash}/settings/reset?token={token}",
+                               device_filter=True,
+                               device_hash=dhash,
+                               device_token=token)
+
+    @app.route("/d/<dhash>/settings", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_settings_save(dhash, device=None, token=None, readonly=False):
+        """Save per-device settings from shared token view."""
+        detected = _cached_devices()[0]
+        if device not in detected:
+            abort(404)
+        from settings import DEVICE_OVERRIDABLE_KEYS
+        settings = _load_settings()
+        ds = settings.setdefault("device_settings", {})
+        overrides = {}
+
+        # Boolean overridable keys
+        bool_keys = {"auto_heal", "auto_restore_ap", "ap_use_free", "ap_use_potions",
+                      "ap_allow_large_potions", "ap_use_gems", "eg_rally_own",
+                      "titan_rally_own", "gather_enabled", "tower_quest_enabled"}
+        for key in bool_keys & DEVICE_OVERRIDABLE_KEYS:
+            if f"override_{key}" in request.form:
+                val = request.form.get(key, "")
+                overrides[key] = bool(val and val != "")
+
+        # Integer overridable keys
+        int_keys = {"ap_gem_limit", "min_troops", "mithril_interval",
+                     "gather_mine_level", "gather_max_troops"}
+        for key in int_keys & DEVICE_OVERRIDABLE_KEYS:
+            if f"override_{key}" in request.form:
+                val = request.form.get(key, "")
+                if val.isdigit():
+                    overrides[key] = int(val)
+
+        # String overridable keys
+        str_keys = {"my_team"}
+        for key in str_keys & DEVICE_OVERRIDABLE_KEYS:
+            if f"override_{key}" in request.form:
+                val = request.form.get(key)
+                if val is not None:
+                    overrides[key] = val
+
+        # Preserve shared_modes/shared_actions from existing overrides
+        # (shared users cannot edit their own permissions)
+        existing = ds.get(device, {})
+        if "shared_modes" in existing:
+            overrides["shared_modes"] = existing["shared_modes"]
+        if "shared_actions" in existing:
+            overrides["shared_actions"] = existing["shared_actions"]
+
+        ds[device] = overrides
+        from config import validate_settings
+        settings, warnings = validate_settings(settings, DEFAULTS)
+        for w in warnings:
+            _log.warning("Settings (device save): %s", w)
+        _apply_settings(settings)
+        _save_settings(settings)
+        return redirect(f"/d/{dhash}/settings?token={token}")
+
+    @app.route("/d/<dhash>/settings/reset", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_settings_reset(dhash, device=None, token=None, readonly=False):
+        """Reset per-device overrides from shared token view."""
+        detected = _cached_devices()[0]
+        if device not in detected:
+            abort(404)
+        settings = _load_settings()
+        ds = settings.get("device_settings", {})
+        # Preserve shared_modes/shared_actions (owner-only access control)
+        existing = ds.get(device, {})
+        preserved = {}
+        if "shared_modes" in existing:
+            preserved["shared_modes"] = existing["shared_modes"]
+        if "shared_actions" in existing:
+            preserved["shared_actions"] = existing["shared_actions"]
+        if preserved:
+            ds[device] = preserved
+        else:
+            ds.pop(device, None)
+        settings["device_settings"] = ds
+        _apply_settings(settings)
+        _save_settings(settings)
+        return redirect(f"/d/{dhash}/settings?token={token}")
+
+    # --- Device-scoped AJAX settings API (friend view) ---
+
+    @app.route("/d/<dhash>/api/settings/save", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_api_settings_save(dhash, device=None, token=None, readonly=False):
+        """Save a single per-device override via AJAX (friend view)."""
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        value = data.get("value")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        ok, err = _ajax_save_device_setting(device, key, value)
+        if not ok:
+            return jsonify(ok=False, error=err), 400
+        return jsonify(ok=True)
+
+    @app.route("/d/<dhash>/api/settings/reset-key", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_api_settings_reset_key(dhash, device=None, token=None, readonly=False):
+        """Reset a single per-device override (friend view)."""
+        data = request.get_json(silent=True) or {}
+        key = data.get("key")
+        if not key:
+            return jsonify(ok=False, error="Missing key"), 400
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            dev = ds.get(device, {})
+            dev.pop(key, None)
+            ds[device] = dev
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
+
+    @app.route("/d/<dhash>/api/settings/reset-all", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_api_settings_reset_all(dhash, device=None, token=None, readonly=False):
+        """Reset all per-device overrides (friend view)."""
+        from config import validate_settings
+        with _settings_lock:
+            settings = _load_settings()
+            ds = settings.get("device_settings", {})
+            existing = ds.get(device, {})
+            preserved = {}
+            if "shared_modes" in existing:
+                preserved["shared_modes"] = existing["shared_modes"]
+            if "shared_actions" in existing:
+                preserved["shared_actions"] = existing["shared_actions"]
+            if preserved:
+                ds[device] = preserved
+            else:
+                ds.pop(device, None)
+            settings["device_settings"] = ds
+            settings, _ = validate_settings(settings, DEFAULTS)
+            _apply_settings(settings)
+            _save_settings(settings)
+        return jsonify(ok=True)
 
     # --- Calibrate routes ---
 

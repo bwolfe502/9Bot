@@ -198,6 +198,11 @@ TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires tar
 
 # Protocol interception (opt-in, requires Frida Gadget in APK)
 PROTOCOL_ENABLED = False
+PROTOCOL_ACTIVE_DEVICES = set()  # {device_id} — devices with running protocol interceptor
+
+# Emulator boot tracking
+EMULATOR_STARTING = {}  # {device_id: {"instance": str, "started_at": float}}
+EMULATOR_RECENTLY_STARTED = {}  # {device_id: float timestamp} — cleared after game start
 
 # Per-device lock — prevents concurrent tasks from controlling the same device
 import threading
@@ -277,6 +282,7 @@ SETTINGS_RULES = {
     "auto_upload_logs":      {"type": bool},
     "collect_training_data": {"type": bool},
     "protocol_enabled":      {"type": bool},
+    "chat_mirror":           {"type": bool},
     # Ints — type + optional min/max
     "ap_gem_limit":          {"type": int, "min": 0, "max": 3500},
     "min_troops":            {"type": int, "min": 0, "max": 5},
@@ -448,6 +454,7 @@ _SETTINGS_TO_CONFIG = {
     "tower_quest_enabled":   "TOWER_QUEST_ENABLED",
     "my_team":               "MY_TEAM_COLOR",
     "mithril_interval":      "MITHRIL_INTERVAL",
+    "protocol_enabled":      "PROTOCOL_ENABLED",
 }
 
 _DEVICE_CONFIG = {}  # {device_id: {setting_key: value}}

@@ -335,7 +335,9 @@ class TestRunTowerQuest:
             _run_tower_quest(mock_device, quests)
             mock_occ.assert_not_called()
 
-    def test_recalls_when_all_complete(self, mock_device):
+    def test_keeps_defending_when_all_complete_but_still_on_screen(self, mock_device):
+        """When tower quests are complete but still visible on screen,
+        keep the troop defending — only recall when quests disappear entirely."""
         quests = [
             {"quest_type": QuestType.TOWER, "current": 30, "target": 30, "completed": True},
         ]
@@ -343,10 +345,11 @@ class TestRunTowerQuest:
              patch("actions.quests.recall_tower_troop") as mock_recall, \
              patch("actions.quests.config") as mock_config:
             mock_config.get_device_config.return_value = True
+            mock_config.set_device_status = MagicMock()
             _run_tower_quest(mock_device, quests)
-            mock_recall.assert_called_once()
+            mock_recall.assert_not_called()
 
-    def test_no_recall_when_complete_but_not_defending(self, mock_device):
+    def test_no_action_when_complete_and_not_defending(self, mock_device):
         quests = [
             {"quest_type": QuestType.TOWER, "current": 30, "target": 30, "completed": True},
         ]

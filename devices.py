@@ -1,5 +1,6 @@
 import subprocess
 import platform
+import os
 
 from config import adb_path, EMULATOR_PORTS
 from botlog import get_logger
@@ -173,7 +174,16 @@ def get_emulator_instances():
 # macOS: emulator instance name mapping
 # ============================================================
 
-_BLUESTACKS_CONF = "/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"
+_BLUESTACKS_CONF_MAC = "/Users/Shared/Library/Application Support/BlueStacks/bluestacks.conf"
+_BLUESTACKS_CONF_WIN = r"C:\ProgramData\BlueStacks_nxt\bluestacks.conf"
+_BLUESTACKS_EXE_WIN = r"C:\Program Files\BlueStacks_nxt\HD-Player.exe"
+
+
+def _get_bluestacks_conf_path():
+    """Return the platform-appropriate BlueStacks config path."""
+    if platform.system() == "Windows":
+        return _BLUESTACKS_CONF_WIN
+    return _BLUESTACKS_CONF_MAC
 
 
 def _get_emulator_instances_macos(devices):
@@ -224,20 +234,21 @@ def _get_emulator_instances_macos(devices):
     return device_map
 
 
-def _parse_bluestacks_conf():
+def _parse_bluestacks_conf(path=None):
     """Parse BlueStacks config file, returning {instance_id: {key: value}}.
 
     Config lines look like:
         bst.instance.Tiramisu64_1.display_name="Nine"
         bst.instance.Tiramisu64_1.adb_port="5565"
     """
-    import os
+    if path is None:
+        path = _get_bluestacks_conf_path()
 
-    if not os.path.isfile(_BLUESTACKS_CONF):
+    if not os.path.isfile(path):
         return {}
 
     instances = {}
-    with open(_BLUESTACKS_CONF, "r") as f:
+    with open(path, "r") as f:
         for line in f:
             line = line.strip()
             if not line.startswith("bst.instance."):
@@ -375,3 +386,166 @@ def _get_emulator_instances_windows(devices):
     except Exception as e:
         _log.error("Failed to get emulator instances: %s", e)
         return {d: d for d in devices}
+
+
+# ============================================================
+# BLUESTACKS INSTANCE CONTROL (Windows)
+# ============================================================
+
+def get_bluestacks_config():
+    """Return {instance_name: {adb_port, display_name, ...}} from bluestacks.conf.
+
+    Returns {} if file not found or not on a supported platform.
+    """
+    try:
+        return _parse_bluestacks_conf()
+    except Exception as e:
+        _log.debug("Could not read BlueStacks config: %s", e)
+        return {}
+
+
+def get_bluestacks_running():
+    """Return {instance_name: pid} for currently running HD-Player.exe processes.
+
+    Parses ``--instance`` from command line args. Returns {} on non-Windows
+    or if psutil is not available.
+    """
+    if platform.system() != "Windows":
+        return {}
+    try:
+        import psutil
+    except ImportError:
+        return {}
+
+    running = {}
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        pname = (proc.info["name"] or "").lower()
+        if "hd-player" not in pname:
+            continue
+        try:
+            cmdline = proc.info.get("cmdline") or []
+            for i, arg in enumerate(cmdline):
+                if arg == "--instance" and i + 1 < len(cmdline):
+                    running[cmdline[i + 1]] = proc.info["pid"]
+                    break
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return running
+
+
+def start_bluestacks_instance(instance_name):
+    """Start a BlueStacks instance with the game auto-launched.
+
+    Returns the Popen object (non-blocking), or None on failure.
+    """
+    if platform.system() != "Windows":
+        _log.warning("BlueStacks start only supported on Windows")
+        return None
+
+    if not os.path.isfile(_BLUESTACKS_EXE_WIN):
+        _log.error("HD-Player.exe not found at %s", _BLUESTACKS_EXE_WIN)
+        return None
+
+    # Verify instance exists in config
+    conf = get_bluestacks_config()
+    if instance_name not in conf:
+        _log.error("BlueStacks instance '%s' not found in config", instance_name)
+        return None
+
+    cmd = [
+        _BLUESTACKS_EXE_WIN,
+        "--instance", instance_name,
+    ]
+    _log.info("Starting BlueStacks instance '%s'", instance_name)
+    try:
+        proc = subprocess.Popen(cmd)
+        return proc
+    except Exception as e:
+        _log.error("Failed to start BlueStacks instance '%s': %s", instance_name, e)
+        return None
+
+
+def stop_bluestacks_instance(instance_name):
+    """Stop a running BlueStacks instance by killing its process.
+
+    Returns True if the process was killed, False otherwise.
+    """
+    if platform.system() != "Windows":
+        return False
+
+    running = get_bluestacks_running()
+    pid = running.get(instance_name)
+    if pid is None:
+        _log.warning("Instance '%s' is not running", instance_name)
+        return False
+
+    _log.info("Stopping BlueStacks instance '%s' (PID %d)", instance_name, pid)
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except Exception as e:
+        _log.error("Failed to kill PID %d: %s", pid, e)
+        return False
+
+
+def get_instance_for_device(device_id):
+    """Map an ADB device ID to a BlueStacks instance name using port matching.
+
+    Returns the instance name, or None if no match found.
+    """
+    port = _extract_port(device_id)
+    if port is None:
+        return None
+
+    conf = get_bluestacks_config()
+    for instance_name, info in conf.items():
+        adb_port = info.get("adb_port")
+        if adb_port:
+            try:
+                if int(adb_port) == port:
+                    return instance_name
+            except ValueError:
+                pass
+    return None
+
+
+def get_offline_instances():
+    """Return list of BlueStacks instances that are configured but not connected to ADB.
+
+    Each entry is {instance, display_name, adb_port, device_id}.
+    ``device_id`` is the synthetic ADB address (``127.0.0.1:<port>``).
+    """
+    conf = get_bluestacks_config()
+    if not conf:
+        return []
+
+    # Ports currently visible to ADB
+    connected = get_devices()
+    connected_ports = set()
+    for d in connected:
+        p = _extract_port(d)
+        if p is not None:
+            connected_ports.add(p)
+
+    offline = []
+    for instance_name, info in conf.items():
+        adb_port = info.get("adb_port")
+        display_name = info.get("display_name", instance_name)
+        if not adb_port:
+            continue
+        try:
+            port_int = int(adb_port)
+        except ValueError:
+            continue
+        if port_int in connected_ports:
+            continue
+        offline.append({
+            "instance": instance_name,
+            "display_name": display_name,
+            "adb_port": port_int,
+            "device_id": f"127.0.0.1:{port_int}",
+        })
+    return offline

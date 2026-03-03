@@ -8,20 +8,19 @@ Priority: bug fixes, clean code, maintainability, usability — then new feature
 
 Harden existing features before adding new ones.
 
-- [ ] Improve mithril mining reliability — detect occupied mines and plundered troops
+- [x] Improve mithril mining reliability — detect occupied mines and plundered troops
 - [x] Improve titan rally miss detection — handle titan walking away, detect miss + retry
 - [ ] Teleport system improvements — more reliable targeting and validation
 - [x] Error recovery — stuck-state detection, disconnect handling, popup resilience
 - [x] AP Recovery popup handling — detect game-opened AP popup during EG depart, restore AP inline
-- [ ] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Existing regions verified correct for stationed.png, mithril_depart.png, depart.png (observed positions all within current bounds)
+- [x] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Existing regions verified correct for stationed.png, mithril_depart.png, depart.png (observed positions all within current bounds)
 - [x] Settings validation — validate `settings.json` on startup, catch invalid/corrupt values
 - [x] Fix join_rally success rate — replaced unreliable slot.png template with blind tap at (148, 1532), fixed close_x auto-dismiss on WAR screen, fixed scroll early-exit, added depart_anyway fallback
-- [ ] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success). Diagnostic screenshot added (`titan_depart_miss_{N}`) — awaiting live data
+- [x] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success). Diagnostic screenshot added (`titan_depart_miss_{N}`) — confirmed working after war screen speed optimizations
 - [x] ~~Fix heal flow~~ — 0% transitions are expected: heal button only appears when troops are injured (95% of the time they're healthy). Template works perfectly when healing is needed (100% confidence on hits)
 - [x] Tune timed_wait budgets — multiple rounds: `nav_kingdom_to_map` 2→3s, `recover_{name}` 1.5→2s, `verify_aq_screen` 2→3s, `nav_map_to_alliance` 2→2.5s, `nav_alliance_menu_load` 1→1.5s, `jr_backout_close_x` 4→2s (was over-budgeted)
 - [x] War screen speed optimization — removed label OCR (template match sufficient), disabled owner OCR (deferred to protocol), replaced lambda:False timed_waits with interruptible sleep, reduced scroll settle 1.5→0.8s, removed redundant depart wait
 - [x] Multi-device contention reduction — poll interval 150→300ms, quest check interval 60→300s when troops deployed, auto-install lz4 for protocol
-- [ ] Protocol-based rally blacklist — use `rally.troops[0].name` from protocol data instead of OCR for owner identification. UI-based OCR disabled due to 500-2000ms per-rally cost
 - [ ] Further multi-device performance — screenshot caching within timed_wait cycles, device-scoped OCR locks (Semaphore instead of global Lock), scrcpy/minicap for persistent screenshot streams
 
 ## Phase 2 — Testing & Quality
@@ -30,17 +29,17 @@ Build confidence that everything works before shipping updates.
 
 ### Critical Test Gaps (P0)
 - [x] `test_combat.py` — _check_dead, _find_green_pixel, _detect_player_at_eg, teleport (49 tests). Still missing: attack, phantom_clash, reinforce_throne, target
-- [ ] `test_evil_guard.py` — rally_eg 7-phase state machine, _handle_ap_popup, probe_priest (963 LOC, 7 tests — expand coverage)
-- [ ] `test_titans.py` — rally_titan, restore_ap flow, gem limit logic, _close_ap_menu (425 LOC, 0% coverage)
+- [x] `test_evil_guard.py` — expanded to 30 tests: _handle_ap_popup, search_eg_reset, _probe_priest, rally_eg guards/stop_check, EG_PRIEST_POSITIONS sanity
+- [x] `test_titans.py` — 47 tests: rally_titan (16), restore_ap (4), _restore_ap_from_open_menu (15), _close_ap_menu (3), _read_ap_from_menu (4), _read_gem_cost (5)
 - [x] `test_territory.py` — _classify_square_team, _get_border_color, _has_flag, _is_adjacent_to_my_territory, attack_territory, auto_occupy_loop (66 tests)
 
 ### Major Test Gaps (P1)
-- [ ] Expand `test_quests.py` — check_quests orchestration, tower quest flow, claim rewards, OCR parsing
-- [ ] Expand `test_rallies.py` — join_rally, join_war_rallies, _ocr_error_banner
-- [ ] `test_farming.py` — mine_mithril, mine_mithril_if_due interval logic, _set_gather_level, gather.png template tap (gather_gold updated to use wait_for_image_and_tap)
+- [x] Expand `test_quests.py` — 42 new tests: _ocr_quest_rows (10), _claim_quest_rewards (4), _wait_for_rallies (5), _run_rally_loop (5), _check_quests_legacy (3), get_quest_tracking_state (5), get_quest_last_checked (3), _is_troop_defending_relaxed (4), _recall_tap_sequence (3)
+- [x] Expand `test_rallies.py` — 17 new tests: _on_war_screen (3), _ocr_error_banner (5), join_war_rallies guards (6), join_rally entry guards (3)
+- [x] `test_farming.py` — 22 tests: _is_mine_occupied (6), _set_gather_level (3), mine_mithril (4), mine_mithril_if_due (4), mithril constants (5)
 
 ### Infrastructure
-- [x] Audit existing test suite — 658 tests, well-structured
+- [x] Audit existing test suite — 989 tests (was 658 at start of Phase 2), well-structured
 - [ ] Add live testing suite — integration tests that run against a real emulator
 - [ ] Establish pre-release checklist — full test pass, live smoke test, version bump verification
 - [ ] Actionable test data — coverage reports, structured failure output, clear pass/fail signals
@@ -151,3 +150,49 @@ Quality-of-life features that make the bot feel polished.
 
 ### Security
 - [ ] Auto-screenshot on license fail — save console screenshot + timestamp after 3 invalid key attempts. Breadcrumb trail for key sharing/brute-force detection
+
+## Phase 7 — Cloud SaaS
+
+Host 9Bot in the cloud so users get a web URL with no local install. Full IP protection — users
+never see source code. Detailed analysis in `memory/saas_planning.md`.
+
+### Architecture
+Windows dedicated servers (Hetzner AX42, ~$55/mo) running 4 BlueStacks instances each.
+Dedicated instance per user (no time-sharing VMs). Users control via existing web dashboard.
+Docker for management plane (relay, orchestration API) — not for emulators.
+
+### Step 1 — Prove the model
+- [ ] Test BlueStacks CLI management — start/stop/create instances via command line
+- [ ] Prove on a home server or spare PC — cheapest way to validate (~$1-2/user/mo electricity only)
+- [ ] Run 4 beta users on it, validate performance and stability
+- [ ] Measure actual resource usage (RAM, CPU, disk) per instance
+- [ ] Investigate cloud phone services (Redfinger, etc.) as low-effort alternative
+
+### Step 2 — Orchestration
+- [ ] Orchestration API — assign users to servers/slots, start/stop instances remotely
+- [ ] Server provisioning script — automate BlueStacks + 9Bot setup on fresh Windows servers
+- [ ] Health monitoring — detect crashed instances, stalled bots, resource exhaustion
+- [ ] Capacity tracking — which servers have free slots
+
+### Step 3 — User onboarding
+- [ ] Game login flow — VNC-in-browser (noVNC) or remote desktop stream for first-time setup
+- [ ] User management — sign-up, billing, slot assignment
+- [ ] "Cloud mode" dashboard — hide local setup instructions, show instance status
+
+### Step 4 — Launch
+- [ ] Offer SaaS alongside local option
+- [ ] Pricing model (target ~$15-25/mo per user at ~$7-11 cost)
+- [ ] Coordinated game update patching across all instances
+- [ ] Data backup strategy for user game accounts
+
+### Open questions
+- [ ] BlueStacks licensing for commercial/cloud use
+- [ ] Game ToS implications of cloud hosting vs user's own machine
+- [ ] Billing integration (Stripe, etc.)
+- [ ] Android-x86 in Hyper-V as BlueStacks alternative (avoids licensing questions)
+- [ ] Cloud phone services (Redfinger) — validate ADB access and game compatibility
+
+### Future: Protocol-only mode
+Long-term aspiration — fully reverse-engineer the game protocol, eliminate the emulator entirely.
+Each user becomes a lightweight Python process (~$1-2/mo). Massive engineering effort but would
+make K8s auto-scaling viable. Existing Frida protocol interception is the foundation for this.

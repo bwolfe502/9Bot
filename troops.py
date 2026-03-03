@@ -74,6 +74,7 @@ class DeviceTroopSnapshot:
     device: str
     troops: List[TroopStatus]
     read_at: float = field(default_factory=time.time)
+    source: str = "vision"  # "protocol" or "vision"
 
     @property
     def home_count(self) -> int:
@@ -187,10 +188,10 @@ def troops_avail(device):
     log = get_logger("troops", device)
 
     # --- Protocol fast path ---
-    if config.PROTOCOL_ENABLED:
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
         try:
             from startup import get_protocol_troops_home
-            home = get_protocol_troops_home()
+            home = get_protocol_troops_home(device)
             if home is not None:
                 log.debug("Troops home (protocol): %d", home)
                 return home
@@ -392,7 +393,7 @@ def read_panel_statuses(device, screen=None) -> Optional[DeviceTroopSnapshot]:
     log = get_logger("troops", device)
 
     # --- Protocol fast path ---
-    if config.PROTOCOL_ENABLED:
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
         try:
             from startup import get_protocol_troop_snapshot
             snapshot = get_protocol_troop_snapshot(device)
@@ -400,8 +401,9 @@ def read_panel_statuses(device, screen=None) -> Optional[DeviceTroopSnapshot]:
                 log.debug("Panel status (protocol): %s", snapshot.troops)
                 _store_snapshot(device, snapshot)
                 return snapshot
+            log.debug("Protocol snapshot returned None, falling back to vision")
         except Exception:
-            pass
+            log.debug("Protocol snapshot error, falling back to vision", exc_info=True)
 
     if screen is None:
         screen = load_screenshot(device)

@@ -230,7 +230,7 @@ def _classify_quest_text(text):
         return QuestType.TITAN
     if "evil" in t or "guard" in t:
         return QuestType.EVIL_GUARD
-    if "pvp" in t or "attack" in t or "enemy" in t or "defeat" in t:
+    if "pvp" in t or "attack" in t or "enem" in t:
         return QuestType.PVP
     if "gather" in t:
         return QuestType.GATHER
@@ -251,8 +251,10 @@ def _ocr_quest_rows(device):
     if screen is None:
         return None
 
-    # Crop quest list region — must reach all Side Quest entries below Alliance Quest
-    quest_region = screen[590:1820, :]
+    # Crop quest text region — focused on quest name + counter area only.
+    # Excludes icons, rewards, GO buttons, and Main Quest visual card.
+    # Region (x1=204, y1=1023, x2=844, y2=1907) calibrated to quest text columns.
+    quest_region = screen[1023:1907, 204:844]
     gray = cv2.cvtColor(quest_region, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
@@ -264,20 +266,27 @@ def _ocr_quest_rows(device):
     raw_text = " ".join(results)
     log.debug("Quest OCR raw: %s", raw_text)
 
-    # macOS only: fix missing '(' before quest counters — Apple Vision sometimes
-    # drops it, producing "Defeat Titans 14/15)" instead of "Defeat Titans(14/15)".
-    # Pattern: 3+ alpha chars, whitespace, then digits/digits) with no opening '('.
-    # Safe: won't match timestamps (digits), "Limit: 3/9)" (colon blocks \s+),
-    # or already-correct "Gather(0/200,000)" ('(' is not \s+).
-    if sys.platform == "darwin":
-        fixed_text = re.sub(
-            r'([A-Za-z]{3,})\s+(\d[\doO, ]*/\s*\d[\doO, ]*?\s*\))',
-            r'\1(\2',
-            raw_text,
-        )
-        if fixed_text != raw_text:
-            log.debug("Quest OCR fixed parens: %s", fixed_text)
-            raw_text = fixed_text
+    # Fix missing '(' before quest counters — both Apple Vision and EasyOCR can
+    # drop it.  Two cases:
+    #   Case 1: "Defeat Titans 14/15)" — space between name and bare digits
+    #           Pattern: 3+ alpha chars, whitespace, then digits/digits) with no '('.
+    #           Safe: won't match "Limit: 3/9)" (colon blocks \s+) or
+    #           already-correct "Gather(0/200,000)" ('(' is not \s+).
+    #   Case 2: "(sec)720/1,200)" — closing paren immediately before bare digits
+    #           EasyOCR drops the '(' between annotation and counter.
+    fixed_text = re.sub(
+        r'([A-Za-z]{3,})\s+(\d[\doO, ]*/\s*\d[\doO, ]*?\s*\))',
+        r'\1(\2',
+        raw_text,
+    )
+    fixed_text = re.sub(
+        r'\)(\d[\doO, ]*/\s*[\doO, ]+?\s*\))',
+        r')(\1',
+        fixed_text,
+    )
+    if fixed_text != raw_text:
+        log.debug("Quest OCR fixed parens: %s", fixed_text)
+        raw_text = fixed_text
 
     if not raw_text.strip():
         log.warning("Quest OCR: no text detected")
@@ -312,6 +321,8 @@ def _ocr_quest_rows(device):
             target = 15
         elif quest_type == QuestType.EVIL_GUARD:
             target = 3
+        elif quest_type == QuestType.FORTRESS:
+            target = 1800
         elif quest_type == QuestType.PVP:
             target = 500000000
         elif quest_type == QuestType.GATHER:
@@ -738,10 +749,14 @@ def check_quests(device, stop_check=None):
         return True
 
     # Recall stray stationed troops (stuck from failed EG rally).
+    # Only navigate to MAP if a stray troop is actually detected — avoids
+    # a wasteful MAP round-trip when already on the quest screen.
     # Stray defender recall is handled by _run_tower_quest AFTER quest OCR,
     # so we know whether an active tower quest needs the defender.
-    if navigate(Screen.MAP, device):
-        _recall_stray_stationed(device, stop_check)
+    snapshot = get_troop_status(device)
+    if snapshot is not None and snapshot.any_doing(TroopAction.STATIONING):
+        if navigate(Screen.MAP, device):
+            _recall_stray_stationed(device, stop_check)
     if stop_check and stop_check():
         return True
 
@@ -1288,12 +1303,14 @@ def _run_tower_quest(device, quests, stop_check=None):
     all_done = len(active) == 0
 
     if all_done:
-        # All tower quests completed — recall troop if defending
-        if device in _tower_quest_state or (
-                config.get_device_config(device, "tower_quest_enabled") and
-                _is_troop_defending_relaxed(device)):
-            log.info("Tower quests complete — recalling troop")
-            recall_tower_troop(device, stop_check)
+        # All tower/fortress quests are completed but still visible on screen.
+        # Keep the troop defending — the quest row stays visible until the user
+        # collects rewards or the quest resets.  Only recall when the quest
+        # disappears from screen entirely (handled by the "no tower quests"
+        # branch above).
+        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+            log.info("Tower quests complete but still on screen — keeping troop defending")
+            config.set_device_status(device, "Tower Quest: Complete, Defending...")
         return
 
     # Tower quest is active — check if already defending.

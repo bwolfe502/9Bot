@@ -21,7 +21,12 @@ class TestClassifyQuestText:
         assert _classify_quest_text("PvP Battle") == QuestType.PVP
         assert _classify_quest_text("Attack enemies") == QuestType.PVP
         assert _classify_quest_text("Defeat the Enemy") == QuestType.PVP
-        assert _classify_quest_text("Defeat the Enemv") == QuestType.PVP  # OCR 'y'->'v'
+
+    def test_defeat_without_enemy_not_pvp(self):
+        """'defeat' alone should NOT classify as PVP — too broad.
+        'Defeat Frost Giants' or similar event quests would false-positive."""
+        assert _classify_quest_text("Defeat the Enemv") == QuestType.PVP  # "enem" prefix matches
+        assert _classify_quest_text("Defeat Something") is None
 
     def test_gather(self):
         assert _classify_quest_text("Gather Resources") == QuestType.GATHER

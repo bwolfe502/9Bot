@@ -78,6 +78,7 @@ __all__ = [
     "ChatSendMsgReq",
     "ChatPullMsgReq",
     "ChatPullMsgAck",
+    "GetPlayerHeadInfoAck",
     # Lookup
     "MESSAGE_CLASSES",
 ]
@@ -221,14 +222,23 @@ class MapUnitType(IntEnum):
 
 
 class LineupState(IntEnum):
-    IDLE = 0
-    HOME = 1
-    MARCHING = 2
-    BATTLING = 3
-    GATHERING = 4
-    RETURNING = 5
-    DEFENDING = 6
-    RALLYING = 7
+    """Troop lineup states — extracted from game binary via Frida IL2CPP API."""
+    ERR = 0               # LineupStateErr — no deployment / idle / home
+    DEFENDER = 1           # LineupStateDefender — at home (available to defend)
+    OUT_CITY = 2           # LineupStateOutCity — marching to target
+    CAMP = 3               # LineupStateCamp — stationing at a camp
+    RALLY = 4              # LineupStateRally — waiting in a rally
+    REINFORCE = 5          # LineupStateReinforce — reinforcing an ally
+    GATHERING = 6          # LineupStateGathering — gathering resources
+    TROOP_FIGHT = 7        # LineupStateTroopFight — in solo combat
+    RALLY_FIGHT = 8        # LineupStateRallyFight — in rally combat
+    RETURN = 9             # LineupStateReturn — marching home
+    BUILDING_BUILD = 10    # LineupStateBuildingBuild — building construction
+    BUILDING_OCCUPY = 11   # LineupStateBuildingOccupy — occupying a building
+    BUILDING_DEFEND = 12   # LineupStateBuildingDefend — defending a building
+    MINE_EXPLORE = 13      # LineUpStateMineExplore — bizarre cave / adventure
+    PICKUP = 14            # LineUpStatePickup — collecting pickup item
+    SCORE_GATHERING = 15   # LineUpStateScoreGathering — event gathering
 
 
 # ------------------------------------------------------------------ #
@@ -1129,6 +1139,30 @@ class ChatPullMsgAck:
         )
 
 
+@dataclass
+class GetPlayerHeadInfoAck:
+    errCode: int = 0
+    heads: Dict[int, PlayerHeadInfo] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> GetPlayerHeadInfoAck:
+        if not d:
+            return cls()
+        heads_raw = d.get("heads", {})
+        heads: Dict[int, PlayerHeadInfo] = {}
+        if isinstance(heads_raw, dict):
+            for k, v in heads_raw.items():
+                try:
+                    pid = int(k)
+                except (ValueError, TypeError):
+                    continue
+                heads[pid] = PlayerHeadInfo.from_dict(v) if isinstance(v, dict) else v
+        return cls(
+            errCode=d.get("errCode", 0),
+            heads=heads,
+        )
+
+
 # ------------------------------------------------------------------ #
 #  Lookup: class name -> dataclass type
 # ------------------------------------------------------------------ #
@@ -1183,4 +1217,5 @@ MESSAGE_CLASSES: Dict[str, Type] = {
     "ChatSendMsgReq": ChatSendMsgReq,
     "ChatPullMsgReq": ChatPullMsgReq,
     "ChatPullMsgAck": ChatPullMsgAck,
+    "GetPlayerHeadInfoAck": GetPlayerHeadInfoAck,
 }
