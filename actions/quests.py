@@ -1290,11 +1290,8 @@ def _run_tower_quest(device, quests, stop_check=None):
     if not tower_quests:
         # No tower quests on screen — but troop may still be defending from a
         # previous quest. Recall it so it's not stuck indefinitely.
-        # Only recall if bot deployed it this session, or tower quests are enabled
-        # (disabled + not bot-deployed = user placed it intentionally).
-        if device in _tower_quest_state or (
-                config.get_device_config(device, "tower_quest_enabled") and
-                _is_troop_defending_relaxed(device)):
+        # During auto quest a defending troop with no quest is a wasted slot.
+        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
             log.info("No tower quests but troop still defending — recalling")
             recall_tower_troop(device, stop_check)
         return

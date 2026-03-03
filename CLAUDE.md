@@ -162,7 +162,7 @@ All session-scoped, reset on restart:
 - Thread-local storage in vision.py for `get_last_best()` template scores
 - **Error recovery**: Auto runners wrap their main loop in try/except, logging errors and continuing. Navigation failures retry after a short delay.
 - **Smart idle status**: `_deployed_status(device)` in `run_auto_quest` reads the troop snapshot and shows "Gathering/Defending..." instead of generic "Waiting for Troops..." when all troops are deployed.
-- **Periodic quest check**: `run_auto_quest` calls `check_quests` every 300s (`_QUEST_CHECK_INTERVAL`) when all troops are deployed, to detect quest completion and recall troops. Kept infrequent to reduce ADB/OCR contention across devices.
+- **Periodic quest check**: `run_auto_quest` calls `check_quests` every 300s (`_QUEST_CHECK_INTERVAL`) when all troops are deployed, to detect quest completion and recall troops. Kept infrequent to reduce ADB/OCR contention across devices. `_last_quest_check[device]` is cleared on auto quest start to ensure the first iteration always checks.
 - **ADB auto-reconnect**: `_try_reconnect(device)` in vision.py runs `adb connect` on TCP devices when `load_screenshot`/`adb_tap`/`adb_swipe` timeout. One retry after reconnect.
 
 ### Screen Resolution
@@ -357,7 +357,8 @@ Enemy Markers!"`) remain visible until the user fixes markers and restarts auto 
 2. **Pending rally gate**: Blocks gold while titan/EG rallies are in-flight.
 
 **Stray troop recovery**: Runs at start of each `check_quests` cycle before quest OCR.
-Recalls stray DEFENDING troops (not deployed by bot) and stray STATIONING troops (stuck EG rally).
+Recalls stray STATIONING troops (stuck EG rally). Stray DEFENDING troops are handled by
+`_run_tower_quest` after quest OCR (needs to know if a tower quest is active).
 
 **EG troop gate**: `_eg_troops_available(device)` requires 2 troops not gathering or defending.
 Falls back to `troops_avail() >= 2` if no snapshot.
@@ -369,6 +370,8 @@ confirmation (2 approaches: panel icon → friend marker fallback). `_is_troop_d
 extends snapshot freshness to 120s (vs 30s default) since quest OCR takes 60+ seconds.
 **Fortress recall policy**: troop stays defending as long as fortress/tower quest rows are visible
 on screen (even if completed). Only recalls when quests disappear entirely (quest reset/new day).
+**Tower recall policy**: when no tower/fortress quest is on screen, any defending troop is recalled
+unconditionally — `tower_quest_enabled` only controls deployment, not recall.
 **Quest target overrides**: Titan ≥15, EG=3, Fortress=1800, PVP=500M, Gather=1M — OCR right-of-slash
 is unreliable so these are hardcoded caps.
 
