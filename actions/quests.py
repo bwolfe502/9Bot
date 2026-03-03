@@ -792,7 +792,8 @@ def check_quests(device, stop_check=None):
 
         # Always check tower quest state — recall stranded defending troops
         # even when tower quests are no longer on screen.
-        _run_tower_quest(device, quests, stop_check)
+        _run_tower_quest(device, quests, stop_check,
+                         all_complete=not actionable)
 
         if not actionable:
             # Check pending rallies FIRST — don't mine gold while rallies are
@@ -1271,11 +1272,12 @@ def recall_tower_troop(device, stop_check=None):
     return False
 
 
-def _run_tower_quest(device, quests, stop_check=None):
+def _run_tower_quest(device, quests, stop_check=None, all_complete=False):
     """Handle tower/fortress quest: deploy if needed, recall when done.
 
     If troop is already defending, does nothing.
     If quest is complete and troop is defending, recalls.
+    all_complete: True when no other quests are actionable — free the troop.
     """
     log = get_logger("actions", device)
 
@@ -1300,13 +1302,17 @@ def _run_tower_quest(device, quests, stop_check=None):
     all_done = len(active) == 0
 
     if all_done:
-        # All tower/fortress quests are completed but still visible on screen.
-        # Keep the troop defending — the quest row stays visible until the user
-        # collects rewards or the quest resets.  Only recall when the quest
-        # disappears from screen entirely (handled by the "no tower quests"
-        # branch above).
+        if all_complete:
+            # All quests complete — no benefit keeping troop on tower.
+            # Free it for gold mining or next quest cycle.
+            if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+                log.info("All quests complete — recalling tower troop")
+                recall_tower_troop(device, stop_check)
+            return
+        # Tower quest done but other quests still active — keep defending
+        # so the troop earns time while we work on other quests.
         if device in _tower_quest_state or _is_troop_defending_relaxed(device):
-            log.info("Tower quests complete but still on screen — keeping troop defending")
+            log.info("Tower quests complete, other quests active — keeping troop defending")
             config.set_device_status(device, "Tower Quest: Complete, Defending...")
         return
 
