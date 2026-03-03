@@ -1,61 +1,40 @@
 {% extends "base.html" %}
 {% block title_suffix %} - Chat{% endblock %}
+{% block body_class %}chat-page{% endblock %}
 
 {% block content %}
 
-<div class="section-header">Chat Viewer</div>
-
-<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-    <select id="device-select" onchange="loadChat()" style="background:#1a1a2e;color:#ccc;border:1px solid #333;border-radius:6px;padding:6px 10px;font-size:14px">
-        <option value="">Select device...</option>
-        {% for dev in devices %}
-        <option value="{{ dev.id }}">{{ dev.name }}</option>
-        {% endfor %}
-    </select>
-    <div id="channel-tabs" style="display:flex;gap:4px;flex-wrap:wrap">
-        <button class="chat-tab active" data-channel="" onclick="setChannel(this, '')">All</button>
-        <button class="chat-tab" data-channel="SERVER" onclick="setChannel(this, 'SERVER')">Kingdom</button>
-        <button class="chat-tab" data-channel="UNION" onclick="setChannel(this, 'UNION')">Alliance</button>
-        <button class="chat-tab" data-channel="FACTION" onclick="setChannel(this, 'FACTION')">Faction</button>
-        <button class="chat-tab" data-channel="WORLD" onclick="setChannel(this, 'WORLD')">World</button>
-        <button class="chat-tab" data-channel="PRIVATE" onclick="setChannel(this, 'PRIVATE')">Private</button>
+<div class="chat-page-wrap">
+    <div class="chat-page-controls">
+        <select id="device-select" class="chat-page-select" onchange="loadChat()">
+            <option value="">Select device...</option>
+            {% for dev in devices %}
+            <option value="{{ dev.id }}">{{ dev.name }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="chat-page-body">
+        <div class="chat-tabs" id="channel-tabs">
+            <button class="chat-tab active" data-channel="" onclick="setChannel(this, '')">All</button>
+            <button class="chat-tab" data-channel="SERVER" onclick="setChannel(this, 'SERVER')">Kingdom</button>
+            <button class="chat-tab" data-channel="UNION" onclick="setChannel(this, 'UNION')">Alliance</button>
+            <button class="chat-tab" data-channel="FACTION" onclick="setChannel(this, 'FACTION')">Faction</button>
+            <button class="chat-tab" data-channel="WORLD" onclick="setChannel(this, 'WORLD')">World</button>
+            <button class="chat-tab" data-channel="PRIVATE" onclick="setChannel(this, 'PRIVATE')">Private</button>
+        </div>
+        <div class="chat-messages" id="chat-messages">
+            <div class="chat-messages-empty">
+                <div class="chat-messages-empty-icon">&#128172;</div>
+                <div class="chat-messages-empty-text">Select a device to view chat</div>
+            </div>
+        </div>
+        <div class="chat-modal-footer">
+            <button type="button" class="chat-system-toggle" id="system-toggle" onclick="toggleSystem(this)">System</button>
+            <span class="chat-system-count" id="system-count"></span>
+            <span class="chat-status-text" id="chat-status"></span>
+        </div>
     </div>
 </div>
-
-<div id="chat-status" style="color:#667;font-size:12px;margin-bottom:8px"></div>
-
-<div id="chat-messages" style="background:#111;border:1px solid #222;border-radius:8px;padding:10px;height:60vh;overflow-y:auto;font-size:13px;line-height:1.6">
-    <div style="color:#555;text-align:center;padding:40px 0">Select a device to view chat</div>
-</div>
-
-<div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-    <button id="system-toggle" class="chat-tab" onclick="toggleSystem(this)" title="Show/hide system notification messages (BizarreCave, etc.)">Show System</button>
-    <span id="system-count" style="color:#555;font-size:11px"></span>
-</div>
-
-<style>
-.chat-tab {
-    background: transparent;
-    border: 1px solid #333;
-    color: #888;
-    padding: 4px 12px;
-    border-radius: 14px;
-    cursor: pointer;
-    font-size: 12px;
-    transition: all 0.2s;
-}
-.chat-tab:hover { border-color: #555; color: #ccc; }
-.chat-tab.active { border-color: #4cff8e; color: #4cff8e; }
-.chat-msg { padding: 2px 0; border-bottom: 1px solid #1a1a1a; }
-.chat-time { color: #555; font-size: 11px; margin-right: 6px; }
-.chat-channel { color: #667; font-size: 11px; margin-right: 6px; }
-.chat-sender { color: #4caaff; margin-right: 4px; }
-.chat-sender-r4 { color: #ff4c4c; margin-right: 4px; }
-.chat-sender-union { color: #555; font-size: 11px; margin-right: 4px; }
-.chat-content { color: #ddd; }
-.chat-system { color: #ff9f43; font-size: 12px; }
-.chat-coord { color: #8be9fd; }
-</style>
 
 {% endblock %}
 
@@ -66,6 +45,16 @@ var _chatPollId = null;
 var _showSystem = false;
 var _lastMessages = [];
 
+var _channelMap = {
+    'SERVER': {name:'Kingdom', cls:'server'},
+    'UNION': {name:'Alliance', cls:'union'},
+    'UNION_R4': {name:'Alliance', cls:'union'},
+    'FACTION': {name:'Faction', cls:'faction'},
+    'WORLD': {name:'World', cls:'world'},
+    'PRIVATE': {name:'Private', cls:'private'}
+};
+var _channelNames = {SERVER:'Kingdom',UNION:'Alliance',FACTION:'Faction',WORLD:'World',PRIVATE:'Private'};
+
 function setChannel(btn, channel) {
     _chatChannel = channel;
     document.querySelectorAll('#channel-tabs .chat-tab').forEach(function(t) { t.classList.remove('active'); });
@@ -75,12 +64,7 @@ function setChannel(btn, channel) {
 
 function toggleSystem(btn) {
     _showSystem = !_showSystem;
-    btn.textContent = _showSystem ? 'Hide System' : 'Show System';
-    if (_showSystem) {
-        btn.classList.add('active');
-    } else {
-        btn.classList.remove('active');
-    }
+    btn.classList.toggle('active', _showSystem);
     renderMessages(_lastMessages);
     updateStatus(_lastMessages);
 }
@@ -93,11 +77,11 @@ function loadChat() {
     fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            _lastMessages = data.messages;
-            renderMessages(data.messages);
-            updateStatus(data.messages);
+            _lastMessages = data.messages || [];
+            renderMessages(_lastMessages);
+            updateStatus(_lastMessages);
         })
-        .catch(function(e) {
+        .catch(function() {
             document.getElementById('chat-status').textContent = 'Error loading chat';
         });
 }
@@ -105,103 +89,106 @@ function loadChat() {
 function updateStatus(messages) {
     var systemCount = messages.filter(function(m) { return m.payload_type === 11; }).length;
     var visible = _showSystem ? messages : messages.filter(function(m) { return m.payload_type !== 11; });
-    var status = visible.length + ' messages';
-    if (_chatChannel) status += ' (' + _chatChannel + ')';
-    document.getElementById('chat-status').textContent = status;
+    var text = visible.length + ' messages';
+    if (_chatChannel) text += ' \u00b7 ' + (_channelNames[_chatChannel] || _chatChannel);
+    document.getElementById('chat-status').textContent = text;
     document.getElementById('system-count').textContent =
-        systemCount > 0 ? systemCount + ' system messages' : '';
+        systemCount > 0 ? systemCount + ' hidden' : '';
 }
 
 function renderMessages(messages) {
     var container = document.getElementById('chat-messages');
     var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
     container.textContent = '';
-    // Apply system filter
     var filtered = _showSystem ? messages : messages.filter(function(m) { return m.payload_type !== 11; });
     if (filtered.length === 0) {
         var empty = document.createElement('div');
-        empty.style.cssText = 'color:#555;text-align:center;padding:40px 0';
-        empty.textContent = messages.length > 0
-            ? 'All messages are system notifications. Click "Show System" below to view them.'
-            : 'No messages yet. Protocol must be enabled and game chat active.';
+        empty.className = 'chat-messages-empty';
+        var icon = document.createElement('div');
+        icon.className = 'chat-messages-empty-icon';
+        icon.innerHTML = '&#128172;';
+        empty.appendChild(icon);
+        var hint = document.createElement('div');
+        hint.className = 'chat-messages-empty-text';
+        hint.textContent = messages.length > 0
+            ? 'All messages are system notifications.\nToggle "System" below to view them.'
+            : 'No messages yet.\nProtocol must be active and game chat open.';
+        empty.appendChild(hint);
         container.appendChild(empty);
         return;
     }
     var lastDateStr = '';
     filtered.forEach(function(msg) {
-        // Date separator
         if (msg.timestamp > 0) {
             var msgDate = new Date(msg.timestamp);
             var dateStr = msgDate.toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'});
             if (dateStr !== lastDateStr) {
                 lastDateStr = dateStr;
                 var sep = document.createElement('div');
-                sep.style.cssText = 'display:flex;align-items:center;gap:12px;padding:8px 0;color:#555;font-size:11px';
+                sep.className = 'chat-date-sep';
                 var line1 = document.createElement('div');
-                line1.style.cssText = 'flex:1;height:1px;background:#333';
+                line1.className = 'chat-date-line';
                 var label = document.createElement('span');
+                label.className = 'chat-date-label';
                 label.textContent = dateStr;
                 var line2 = document.createElement('div');
-                line2.style.cssText = 'flex:1;height:1px;background:#333';
+                line2.className = 'chat-date-line';
                 sep.appendChild(line1);
                 sep.appendChild(label);
                 sep.appendChild(line2);
                 container.appendChild(sep);
             }
         }
-
-        var div = document.createElement('div');
-        div.className = 'chat-msg';
         var isSystem = msg.payload_type === 11;
         var isCoord = msg.payload_type === 5;
+        var ch = _channelMap[msg.channel] || {name: msg.channel || '?', cls: 'server'};
+        if (isSystem) ch = {name: 'System', cls: 'system'};
 
-        // Timestamp
+        var div = document.createElement('div');
+        div.className = 'chat-msg ch-' + ch.cls;
+
+        var row = document.createElement('div');
+        row.className = 'chat-msg-row';
+
         var time = document.createElement('span');
         time.className = 'chat-time';
         if (msg.timestamp > 0) {
             var d = new Date(msg.timestamp);
             time.textContent = ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
         }
-        div.appendChild(time);
+        row.appendChild(time);
 
-        // Channel
-        var channelMap = {
-            'SERVER': 'Kingdom', 'UNION': 'Alliance', 'UNION_R4': 'Alliance',
-            'FACTION': 'Faction', 'WORLD': 'World', 'PRIVATE': 'Private'
-        };
-        var ch = document.createElement('span');
-        ch.className = 'chat-channel';
-        ch.textContent = '[' + (channelMap[msg.channel] || msg.channel || '?') + ']';
-        div.appendChild(ch);
+        var badge = document.createElement('span');
+        badge.className = 'chat-channel-badge badge-' + ch.cls;
+        badge.textContent = ch.name;
+        row.appendChild(badge);
 
-        // Union name
         if (msg.union_name) {
             var union = document.createElement('span');
-            union.className = 'chat-sender-union';
+            union.className = 'chat-union-tag';
             union.textContent = '[' + msg.union_name + ']';
-            div.appendChild(union);
+            row.appendChild(union);
         }
 
-        // Sender
         var isR4 = msg.channel === 'UNION_R4';
         var sender = document.createElement('span');
-        sender.className = isSystem ? 'chat-system' : (isR4 ? 'chat-sender-r4' : 'chat-sender');
-        sender.textContent = (msg.sender || (isSystem ? 'System' : '???')) + ': ';
-        div.appendChild(sender);
+        sender.className = 'chat-sender chat-sender-' + (isR4 ? 'r4' : ch.cls);
+        sender.textContent = msg.sender || (isSystem ? 'System' : '???');
+        row.appendChild(sender);
 
-        // Content — clean up player mention tags: [-1#@12345|@Name] → [@Name]
+        div.appendChild(row);
+
         var text = (msg.content || '').replace(/\[[^\]]*\|(@[^\]]+)\]/g, '[$1]');
-        var content = document.createElement('span');
-        content.className = isSystem ? 'chat-system' : (isCoord ? 'chat-coord' : 'chat-content');
+        var content = document.createElement('div');
+        content.className = isSystem ? 'chat-content-system' : (isCoord ? 'chat-content chat-content-coord' : 'chat-content');
         content.textContent = text;
         div.appendChild(content);
 
         container.appendChild(div);
     });
-    container.scrollTop = container.scrollHeight;
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
 }
 
-// Auto-poll every 3 seconds
 function startPoll() {
     if (_chatPollId) clearInterval(_chatPollId);
     _chatPollId = setInterval(function() {
@@ -212,7 +199,6 @@ function startPoll() {
 
 document.addEventListener('DOMContentLoaded', function() {
     startPoll();
-    // Auto-select first device if only one
     var sel = document.getElementById('device-select');
     if (sel.options.length === 2) {
         sel.selectedIndex = 1;

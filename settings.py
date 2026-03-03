@@ -59,6 +59,7 @@ DEFAULTS = {
     "upload_interval_hours": 24,
     "collect_training_data": False,
     "protocol_enabled": False,
+    "chat_mirror": True,
 }
 
 

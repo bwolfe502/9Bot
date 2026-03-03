@@ -503,6 +503,12 @@ def create_app():
         cleanup_dead_tasks()
         devs, instances = _cached_devices()
         device_info = [_device_status_info(d, instances) for d in devs]
+        # Chat mirroring: if enabled and any device has protocol, all devices get chat
+        settings = _load_settings()
+        chat_mirror = settings.get("chat_mirror", True)
+        any_protocol = bool(config.PROTOCOL_ACTIVE_DEVICES)
+        for di in device_info:
+            di["chat_available"] = di.get("protocol_active", False) or (chat_mirror and any_protocol)
         # Include offline BlueStacks instances
         offline_instances = get_offline_instances()
         for inst in offline_instances:
@@ -520,6 +526,7 @@ def create_app():
                 "emu_running": False,
                 "offline": True,
                 "emu_starting": starting,
+                "protocol_active": False,
             })
         active = []
         for key, info in list(running_tasks.items()):
@@ -648,8 +655,10 @@ def create_app():
                      "ap_allow_large_potions", "ap_use_gems", "verbose_logging",
                      "eg_rally_own", "titan_rally_own", "web_dashboard", "gather_enabled",
                      "tower_quest_enabled", "remote_access", "auto_upload_logs",
-                     "collect_training_data"]:
-            settings[key] = key in request.form
+                     "collect_training_data", "chat_mirror"]:
+            # Toggle switches send hidden input with value "on"; checkboxes send key presence
+            val = request.form.get(key, "")
+            settings[key] = bool(val and val != "")
 
         for key in ["ap_gem_limit", "min_troops", "variation", "titan_interval",
                      "groot_interval", "reinforce_interval", "pass_interval",
@@ -842,13 +851,31 @@ def create_app():
 
     @app.route("/api/chat")
     def api_chat():
-        """Return recent chat messages for a device."""
+        """Return recent chat messages for a device.
+
+        If the device has no protocol but chat_mirror is enabled, returns
+        messages from a protocol-active device (excluding PRIVATE channel).
+        """
         device_id = request.args.get("device")
         channel = request.args.get("channel")  # optional filter
         if not device_id:
             return jsonify({"error": "device parameter required"}), 400
         from startup import get_protocol_chat_messages
         messages = get_protocol_chat_messages(device_id)
+        # Chat mirroring: if this device has no protocol messages, pull from
+        # a protocol-active device (exclude PRIVATE channel for privacy)
+        mirror_source = None
+        if not messages and device_id not in config.PROTOCOL_ACTIVE_DEVICES:
+            settings = _load_settings()
+            if settings.get("chat_mirror", True):
+                for active_dev in config.PROTOCOL_ACTIVE_DEVICES:
+                    mirrored = get_protocol_chat_messages(active_dev)
+                    if mirrored:
+                        messages = [m for m in mirrored
+                                    if isinstance(m, dict)
+                                    and m.get("channel", "").upper() != "PRIVATE"]
+                        mirror_source = active_dev
+                        break
         # Filter by channel if specified
         if channel:
             ch_upper = channel.upper()
@@ -875,7 +902,10 @@ def create_app():
                     "payload_type": m.get("payload_type", 0),
                 })
         serializable.sort(key=lambda m: m.get("timestamp", 0))
-        return jsonify({"messages": serializable, "count": len(serializable)})
+        result = {"messages": serializable, "count": len(serializable)}
+        if mirror_source:
+            result["mirrored"] = True
+        return jsonify(result)
 
     @app.route("/api/protocol-status")
     def api_protocol_status():
