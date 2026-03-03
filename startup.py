@@ -558,7 +558,6 @@ def shutdown():
 
     # Stop all running tasks
     try:
-        config.auto_occupy_running = False
         config.MITHRIL_ENABLED_DEVICES.clear()
         config.MITHRIL_DEPLOY_TIME.clear()
         for key in list(running_tasks.keys()):

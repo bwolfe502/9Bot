@@ -701,9 +701,7 @@ def create_app():
         device = request.form.get("device")
         if mode_key:
             # Reset loop-control flags for modes that use them
-            if mode_key == "auto_occupy":
-                config.auto_occupy_running = False
-            elif mode_key == "auto_mithril":
+            if mode_key == "auto_mithril":
                 if device:
                     config.MITHRIL_ENABLED_DEVICES.discard(device)
                     config.MITHRIL_DEPLOY_TIME.pop(device, None)
@@ -1657,9 +1655,7 @@ def create_app():
         mode_key = request.form.get("mode_key")
         if mode_key:
             task_key = f"{device}_{mode_key}"
-            if mode_key == "auto_occupy":
-                config.auto_occupy_running = False
-            elif mode_key == "auto_mithril":
+            if mode_key == "auto_mithril":
                 config.MITHRIL_ENABLED_DEVICES.discard(device)
                 config.MITHRIL_DEPLOY_TIME.pop(device, None)
             if task_key in running_tasks:

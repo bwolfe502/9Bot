@@ -437,7 +437,6 @@ def create_gui():
     def _stop_occupy():
         if auto_occupy_var.get():
             auto_occupy_var.set(False)
-            config.auto_occupy_running = False
             stop_all_tasks_matching("_auto_occupy")
             log.info("Stopping Occupy Towers on all devices")
 

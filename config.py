@@ -230,9 +230,6 @@ def clear_device_status(device):
     """Clear status for a device (e.g. when task stops)."""
     DEVICE_STATUS.pop(device, None)
 
-auto_occupy_running = False
-auto_occupy_thread = None
-
 # Quit callback — set by run_web.py to close pywebview window cleanly
 _quit_callback = None
 

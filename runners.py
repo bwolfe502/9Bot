@@ -360,16 +360,8 @@ def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
 
 
 def run_auto_occupy(device, stop_event):
-    config.auto_occupy_running = True
     config.set_device_status(device, "Occupying Towers...")
-
-    # Monitor stop event in background and set config flag when stopped
-    def monitor():
-        stop_event.wait()
-        config.auto_occupy_running = False
-
-    threading.Thread(target=monitor, daemon=True).start()
-    auto_occupy_loop(device)
+    auto_occupy_loop(device, stop_check=stop_event.is_set)
     config.clear_device_status(device)
     get_logger("runner", device).info("Auto Occupy stopped")
 
@@ -543,7 +535,6 @@ def _force_kill_thread(thread):
 def force_stop_all():
     """Force-kill every running task thread immediately."""
     _log = get_logger("runner")
-    config.auto_occupy_running = False
     config.MITHRIL_ENABLED_DEVICES.clear()
     config.MITHRIL_DEPLOY_TIME.clear()
     for key in list(running_tasks.keys()):
