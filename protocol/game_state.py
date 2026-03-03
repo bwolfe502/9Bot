@@ -270,6 +270,7 @@ class GameState:
         self._sub("msg:PositionNtf", self._on_position)
         self._sub("msg:LineupsNtf", self._on_lineups)
         self._sub("msg:NewLineupStateNtf", self._on_lineup_state)
+        self._sub("msg:ChatPullMsgAck", self._on_chat_history)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -370,6 +371,36 @@ class GameState:
         with self._lock:
             self._chat.append(msg)
             self._touch("chat")
+
+    def _on_chat_history(self, msg: Any) -> None:
+        """msg:ChatPullMsgAck — historical messages from chat pull."""
+        from .messages import ChatPullMsgAck, ChatChannelType
+        if not isinstance(msg, ChatPullMsgAck):
+            return
+        with self._lock:
+            for chat_one_msg in (msg.msgList or []):
+                payload = getattr(chat_one_msg, "payload", None)
+                player_info = getattr(chat_one_msg, "playerInfo", None)
+                head = getattr(player_info, "head", None) if player_info else None
+                channel_type = getattr(msg, "channelType", 0)
+                try:
+                    channel_name = ChatChannelType(channel_type).name
+                except ValueError:
+                    channel_name = str(channel_type)
+                entry = {
+                    "content": payload.msgVal if payload else "",
+                    "sender": head.name if head else "",
+                    "channel": channel_name,
+                    "channel_type": channel_type,
+                    "timestamp": getattr(chat_one_msg, "timeStamp", 0),
+                    "payload_type": payload.payloadTypeEnum if payload else 0,
+                    "sender_id": getattr(player_info, "ID", 0) if player_info else 0,
+                    "union_name": getattr(player_info, "unionName", "") if player_info else "",
+                    "raw": chat_one_msg,
+                }
+                self._chat.append(entry)
+            if msg.msgList:
+                self._touch("chat")
 
     def _on_attack_incoming(self, msg: Any) -> None:
         """EVT_ATTACK_INCOMING — payload is an IntelligencesNtf."""

@@ -106,33 +106,40 @@ def validate_device_token(device_id, token):
 # Protocol interceptor lifecycle
 # ---------------------------------------------------------------------------
 
-_interceptor_thread = None
-_protocol_bus = None
-_game_state = None
+# Per-device protocol instances:
+#   {device_id: {"bus": EventBus, "state": GameState,
+#                "thread": InterceptorThread, "port": int}}
+_device_protocol = {}
+_device_protocol_lock = threading.Lock()
+_FRIDA_BASE_PORT = 27042
 
 
-def _setup_frida_forward(port=27042):
-    """Ensure ADB forward for Frida port on all connected devices."""
+def _allocate_port():
+    """Allocate the next available host port for Frida forwarding.
+
+    Must be called while holding ``_device_protocol_lock``.
+    """
+    used = {info["port"] for info in _device_protocol.values()}
+    port = _FRIDA_BASE_PORT
+    while port in used:
+        port += 1
+    return port
+
+
+def _setup_frida_forward_for_device(device_id, host_port):
+    """Set ADB forward for a single device: host_port -> 27042 (gadget port)."""
     import subprocess
     from botlog import get_logger
     log = get_logger("startup")
     try:
-        result = subprocess.run(
-            [config.adb_path, "devices"],
-            capture_output=True, text=True, timeout=5,
+        subprocess.run(
+            [config.adb_path, "-s", device_id, "forward",
+             f"tcp:{host_port}", "tcp:27042"],
+            capture_output=True, timeout=5,
         )
-        for line in result.stdout.strip().splitlines()[1:]:
-            parts = line.split()
-            if len(parts) >= 2 and parts[1] == "device":
-                dev_id = parts[0]
-                subprocess.run(
-                    [config.adb_path, "-s", dev_id, "forward",
-                     f"tcp:{port}", f"tcp:{port}"],
-                    capture_output=True, timeout=5,
-                )
-                log.info("ADB forward tcp:%d set for %s", port, dev_id)
+        log.debug("ADB forward tcp:%d -> tcp:27042 for %s", host_port, device_id)
     except Exception:
-        log.warning("Failed to set ADB forward for Frida Gadget", exc_info=True)
+        log.warning("Failed to set ADB forward for %s", device_id, exc_info=True)
 
 
 def _ensure_lz4():
@@ -155,45 +162,102 @@ def _ensure_lz4():
                         "will be unavailable. Install manually: pip install lz4")
 
 
-def _start_protocol():
-    """Start the protocol interceptor if not already running."""
-    global _interceptor_thread, _protocol_bus, _game_state
-    if _interceptor_thread is not None:
-        return
+def start_protocol_for_device(device_id):
+    """Start protocol interception for a single device.
+
+    Creates a dedicated EventBus, GameState, and InterceptorThread for
+    *device_id*.  Allocates a unique host port for ADB forward and adds
+    the device to ``config.PROTOCOL_ACTIVE_DEVICES``.
+    """
+    from botlog import get_logger
+    log = get_logger("startup")
+    with _device_protocol_lock:
+        if device_id in _device_protocol:
+            return  # already running
     _ensure_lz4()
     try:
         from protocol.events import EventBus
         from protocol.interceptor import InterceptorThread
         from protocol.game_state import GameState
     except ImportError:
-        from botlog import get_logger
-        get_logger("startup").warning("Protocol package not available — skipping")
+        log.warning("Protocol package not available — skipping")
         return
-    _protocol_bus = EventBus()
-    _game_state = GameState("default", _protocol_bus)
-    _interceptor_thread = InterceptorThread(
-        event_bus=_protocol_bus, pre_connect=_setup_frida_forward,
-    )
-    _interceptor_thread.start()
+    with _device_protocol_lock:
+        if device_id in _device_protocol:
+            return  # race check
+        host_port = _allocate_port()
+        bus = EventBus()
+        state = GameState(device_id, bus)
+        thread = InterceptorThread(
+            event_bus=bus,
+            gadget_port=host_port,
+            pre_connect=lambda _dev=device_id, _port=host_port: (
+                _setup_frida_forward_for_device(_dev, _port)
+            ),
+        )
+        _device_protocol[device_id] = {
+            "bus": bus, "state": state, "thread": thread, "port": host_port,
+        }
+        config.PROTOCOL_ACTIVE_DEVICES.add(device_id)
+    thread.start()
+    log.info("Protocol interceptor started for %s (port %d)", device_id, host_port)
+
+
+def stop_protocol_for_device(device_id):
+    """Stop protocol interception for a single device."""
     from botlog import get_logger
-    get_logger("startup").info("Protocol interceptor started")
+    with _device_protocol_lock:
+        info = _device_protocol.pop(device_id, None)
+        config.PROTOCOL_ACTIVE_DEVICES.discard(device_id)
+    if info is not None:
+        info["thread"].stop()
+        info["state"].shutdown()
+        get_logger("startup").info("Protocol interceptor stopped for %s", device_id)
+
+
+def _start_protocol():
+    """Start protocol for all connected devices that have protocol_enabled."""
+    try:
+        from devices import get_devices
+        for dev in get_devices():
+            if config.get_device_config(dev, "protocol_enabled"):
+                start_protocol_for_device(dev)
+    except Exception:
+        from botlog import get_logger
+        get_logger("startup").warning("Protocol startup failed", exc_info=True)
 
 
 def _stop_protocol():
-    """Stop the protocol interceptor if running."""
-    global _interceptor_thread, _protocol_bus, _game_state
-    if _interceptor_thread is not None:
-        _interceptor_thread.stop()
-        _interceptor_thread = None
-        _protocol_bus = None
-        _game_state = None
-        from botlog import get_logger
-        get_logger("startup").info("Protocol interceptor stopped")
+    """Stop protocol for all devices."""
+    with _device_protocol_lock:
+        device_ids = list(_device_protocol.keys())
+    for dev_id in device_ids:
+        stop_protocol_for_device(dev_id)
 
 
-def get_protocol_ap():
+def _get_device_state(device):
+    """Return the GameState for *device*, or None."""
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    return info["state"] if info else None
+
+
+def get_protocol_stats(device=None):
+    """Return interceptor stats dict for *device*, or None."""
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return None
+    return info["thread"].stats
+
+
+def get_protocol_ap(device=None):
     """Return (current, max) AP from protocol, or None if unavailable/stale."""
-    state = _game_state
+    state = _get_device_state(device)
     if state is None:
         return None
     if not state.is_fresh("ap", max_age_s=10.0):
@@ -225,13 +289,13 @@ def _get_action_map():
     return _LINEUP_STATE_TO_ACTION
 
 
-def get_protocol_rallies():
+def get_protocol_rallies(device=None):
     """Return list of active rallies from protocol, or None if unavailable/stale.
 
     Returns [] if protocol confirms zero rallies (bail-out signal).
     Returns None if protocol unavailable or data stale (fall through to UI).
     """
-    state = _game_state
+    state = _get_device_state(device)
     if state is None:
         return None
     if not state.is_fresh("rallies", max_age_s=30.0):
@@ -242,9 +306,9 @@ def get_protocol_rallies():
     return list(rallies.values())
 
 
-def get_protocol_troops_home():
+def get_protocol_troops_home(device=None):
     """Return count of HOME troops from protocol, or None if unavailable/stale."""
-    state = _game_state
+    state = _get_device_state(device)
     if state is None:
         return None
     if not state.is_fresh("lineups", max_age_s=30.0):
@@ -263,9 +327,17 @@ def get_protocol_troops_home():
     return home_count
 
 
+def get_protocol_chat_messages(device=None):
+    """Return recent chat messages for *device*, or empty list."""
+    state = _get_device_state(device)
+    if state is None:
+        return []
+    return state.chat_messages  # thread-safe list copy
+
+
 def get_protocol_troop_snapshot(device):
     """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
-    state = _game_state
+    state = _get_device_state(device)
     if state is None:
         return None
     if not state.is_fresh("lineups", max_age_s=30.0):
@@ -343,10 +415,8 @@ def apply_settings(settings):
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
     set_protocol_enabled(settings.get("protocol_enabled", False))
-    if config.PROTOCOL_ENABLED:
-        _start_protocol()
-    else:
-        _stop_protocol()
+    # Per-device protocol reconciliation (after device_settings are applied below)
+    # Deferred to end of function — see _reconcile_protocol() call.
     for dev_id, count in settings.get("device_troops", {}).items():
         try:
             config.DEVICE_TOTAL_TROOPS[dev_id] = int(count)
@@ -357,6 +427,32 @@ def apply_settings(settings):
     config.clear_device_overrides()
     for dev_id, overrides in settings.get("device_settings", {}).items():
         config.set_device_overrides(dev_id, overrides)
+
+    # Per-device protocol reconciliation — now that device_settings are applied,
+    # start/stop interceptors to match the desired state.
+    _reconcile_protocol()
+
+
+def _reconcile_protocol():
+    """Start/stop per-device interceptors to match current settings."""
+    from botlog import get_logger
+    log = get_logger("startup")
+    try:
+        from devices import get_devices
+        desired = set()
+        for dev in get_devices():
+            if config.get_device_config(dev, "protocol_enabled"):
+                desired.add(dev)
+        # Stop devices no longer wanted.
+        with _device_protocol_lock:
+            current = set(_device_protocol.keys())
+        for dev in current - desired:
+            stop_protocol_for_device(dev)
+        # Start newly enabled devices.
+        for dev in desired - current:
+            start_protocol_for_device(dev)
+    except Exception:
+        log.debug("Protocol reconciliation skipped (no devices yet)", exc_info=True)
 
 
 def initialize():

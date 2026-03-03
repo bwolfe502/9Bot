@@ -297,31 +297,55 @@ class MessageRouter:
 #  Transform helpers
 # ------------------------------------------------------------------ #
 
-def _extract_chat_payload(msg: object) -> object:
-    """Best-effort extraction of chat content from a ChatOneMsgNtf.
+def _extract_chat_payload(msg: object) -> dict:
+    """Extract structured chat fields from a ChatOneMsgNtf.
 
-    If the message has a ``content`` or ``text`` attribute, return a dict
-    with the extracted fields.  Otherwise return the raw message so that
-    nothing is lost.
+    Navigates the nested dataclass chain:
+    ``ChatOneMsgNtf.msg.payload.msgVal`` for text,
+    ``ChatOneMsgNtf.msg.playerInfo.head.name`` for sender,
+    ``ChatOneMsgNtf.channelType`` for channel.
+
+    Returns a flat dict suitable for storage and API serialization.
     """
-    # Try common attribute names that the protobuf dataclass might use.
-    content: Any = (
-        getattr(msg, "content", None)
-        or getattr(msg, "text", None)
-        or getattr(msg, "msg", None)
-    )
-    sender: Any = (
-        getattr(msg, "sender_name", None)
-        or getattr(msg, "name", None)
-    )
-    channel: Any = getattr(msg, "channel", None)
+    result: Dict[str, Any] = {"raw": msg}
 
-    if content is not None:
-        return {
-            "raw": msg,
-            "content": content,
-            "sender": sender,
-            "channel": channel,
-        }
-    # Nothing recognizable — pass through as-is.
-    return msg
+    # ChatOneMsgNtf.msg → ChatOneMsg
+    chat_msg = getattr(msg, "msg", None)
+    if chat_msg is None:
+        return result
+
+    # Channel type from ChatOneMsgNtf
+    channel_type = getattr(msg, "channelType", 0)
+    result["channel_type"] = channel_type
+    try:
+        from .messages import ChatChannelType
+        result["channel"] = ChatChannelType(channel_type).name
+    except (ValueError, ImportError):
+        result["channel"] = str(channel_type)
+
+    # Timestamp (epoch milliseconds)
+    result["timestamp"] = getattr(chat_msg, "timeStamp", 0)
+    result["source_type"] = getattr(chat_msg, "sourceType", 0)
+
+    # Sender info: ChatOneMsg.playerInfo → PlayerHeadInfo → UnifyPlayerHead
+    player_info = getattr(chat_msg, "playerInfo", None)
+    if player_info is not None:
+        head = getattr(player_info, "head", None)
+        result["sender"] = head.name if head else ""
+        result["sender_id"] = getattr(player_info, "ID", 0)
+        result["union_name"] = getattr(player_info, "unionName", "")
+    else:
+        result["sender"] = ""
+        result["sender_id"] = 0
+        result["union_name"] = ""
+
+    # Message content: ChatOneMsg.payload → ChatPayload.msgVal
+    payload = getattr(chat_msg, "payload", None)
+    if payload is not None:
+        result["content"] = getattr(payload, "msgVal", "")
+        result["payload_type"] = getattr(payload, "payloadTypeEnum", 0)
+    else:
+        result["content"] = ""
+        result["payload_type"] = 0
+
+    return result

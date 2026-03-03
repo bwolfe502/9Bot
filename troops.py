@@ -187,10 +187,10 @@ def troops_avail(device):
     log = get_logger("troops", device)
 
     # --- Protocol fast path ---
-    if config.PROTOCOL_ENABLED:
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
         try:
             from startup import get_protocol_troops_home
-            home = get_protocol_troops_home()
+            home = get_protocol_troops_home(device)
             if home is not None:
                 log.debug("Troops home (protocol): %d", home)
                 return home
@@ -392,7 +392,7 @@ def read_panel_statuses(device, screen=None) -> Optional[DeviceTroopSnapshot]:
     log = get_logger("troops", device)
 
     # --- Protocol fast path ---
-    if config.PROTOCOL_ENABLED:
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
         try:
             from startup import get_protocol_troop_snapshot
             snapshot = get_protocol_troop_snapshot(device)

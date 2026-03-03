@@ -202,10 +202,10 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
         return False
 
     # --- Protocol early bail-out ---
-    if config.PROTOCOL_ENABLED:
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
         try:
             from startup import get_protocol_rallies
-            protocol_rallies = get_protocol_rallies()
+            protocol_rallies = get_protocol_rallies(device)
             if protocol_rallies is not None:
                 want_npc = any(rt in _NPC_RALLY_TYPES for rt in rally_types)
                 want_player = any(rt in _PLAYER_RALLY_TYPES for rt in rally_types)

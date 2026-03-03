@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title_suffix %} - Chat{% endblock %}
+
+{% block content %}
+
+<div class="section-header">Chat Viewer</div>
+
+<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+    <select id="device-select" onchange="loadChat()" style="background:#1a1a2e;color:#ccc;border:1px solid #333;border-radius:6px;padding:6px 10px;font-size:14px">
+        <option value="">Select device...</option>
+        {% for dev in devices %}
+        <option value="{{ dev.id }}">{{ dev.name }}</option>
+        {% endfor %}
+    </select>
+    <div id="channel-tabs" style="display:flex;gap:4px;flex-wrap:wrap">
+        <button class="chat-tab active" data-channel="" onclick="setChannel(this, '')">All</button>
+        <button class="chat-tab" data-channel="WORLD" onclick="setChannel(this, 'WORLD')">World</button>
+        <button class="chat-tab" data-channel="UNION" onclick="setChannel(this, 'UNION')">Alliance</button>
+        <button class="chat-tab" data-channel="FACTION" onclick="setChannel(this, 'FACTION')">Faction</button>
+        <button class="chat-tab" data-channel="SERVER" onclick="setChannel(this, 'SERVER')">Server</button>
+        <button class="chat-tab" data-channel="PRIVATE" onclick="setChannel(this, 'PRIVATE')">Private</button>
+    </div>
+</div>
+
+<div id="chat-status" style="color:#667;font-size:12px;margin-bottom:8px"></div>
+
+<div id="chat-messages" style="background:#111;border:1px solid #222;border-radius:8px;padding:10px;height:60vh;overflow-y:auto;font-size:13px;line-height:1.6">
+    <div style="color:#555;text-align:center;padding:40px 0">Select a device to view chat</div>
+</div>
+
+<style>
+.chat-tab {
+    background: transparent;
+    border: 1px solid #333;
+    color: #888;
+    padding: 4px 12px;
+    border-radius: 14px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+}
+.chat-tab:hover { border-color: #555; color: #ccc; }
+.chat-tab.active { border-color: #4cff8e; color: #4cff8e; }
+.chat-msg { padding: 2px 0; border-bottom: 1px solid #1a1a1a; }
+.chat-time { color: #555; font-size: 11px; margin-right: 6px; }
+.chat-channel { color: #667; font-size: 11px; margin-right: 6px; }
+.chat-sender { color: #4caaff; margin-right: 4px; }
+.chat-sender-union { color: #555; font-size: 11px; margin-right: 4px; }
+.chat-content { color: #ddd; }
+.chat-system { color: #ff9f43; }
+</style>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var _chatChannel = '';
+var _chatPollId = null;
+var _lastCount = 0;
+
+function setChannel(btn, channel) {
+    _chatChannel = channel;
+    document.querySelectorAll('.chat-tab').forEach(function(t) { t.classList.remove('active'); });
+    btn.classList.add('active');
+    loadChat();
+}
+
+function loadChat() {
+    var device = document.getElementById('device-select').value;
+    if (!device) return;
+    var url = RELAY_PREFIX + '/api/chat?device=' + encodeURIComponent(device);
+    if (_chatChannel) url += '&channel=' + encodeURIComponent(_chatChannel);
+    fetch(url)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            renderMessages(data.messages);
+            document.getElementById('chat-status').textContent =
+                data.count + ' messages' + (_chatChannel ? ' (' + _chatChannel + ')' : '');
+        })
+        .catch(function(e) {
+            document.getElementById('chat-status').textContent = 'Error loading chat';
+        });
+}
+
+function renderMessages(messages) {
+    var container = document.getElementById('chat-messages');
+    var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    container.textContent = '';
+    if (messages.length === 0) {
+        var empty = document.createElement('div');
+        empty.style.cssText = 'color:#555;text-align:center;padding:40px 0';
+        empty.textContent = 'No messages yet. Protocol must be enabled and game chat active.';
+        container.appendChild(empty);
+        return;
+    }
+    messages.forEach(function(msg) {
+        var div = document.createElement('div');
+        div.className = 'chat-msg';
+
+        // Timestamp
+        var time = document.createElement('span');
+        time.className = 'chat-time';
+        if (msg.timestamp > 0) {
+            var d = new Date(msg.timestamp);
+            time.textContent = ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
+        }
+        div.appendChild(time);
+
+        // Channel
+        var ch = document.createElement('span');
+        ch.className = 'chat-channel';
+        ch.textContent = '[' + (msg.channel || '?') + ']';
+        div.appendChild(ch);
+
+        // Union name
+        if (msg.union_name) {
+            var union = document.createElement('span');
+            union.className = 'chat-sender-union';
+            union.textContent = '[' + msg.union_name + ']';
+            div.appendChild(union);
+        }
+
+        // Sender
+        var sender = document.createElement('span');
+        sender.className = msg.payload_type === 11 ? 'chat-system' : 'chat-sender';
+        sender.textContent = (msg.sender || 'System') + ': ';
+        div.appendChild(sender);
+
+        // Content
+        var content = document.createElement('span');
+        content.className = msg.payload_type === 11 ? 'chat-system' : 'chat-content';
+        content.textContent = msg.content;
+        div.appendChild(content);
+
+        container.appendChild(div);
+    });
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+}
+
+// Auto-poll every 3 seconds
+function startPoll() {
+    if (_chatPollId) clearInterval(_chatPollId);
+    _chatPollId = setInterval(function() {
+        var device = document.getElementById('device-select').value;
+        if (device) loadChat();
+    }, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    startPoll();
+    // Auto-select first device if only one
+    var sel = document.getElementById('device-select');
+    if (sel.options.length === 2) {
+        sel.selectedIndex = 1;
+        loadChat();
+    }
+});
+</script>
+{% endblock %}

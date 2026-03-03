@@ -51,17 +51,17 @@ def _make_troop_detail(name="Owner1"):
 class TestGetProtocolRallies:
     def test_returns_none_when_no_state(self):
         """No game state → None (fall through to UI)."""
-        with patch("startup._game_state", None):
+        with patch("startup._get_device_state", return_value=None):
             from startup import get_protocol_rallies
-            assert get_protocol_rallies() is None
+            assert get_protocol_rallies("127.0.0.1:9999") is None
 
     def test_returns_none_when_stale(self):
         """Stale rally data → None (fall through to UI)."""
         mock_state = MagicMock()
         mock_state.is_fresh.return_value = False
-        with patch("startup._game_state", mock_state):
+        with patch("startup._get_device_state", return_value=mock_state):
             from startup import get_protocol_rallies
-            assert get_protocol_rallies() is None
+            assert get_protocol_rallies("127.0.0.1:9999") is None
         mock_state.is_fresh.assert_called_once_with("rallies", max_age_s=30.0)
 
     def test_returns_empty_list_when_no_rallies(self):
@@ -69,9 +69,9 @@ class TestGetProtocolRallies:
         mock_state = MagicMock()
         mock_state.is_fresh.return_value = True
         mock_state.rallies = {}
-        with patch("startup._game_state", mock_state):
+        with patch("startup._get_device_state", return_value=mock_state):
             from startup import get_protocol_rallies
-            result = get_protocol_rallies()
+            result = get_protocol_rallies("127.0.0.1:9999")
             assert result == []
             assert result is not None  # explicitly not None
 
@@ -81,9 +81,9 @@ class TestGetProtocolRallies:
         mock_state = MagicMock()
         mock_state.is_fresh.return_value = True
         mock_state.rallies = {1: rally}
-        with patch("startup._game_state", mock_state):
+        with patch("startup._get_device_state", return_value=mock_state):
             from startup import get_protocol_rallies
-            result = get_protocol_rallies()
+            result = get_protocol_rallies("127.0.0.1:9999")
             assert len(result) == 1
             assert result[0] is rally
 
@@ -108,10 +108,9 @@ class TestJoinRallyProtocolBailout:
         """Helper: run join_rally with mocked protocol and track navigate calls."""
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", protocol_enabled), \
              patch("startup.get_protocol_rallies", return_value=get_rallies_return), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = protocol_enabled
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {device} if protocol_enabled else set()
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = True
             result = join_rally(["titan", "eg"], device, skip_heal=True)
@@ -122,9 +121,8 @@ class TestJoinRallyProtocolBailout:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", False), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = False
+            mock_config.PROTOCOL_ACTIVE_DEVICES = set()
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False  # fail navigate to end quickly
             result = join_rally(["titan"], mock_device, skip_heal=True)
@@ -136,10 +134,9 @@ class TestJoinRallyProtocolBailout:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=None), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False
             result = join_rally(["titan"], mock_device, skip_heal=True)
@@ -150,10 +147,9 @@ class TestJoinRallyProtocolBailout:
         """Protocol confirms zero rallies → bail out, navigate NOT called."""
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             result = join_rally(["titan"], mock_device, skip_heal=True)
             assert result is False
@@ -167,10 +163,9 @@ class TestJoinRallyProtocolBailout:
         )
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[full_rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             result = join_rally(["titan"], mock_device, skip_heal=True)
             assert result is False
@@ -181,10 +176,9 @@ class TestJoinRallyProtocolBailout:
         marching_rally = _make_rally(rally_state=3, max_num=5, troops=[_make_troop_detail()])
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[marching_rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             result = join_rally(["titan"], mock_device, skip_heal=True)
             assert result is False
@@ -197,10 +191,9 @@ class TestJoinRallyProtocolBailout:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[joinable_rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False  # fail navigate to end quickly
             result = join_rally(["titan"], mock_device, skip_heal=True)
@@ -214,10 +207,9 @@ class TestJoinRallyProtocolBailout:
                             npcCity={"cfgID": 100})
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             result = join_rally(["titan"], mock_device, skip_heal=True)
             assert result is False
@@ -228,10 +220,9 @@ class TestJoinRallyProtocolBailout:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", side_effect=RuntimeError("boom")), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False
             result = join_rally(["titan"], mock_device, skip_heal=True)
@@ -252,10 +243,9 @@ class TestJoinRallyProtocolBailout:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[full, marching, joinable]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False
             result = join_rally(["titan"], mock_device, skip_heal=True)
@@ -268,10 +258,9 @@ class TestJoinRallyProtocolBailout:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[empty_troops_rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False
             result = join_rally(["titan"], mock_device, skip_heal=True)
@@ -325,10 +314,9 @@ class TestJoinRallyTypeFiltering:
         )
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[player_rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             result = join_rally(["titan", "eg"], mock_device, skip_heal=True)
             assert result is False
@@ -344,10 +332,9 @@ class TestJoinRallyTypeFiltering:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[npc_rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False  # fail navigate to end quickly
             result = join_rally(["titan"], mock_device, skip_heal=True)
@@ -371,10 +358,9 @@ class TestJoinRallyTypeFiltering:
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
              patch("actions.rallies.load_screenshot", return_value=None), \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[player_rally, npc_rally]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             mock_nav.return_value = False
             result = join_rally(["titan", "eg"], mock_device, skip_heal=True)
@@ -391,10 +377,9 @@ class TestJoinRallyTypeFiltering:
                          playerCity={"cfgID": 202}, troop_id=2)
         with patch.multiple("actions.rallies", **_JR_PATCHES), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", True), \
              patch("startup.get_protocol_rallies", return_value=[r1, r2]), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = True
+            mock_config.PROTOCOL_ACTIVE_DEVICES = {mock_device}
             mock_config.get_device_config = config.get_device_config
             result = join_rally(["titan"], mock_device, skip_heal=True)
             assert result is False
@@ -579,9 +564,8 @@ class TestJoinRallyEntryGuards:
              patch("actions.rallies.troops_avail", return_value=0), \
              patch("actions.rallies.read_panel_statuses", return_value=None), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", False), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = False
+            mock_config.PROTOCOL_ACTIVE_DEVICES = set()
             mock_config.get_device_config.return_value = 1
             result = join_rally(["titan"], mock_device)
             assert result is False
@@ -593,9 +577,8 @@ class TestJoinRallyEntryGuards:
              patch("actions.rallies.troops_avail", return_value=3), \
              patch("actions.rallies.read_panel_statuses", return_value=None), \
              patch("actions.rallies.navigate", return_value=False), \
-             patch.object(config, "PROTOCOL_ENABLED", False), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = False
+            mock_config.PROTOCOL_ACTIVE_DEVICES = set()
             mock_config.get_device_config.return_value = 1
             result = join_rally(["titan"], mock_device)
             assert result is False
@@ -606,9 +589,8 @@ class TestJoinRallyEntryGuards:
              patch("actions.rallies.troops_avail", return_value=3), \
              patch("actions.rallies.read_panel_statuses", return_value=None), \
              patch("actions.rallies.navigate") as mock_nav, \
-             patch.object(config, "PROTOCOL_ENABLED", False), \
              patch("actions.rallies.config") as mock_config:
-            mock_config.PROTOCOL_ENABLED = False
+            mock_config.PROTOCOL_ACTIVE_DEVICES = set()
             mock_config.get_device_config.return_value = 1
             result = join_rally(["titan"], mock_device, stop_check=lambda: True)
             assert result is False

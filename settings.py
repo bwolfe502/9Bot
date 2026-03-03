@@ -25,6 +25,7 @@ DEVICE_OVERRIDABLE_KEYS = {
     "ap_allow_large_potions", "ap_use_gems", "ap_gem_limit", "min_troops",
     "my_team", "gather_enabled", "gather_mine_level", "gather_max_troops",
     "tower_quest_enabled", "eg_rally_own", "titan_rally_own", "mithril_interval",
+    "protocol_enabled",
 }
 
 DEFAULTS = {

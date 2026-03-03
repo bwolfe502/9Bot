@@ -380,13 +380,23 @@ def create_app():
         import training
         training_stats = training.get_training_stats()
         settings = _load_settings()
+        # Per-device protocol status
+        protocol_devices = []
+        for d in detected:
+            dev_enabled = config.get_device_config(d, "protocol_enabled")
+            dev_active = d in config.PROTOCOL_ACTIVE_DEVICES
+            protocol_devices.append({
+                "id": d, "name": d.split(":")[-1] if ":" in d else d,
+                "enabled": dev_enabled, "active": dev_active,
+            })
         return render_template("debug.html",
                                devices=device_info,
                                tasks=active_tasks,
                                debug_actions=ONESHOT_DEBUG,
                                log_lines=lines,
                                training_stats=training_stats,
-                               protocol_enabled=settings.get("protocol_enabled", False))
+                               protocol_enabled=settings.get("protocol_enabled", False),
+                               protocol_devices=protocol_devices)
 
     @app.route("/logs")
     def logs_page():
@@ -751,12 +761,83 @@ def create_app():
 
     @app.route("/api/protocol-toggle", methods=["POST"])
     def api_protocol_toggle():
-        """Toggle protocol_enabled setting (debug page)."""
+        """Toggle protocol_enabled for a specific device or globally."""
+        device_id = request.form.get("device_id")
         settings = _load_settings()
-        settings["protocol_enabled"] = not settings.get("protocol_enabled", False)
-        _apply_settings(settings)
-        _save_settings(settings)
-        return jsonify({"ok": True, "enabled": settings["protocol_enabled"]})
+        if device_id:
+            # Per-device toggle
+            ds = settings.setdefault("device_settings", {})
+            dev_settings = ds.setdefault(device_id, {})
+            current = dev_settings.get(
+                "protocol_enabled", settings.get("protocol_enabled", False))
+            dev_settings["protocol_enabled"] = not current
+            _apply_settings(settings)
+            _save_settings(settings)
+            return jsonify({"ok": True, "enabled": dev_settings["protocol_enabled"],
+                            "device_id": device_id})
+        else:
+            # Global toggle (legacy)
+            settings["protocol_enabled"] = not settings.get("protocol_enabled", False)
+            _apply_settings(settings)
+            _save_settings(settings)
+            return jsonify({"ok": True, "enabled": settings["protocol_enabled"]})
+
+    @app.route("/api/chat")
+    def api_chat():
+        """Return recent chat messages for a device."""
+        device_id = request.args.get("device")
+        channel = request.args.get("channel")  # optional filter
+        if not device_id:
+            return jsonify({"error": "device parameter required"}), 400
+        from startup import get_protocol_chat_messages
+        messages = get_protocol_chat_messages(device_id)
+        # Filter by channel if specified
+        if channel:
+            messages = [m for m in messages
+                        if isinstance(m, dict)
+                        and m.get("channel", "").upper() == channel.upper()]
+        # Serialize for JSON (strip raw objects)
+        serializable = []
+        for m in messages:
+            if isinstance(m, dict):
+                serializable.append({
+                    "content": m.get("content", ""),
+                    "sender": m.get("sender", ""),
+                    "channel": m.get("channel", ""),
+                    "channel_type": m.get("channel_type", 0),
+                    "timestamp": m.get("timestamp", 0),
+                    "union_name": m.get("union_name", ""),
+                    "payload_type": m.get("payload_type", 0),
+                })
+        return jsonify({"messages": serializable, "count": len(serializable)})
+
+    @app.route("/api/protocol-status")
+    def api_protocol_status():
+        """Return per-device protocol status for the debug page."""
+        detected, _ = _cached_devices()
+        settings = _load_settings()
+        devices_status = []
+        for dev in detected:
+            enabled = config.get_device_config(dev, "protocol_enabled")
+            active = dev in config.PROTOCOL_ACTIVE_DEVICES
+            from startup import get_protocol_stats
+            stats = get_protocol_stats(dev)
+            devices_status.append({
+                "device_id": dev,
+                "enabled": enabled,
+                "active": active,
+                "connected": stats is not None and stats.get("uptime_s", 0) > 0,
+                "stats": stats,
+            })
+        return jsonify({"devices": devices_status})
+
+    @app.route("/chat")
+    def chat_page():
+        """Chat viewer page — shows live game chat from protocol-enabled devices."""
+        detected, _ = _cached_devices()
+        device_info = [{"id": d, "name": d.split(":")[-1] if ":" in d else d}
+                       for d in detected]
+        return render_template("chat.html", devices=device_info)
 
     @app.route("/api/upload-logs", methods=["POST"])
     def api_upload_logs():

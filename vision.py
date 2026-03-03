@@ -432,10 +432,10 @@ def read_ap(device, retries=5):
     log = get_logger("vision", device)
 
     # Protocol fast path (when enabled + fresh data available)
-    if config.PROTOCOL_ENABLED:
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
         try:
             from startup import get_protocol_ap
-            ap = get_protocol_ap()
+            ap = get_protocol_ap(device)
             if ap is not None:
                 log.debug("AP (protocol): %d/%d", ap[0], ap[1])
                 return ap

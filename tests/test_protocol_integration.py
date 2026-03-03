@@ -13,78 +13,93 @@ import config
 
 
 # ============================================================
-# startup.get_protocol_ap
+# startup.get_protocol_ap (per-device)
 # ============================================================
 
 class TestGetProtocolAP:
-    """Tests for startup.get_protocol_ap() freshness and fallback logic."""
+    """Tests for startup.get_protocol_ap(device) freshness and fallback logic."""
 
-    def test_returns_none_when_no_game_state(self):
-        """No game state → None."""
+    DEVICE = "127.0.0.1:9999"
+
+    def test_returns_none_when_no_device_state(self):
+        """No device state -> None."""
         from startup import get_protocol_ap
-        with patch("startup._game_state", None):
-            assert get_protocol_ap() is None
+        with patch("startup._get_device_state", return_value=None):
+            assert get_protocol_ap(self.DEVICE) is None
 
     def test_returns_none_when_stale(self):
-        """Game state exists but AP data is stale → None."""
+        """Game state exists but AP data is stale -> None."""
         from startup import get_protocol_ap
         mock_state = MagicMock()
         mock_state.is_fresh.return_value = False
-        with patch("startup._game_state", mock_state):
-            assert get_protocol_ap() is None
+        with patch("startup._get_device_state", return_value=mock_state):
+            assert get_protocol_ap(self.DEVICE) is None
             mock_state.is_fresh.assert_called_once_with("ap", max_age_s=10.0)
 
     def test_returns_none_when_ap_is_none(self):
-        """Game state is fresh but AP has never been received → None."""
+        """Game state is fresh but AP has never been received -> None."""
         from startup import get_protocol_ap
         mock_state = MagicMock()
         mock_state.is_fresh.return_value = True
         mock_state.ap = None
-        with patch("startup._game_state", mock_state):
-            assert get_protocol_ap() is None
+        with patch("startup._get_device_state", return_value=mock_state):
+            assert get_protocol_ap(self.DEVICE) is None
 
     def test_returns_ap_tuple_when_fresh(self):
-        """Fresh AP data → returns (current, max) tuple."""
+        """Fresh AP data -> returns (current, max) tuple."""
         from startup import get_protocol_ap
         mock_state = MagicMock()
         mock_state.is_fresh.return_value = True
         mock_state.ap = (120, 400)
-        with patch("startup._game_state", mock_state):
-            result = get_protocol_ap()
+        with patch("startup._get_device_state", return_value=mock_state):
+            result = get_protocol_ap(self.DEVICE)
             assert result == (120, 400)
+
+    def test_returns_none_when_device_is_none(self):
+        """Passing device=None -> None (no device to look up)."""
+        from startup import get_protocol_ap
+        assert get_protocol_ap(None) is None
 
 
 # ============================================================
-# startup._start_protocol / _stop_protocol
+# startup: per-device protocol lifecycle
 # ============================================================
 
 class TestProtocolLifecycle:
-    """Tests for _start_protocol and _stop_protocol."""
+    """Tests for start_protocol_for_device, stop_protocol_for_device,
+    _start_protocol, and _stop_protocol."""
+
+    DEVICE = "127.0.0.1:9999"
 
     def setup_method(self):
-        """Reset module-level protocol state."""
+        """Reset per-device protocol state."""
         import startup
-        startup._interceptor_thread = None
-        startup._protocol_bus = None
-        startup._game_state = None
+        with startup._device_protocol_lock:
+            startup._device_protocol.clear()
+        config.PROTOCOL_ACTIVE_DEVICES.clear()
 
     def teardown_method(self):
         import startup
-        startup._interceptor_thread = None
-        startup._protocol_bus = None
-        startup._game_state = None
+        with startup._device_protocol_lock:
+            startup._device_protocol.clear()
+        config.PROTOCOL_ACTIVE_DEVICES.clear()
 
     def test_start_skips_when_already_running(self):
-        """If interceptor thread exists, _start_protocol is a no-op."""
+        """If device is already in _device_protocol, start is a no-op."""
         import startup
-        sentinel = MagicMock()
-        startup._interceptor_thread = sentinel
-        startup._start_protocol()
-        # Thread was not replaced
-        assert startup._interceptor_thread is sentinel
+        sentinel = {"bus": MagicMock(), "state": MagicMock(),
+                    "thread": MagicMock(), "port": 27042}
+        with startup._device_protocol_lock:
+            startup._device_protocol[self.DEVICE] = sentinel
+        config.PROTOCOL_ACTIVE_DEVICES.add(self.DEVICE)
+
+        startup.start_protocol_for_device(self.DEVICE)
+        # Sentinel was not replaced
+        with startup._device_protocol_lock:
+            assert startup._device_protocol[self.DEVICE] is sentinel
 
     def test_start_handles_import_error(self):
-        """If protocol package is unavailable, _start_protocol logs and returns."""
+        """If protocol package is unavailable, start_protocol_for_device logs and returns."""
         import startup
         # Temporarily hide the protocol submodules so the import fails
         saved = {}
@@ -95,53 +110,85 @@ class TestProtocolLifecycle:
             with patch.dict(sys.modules, {"protocol.events": None,
                                           "protocol.interceptor": None,
                                           "protocol.game_state": None}):
-                startup._start_protocol()
-            assert startup._interceptor_thread is None
+                startup.start_protocol_for_device(self.DEVICE)
+            assert self.DEVICE not in startup._device_protocol
+            assert self.DEVICE not in config.PROTOCOL_ACTIVE_DEVICES
         finally:
             sys.modules.update(saved)
 
     def test_stop_when_not_running(self):
-        """_stop_protocol when nothing is running is a no-op."""
+        """stop_protocol_for_device when nothing is running is a no-op."""
         import startup
-        startup._interceptor_thread = None
-        startup._stop_protocol()  # should not raise
-        assert startup._interceptor_thread is None
+        startup.stop_protocol_for_device(self.DEVICE)  # should not raise
+        assert self.DEVICE not in startup._device_protocol
 
     def test_stop_calls_thread_stop(self):
-        """_stop_protocol calls stop() on the interceptor thread."""
+        """stop_protocol_for_device calls stop() on the thread and shutdown() on state."""
         import startup
         mock_thread = MagicMock()
-        startup._interceptor_thread = mock_thread
-        startup._protocol_bus = MagicMock()
-        startup._game_state = MagicMock()
+        mock_state = MagicMock()
+        with startup._device_protocol_lock:
+            startup._device_protocol[self.DEVICE] = {
+                "bus": MagicMock(), "state": mock_state,
+                "thread": mock_thread, "port": 27042,
+            }
+        config.PROTOCOL_ACTIVE_DEVICES.add(self.DEVICE)
+
+        startup.stop_protocol_for_device(self.DEVICE)
+
+        mock_thread.stop.assert_called_once()
+        mock_state.shutdown.assert_called_once()
+        assert self.DEVICE not in startup._device_protocol
+        assert self.DEVICE not in config.PROTOCOL_ACTIVE_DEVICES
+
+    def test_stop_all_stops_all_devices(self):
+        """_stop_protocol stops all devices in _device_protocol."""
+        import startup
+        dev_a = "127.0.0.1:9999"
+        dev_b = "127.0.0.1:8888"
+        mock_thread_a = MagicMock()
+        mock_thread_b = MagicMock()
+        mock_state_a = MagicMock()
+        mock_state_b = MagicMock()
+        with startup._device_protocol_lock:
+            startup._device_protocol[dev_a] = {
+                "bus": MagicMock(), "state": mock_state_a,
+                "thread": mock_thread_a, "port": 27042,
+            }
+            startup._device_protocol[dev_b] = {
+                "bus": MagicMock(), "state": mock_state_b,
+                "thread": mock_thread_b, "port": 27043,
+            }
+        config.PROTOCOL_ACTIVE_DEVICES.update({dev_a, dev_b})
 
         startup._stop_protocol()
 
-        mock_thread.stop.assert_called_once()
-        assert startup._interceptor_thread is None
-        assert startup._protocol_bus is None
-        assert startup._game_state is None
+        mock_thread_a.stop.assert_called_once()
+        mock_thread_b.stop.assert_called_once()
+        assert len(startup._device_protocol) == 0
+        assert len(config.PROTOCOL_ACTIVE_DEVICES) == 0
 
 
 # ============================================================
-# vision.read_ap — protocol fast path
+# vision.read_ap -- protocol fast path
 # ============================================================
 
 class TestReadAPProtocol:
     """Tests for the protocol fast path in vision.read_ap()."""
 
     def setup_method(self):
-        self._orig = config.PROTOCOL_ENABLED
+        self._orig_active = config.PROTOCOL_ACTIVE_DEVICES.copy()
 
     def teardown_method(self):
-        config.PROTOCOL_ENABLED = self._orig
+        config.PROTOCOL_ACTIVE_DEVICES.clear()
+        config.PROTOCOL_ACTIVE_DEVICES.update(self._orig_active)
 
     @patch("vision.time.sleep")
     @patch("vision.ocr_read")
     @patch("vision.load_screenshot")
     def test_protocol_disabled_uses_ocr(self, mock_screenshot, mock_ocr, mock_sleep):
-        """When protocol is off, read_ap goes straight to OCR."""
-        config.PROTOCOL_ENABLED = False
+        """When device not in PROTOCOL_ACTIVE_DEVICES, read_ap goes straight to OCR."""
+        config.PROTOCOL_ACTIVE_DEVICES.discard("dev1")
         mock_screenshot.return_value = np.zeros((1920, 1080, 3), dtype=np.uint8)
         mock_ocr.return_value = ["50/200"]
 
@@ -154,7 +201,7 @@ class TestReadAPProtocol:
     @patch("vision.load_screenshot")
     def test_protocol_returns_ap_skips_ocr(self, mock_screenshot, mock_ocr, mock_sleep):
         """When protocol returns fresh AP, OCR is never called."""
-        config.PROTOCOL_ENABLED = True
+        config.PROTOCOL_ACTIVE_DEVICES.add("dev1")
         with patch("startup.get_protocol_ap", return_value=(100, 400)):
             from vision import read_ap
             result = read_ap("dev1", retries=3)
@@ -168,7 +215,7 @@ class TestReadAPProtocol:
     @patch("vision.load_screenshot")
     def test_protocol_returns_none_falls_through_to_ocr(self, mock_screenshot, mock_ocr, mock_sleep):
         """When protocol returns None (stale), falls through to OCR."""
-        config.PROTOCOL_ENABLED = True
+        config.PROTOCOL_ACTIVE_DEVICES.add("dev1")
         mock_screenshot.return_value = np.zeros((1920, 1080, 3), dtype=np.uint8)
         mock_ocr.return_value = ["75/300"]
 
@@ -184,7 +231,7 @@ class TestReadAPProtocol:
     @patch("vision.load_screenshot")
     def test_protocol_exception_falls_through_to_ocr(self, mock_screenshot, mock_ocr, mock_sleep):
         """If protocol import or call raises, silently falls through to OCR."""
-        config.PROTOCOL_ENABLED = True
+        config.PROTOCOL_ACTIVE_DEVICES.add("dev1")
         mock_screenshot.return_value = np.zeros((1920, 1080, 3), dtype=np.uint8)
         mock_ocr.return_value = ["60/200"]
 

@@ -8,7 +8,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | File | Purpose | Key exports |
 |------|---------|-------------|
 | `run_web.py` | Web-only entry point (primary) | `main` (pywebview + browser fallback) |
-| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap`, `get_protocol_rallies`, `get_protocol_troops_home`, `get_protocol_troop_snapshot` |
+| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap`, `get_protocol_rallies`, `get_protocol_troops_home`, `get_protocol_troop_snapshot`, `start_protocol_for_device`, `stop_protocol_for_device`, `get_protocol_chat_messages`, `get_protocol_stats` |
 | `main.py` | Legacy GUI entry point (deprecated) | Tkinter app, `create_gui()` |
 | `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
 | `settings.py` | Settings persistence | `DEFAULTS`, `load_settings`, `save_settings`, `SETTINGS_FILE` |
@@ -85,8 +85,8 @@ startup.py (protocol integration)
       ├─ interceptor (InterceptorThread → Frida)
       └─ game_state (GameState — reactive store)
 
-vision.py → startup.get_protocol_ap() (lazy, when PROTOCOL_ENABLED)
-troops.py → startup.get_protocol_troops_home/troop_snapshot() (lazy, when PROTOCOL_ENABLED)
+vision.py → startup.get_protocol_ap() (lazy, when device in PROTOCOL_ACTIVE_DEVICES)
+troops.py → startup.get_protocol_troops_home/troop_snapshot() (lazy, when device in PROTOCOL_ACTIVE_DEVICES)
 ```
 
 `botlog.py` and `config.py` have no internal dependencies (safe to import anywhere).
@@ -141,6 +141,7 @@ All session-scoped, reset on restart:
 - `GATHER_ENABLED`, `GATHER_MINE_LEVEL`, `GATHER_MAX_TROOPS` — Gold gathering config
 - `TOWER_QUEST_ENABLED` — Occupy tower for alliance quest
 - `PROTOCOL_ENABLED` — Frida Gadget protocol interception (global toggle, not per-device)
+- `PROTOCOL_ACTIVE_DEVICES` — Set of device IDs with active protocol interceptors (per-device)
 - `CLICK_TRAIL_ENABLED` — Save click trail screenshots
 - `BUTTONS` — Dict mapping button names to `{"x": int, "y": int}` coordinates (used by `vision.tap()`)
 
@@ -344,7 +345,8 @@ AP via `_restore_ap_from_open_menu`, and single-closes the popup. Used in `click
 ### Settings Persistence (settings.py)
 `settings.json` stores user preferences (auto-heal, AP options, intervals, territory teams,
 `remote_access` toggle, `device_settings` per-device overrides). Loaded on startup, saved on
-quit/restart. `DEFAULTS` dict provides fallback values. Shared by both `main.py` (GUI) and
+quit/restart. `DEFAULTS` dict provides fallback values. `DEVICE_OVERRIDABLE_KEYS` defines which
+settings can be overridden per device (includes `protocol_enabled`). Shared by both `main.py` (GUI) and
 `web/dashboard.py` (Flask). `updater.py` preserves `settings.json` across auto-updates
 (`PRESERVE_FILES`).
 
@@ -369,10 +371,11 @@ banner displays the LAN URL for mobile remote control.
 - Thread safety: `_task_start_lock` prevents TOCTOU race on `running_tasks` during concurrent task starts
 - Device ID validation: per-device settings routes (`/settings/device/<id>`) reject unknown device IDs
 
-**Pages**: Dashboard (`/`), Settings (`/settings`), Guide (`/guide`), Debug (`/debug`), Logs (`/logs`), Territory Grid (`/territory`), Device View (`/d/<dhash>?token=...`)
+**Pages**: Dashboard (`/`), Settings (`/settings`), Guide (`/guide`), Debug (`/debug`), Logs (`/logs`), Territory Grid (`/territory`), Chat (`/chat`), Device View (`/d/<dhash>?token=...`)
 
 **API**: See `web/dashboard.py` for full route list. Key endpoints: `/api/status` (polled 3s),
-`/tasks/start|stop|stop-all`, `/api/stream` (MJPEG), `/d/<dhash>` (per-device scoped routes).
+`/tasks/start|stop|stop-all`, `/api/stream` (MJPEG), `/api/chat` (chat messages),
+`/api/protocol-status` (per-device protocol state), `/d/<dhash>` (per-device scoped routes).
 Per-device settings: `GET|POST /settings/device/<id>`.
 
 ### Relay Tunnel (tunnel.py + relay/)
@@ -408,7 +411,7 @@ and region drift. Setting: `collect_training_data` (default `False`).
 
 ### Protocol Interception (protocol/ + startup.py)
 Opt-in Frida Gadget integration that intercepts the game's network protocol for instant data reads.
-Setting: `protocol_enabled` (default `False`), toggled from `/debug` page (hidden from main settings).
+Per-device setting: `protocol_enabled` (default `False`), toggled from `/debug` page per device. Part of `DEVICE_OVERRIDABLE_KEYS` in `settings.py`.
 
 **APK Patching** (`patch_apk.py`): Injects Frida Gadget into the game APK. Pulls split APKs from
 a connected device (`--device`), patches the arm64 split via LIEF (`add_library("libfrida-gadget.so")`),
@@ -430,23 +433,28 @@ via `wire_registry.json` (BKDR hash lookup, 1000+ message types).
 **Data Files**: `wire_registry.json` (msg_id → class name), `proto_field_map.json` (per-message
 field schemas with names, types, wire types), `registry.json` (internal cspb-prefixed registry).
 
-**Lifecycle** (startup.py): `_start_protocol()` creates EventBus → GameState → InterceptorThread
-(daemon). `_stop_protocol()` tears down. Called from `apply_settings()`. Import wrapped in
-try/except ImportError — if protocol package or frida not installed, silently skips.
-Requires: `adb forward tcp:27042 tcp:27042` (set up by `_setup_frida_forward()` in startup.py).
+**Lifecycle** (startup.py): Per-device model — each device gets its own EventBus + GameState +
+InterceptorThread (daemon). `start_protocol_for_device(device)` creates the stack for one device,
+`stop_protocol_for_device(device)` tears it down. Active devices tracked in
+`config.PROTOCOL_ACTIVE_DEVICES` set. Called from `apply_settings()` and per-device settings routes.
+Import wrapped in try/except ImportError — if protocol package or frida not installed, silently skips.
+Port allocation: Frida Gadget listens on port 27042 inside each emulator. Each device gets a unique
+host port via `adb forward` (base 27042, incrementing per device). Set up by `_setup_frida_forward()`
+in startup.py.
 
-**AP fast path** (vision.py): `read_ap()` calls `get_protocol_ap()` first when enabled. Returns
+**AP fast path** (vision.py): `read_ap()` calls `get_protocol_ap()` first when the device is in
+`PROTOCOL_ACTIVE_DEVICES`. Returns
 `(current, max)` from `GameState.ap` if fresh (≤10s), else `None` → falls through to OCR.
 Entire block wrapped in try/except — any failure silently falls through.
 
 **Troop fast paths** (troops.py): `troops_avail()` calls `get_protocol_troops_home()` first when
-enabled — returns home count from `GameState.lineups` if fresh (≤30s), else `None` → falls through
+the device is in `PROTOCOL_ACTIVE_DEVICES` — returns home count from `GameState.lineups` if fresh (≤30s), else `None` → falls through
 to pixel counting. `read_panel_statuses()` calls `get_protocol_troop_snapshot()` — builds a full
 `DeviceTroopSnapshot` from lineup data with `seconds_remaining` timers, else `None` → falls through
 to icon template matching. Both wrapped in try/except, same zero-risk pattern as AP.
 
 **Rally fast path** (actions/rallies.py): `join_rally()` calls `get_protocol_rallies()` first when
-enabled — returns list of `Rally` objects if fresh (≤30s), `[]` for confirmed zero rallies, else
+the device is in `PROTOCOL_ACTIVE_DEVICES` — returns list of `Rally` objects if fresh (≤30s), `[]` for confirmed zero rallies, else
 `None` → falls through to UI. When `[]` or all rallies are full/marching/blacklisted, bails out
 immediately (saves 20-30s of war screen navigation + scrolling). **NPC/player type filtering**:
 `_NPC_RALLY_TYPES` (titan, eg, groot) match `rally.npcCity`, `_PLAYER_RALLY_TYPES` (castle, pass,
@@ -456,7 +464,7 @@ so only relevant rallies are considered (e.g. castle rallies are ignored when re
 for future fine-grained type mapping. Does NOT skip the UI join flow when joinable rallies exist —
 only provides early bail-out. Same try/except pattern as AP/troops.
 
-**Safety**: Zero-risk to existing users. Protocol off by default, one bool check when disabled.
+**Safety**: Zero-risk to existing users. Protocol off by default, one set-membership check when disabled.
 InterceptorThread auto-reconnects (10s interval) if gadget not running. Stale data returns
 None, triggering vision fallback. No existing code paths change when setting is off.
 
@@ -466,6 +474,7 @@ Token-based shareable URLs: `https://1453.life/{bot_name}/d/{device_hash}?token=
 - Access levels: `"full"` (start/stop tasks), `"readonly"` (view only), `None` (403)
 - `validate_device_token(device_id, token)` returns level; `require_full_access` decorator on write routes
 - Per-device settings: `config.get_device_config(device, key)` checks override, falls back to global
+- `protocol_enabled` is a device-overridable setting — each device can independently enable/disable protocol interception
 
 ### Device Status System (config.py + all runners)
 `config.DEVICE_STATUS[device]` — current status string. Set via `set_device_status()`, cleared via

@@ -198,6 +198,7 @@ TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires tar
 
 # Protocol interception (opt-in, requires Frida Gadget in APK)
 PROTOCOL_ENABLED = False
+PROTOCOL_ACTIVE_DEVICES = set()  # {device_id} — devices with running protocol interceptor
 
 # Per-device lock — prevents concurrent tasks from controlling the same device
 import threading
@@ -448,6 +449,7 @@ _SETTINGS_TO_CONFIG = {
     "tower_quest_enabled":   "TOWER_QUEST_ENABLED",
     "my_team":               "MY_TEAM_COLOR",
     "mithril_interval":      "MITHRIL_INTERVAL",
+    "protocol_enabled":      "PROTOCOL_ENABLED",
 }
 
 _DEVICE_CONFIG = {}  # {device_id: {setting_key: value}}
