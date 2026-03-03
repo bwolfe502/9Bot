@@ -849,7 +849,7 @@ def wait_for_image_and_tap(image_name, device, timeout=5, threshold=0.8):
     return False
 
 def timed_wait(device, condition_fn, budget_s, label, stop_check=None):
-    """Poll condition_fn every ~150ms; return as soon as it's True.
+    """Poll condition_fn every ~300ms; return as soon as it's True.
 
     If condition_fn is never True within budget_s, sleeps the full budget
     (same as time.sleep).  If condition_fn becomes True early, exits
@@ -867,7 +867,7 @@ def timed_wait(device, condition_fn, budget_s, label, stop_check=None):
             actual = time.time() - start
             stats.record_transition_time(device, label, actual, budget_s, True)
             return True
-        time.sleep(0.15)
+        time.sleep(0.3)
     # Condition never met within effective budget
     stats.record_transition_time(device, label, budget_s, budget_s, False)
     return False

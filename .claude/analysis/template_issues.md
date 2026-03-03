@@ -1,102 +1,78 @@
 # Template Matching Issues
 
-## search.png -- Low confidence match [CONFIRMED, CROSS-PLATFORM]
+## search.png -- 66% confidence [CONFIRMED, CROSS-PLATFORM]
 - **Platforms**: macOS (0.666), Windows (0.665)
-- **Sessions**: 2026-03-01 (macOS), 2026-03-02 (Windows)
-- **Score**: Consistently 66% on both platforms (13 hits on Windows, all at 0.665)
+- **Score**: Consistently 66% across all devices and sessions (63 hits total)
 - **Position**: Always at (654, 1395), region [0,960,1080,1920]
-- **Used in**: Titan rally flow (titan_select_to_search), AP restore flow
-- **Custom threshold**: 0.65 in titans.py `wait_for_image_and_tap("search.png", ..., threshold=0.65)`
-- **Risk**: Only 1.5% headroom above threshold. One of the lowest-confidence templates in the system.
-- **Action needed**: Re-capture search.png with a tighter crop or from a cleaner state. The template
-  likely includes too much surrounding UI context that varies slightly.
+- **Custom threshold**: 0.65 -- only 1% headroom
+- **Risk**: EXTREME. Any slight rendering change breaks titan search and AP restore flows.
+- **Action needed**: Re-capture with tighter crop or find alternative detection method.
+
+## statuses/defending.png -- Device-specific failure [NEW, CONFIRMED]
+- **Device emulator-5554**: 11/12 misses, best score 52-60% (threshold 80%)
+- **Device 127.0.0.1:5625**: 1/1 hits at 100%
+- **Impact**: Tower recall completely broken on emulator-5554 (0/11 success in session 12)
+- **Root cause**: Rendering difference between emulator instances
+- **Action needed**: Recapture template from emulator-5554, or use multi-template approach
+
+## mithril_return.png -- Device-specific failure [NEW, CONFIRMED]
+- **Device emulator-5554**: 14/14 misses at conf=60 (threshold 80%)
+- **Device 127.0.0.1:5625**: 5/5 hits at conf=100
+- **Impact**: Mithril return detection fails on emulator-5554
+- **Data**: Training data shows clear device split during simultaneous check (19:44:07-19:44:26)
+- **Action needed**: Same as defending.png -- recapture or multi-template
 
 ## stationed.png -- Region miss [CONFIRMED]
-- **Platform**: Windows (65x region misses in current session, 103x in previous)
-- **Sessions**: 2026-03-01, 2026-03-02
+- **Platform**: Windows (65x region misses in session 7, 103x in earlier sessions)
 - **Found at**: Various Y positions outside IMAGE_REGIONS
 - **Impact**: Every EG priest probe triggers full-screen fallback search. Performance waste.
 - **Action needed**: Widen `IMAGE_REGIONS["stationed.png"]` to cover actual hit range
 
-## mithril_return.png -- Borderline misses [NEW]
-- **Platform**: Windows
-- **Session**: 2026-03-02
-- **Stats**: 3 misses at 0.693, 3 hits at 1.0
-- **Pattern**: Misses when checking if mithril is ready for return (isn't ready), hits when actually ready
-- **Risk**: Low -- the 0.693 score is a true negative (template not present, correct behavior)
+## mithril_depart.png -- Borderline hit [WATCH]
+- **Device :5555**: Hit at 0.746 (below 0.8 threshold) -- BELOW standard threshold
+- **All other devices**: 98-100% confidence
+- **Position varies**: Y range 715-1250 across 4 known positions
+- **Action needed**: Monitor. May need device-specific template if :5555 starts missing.
 
-## mithril_depart.png -- Region miss [CONFIRMED]
-- **Platform**: macOS (previously), Windows (13x this session)
-- **Session**: 2026-03-02
-- **Found at**: Y range 715-1250 (4 hits across full range)
-- **Position varies**: (493,715), (493,894), (493,1072), (493,1250)
-- **Action needed**: IMAGE_REGIONS needs to cover full Y range 700-1300
+## rally_eg_select.png -- Borderline at 84% [WATCH]
+- **Devices**: :5635, :5555, :5625, :5645, :5655 -- all at 0.844
+- **Margin**: +0.044 above threshold -- thin but consistent across devices
+- **Risk**: Moderate. Stable within sessions but could regress with game updates.
 
-## rally_button.png -- Never matched titan popup [REVERTED]
-- **Platform**: macOS (likely cross-platform)
-- **Sessions**: 2026-03-02 (macOS sessions)
-- **Introduced**: Commit 1502f45 replaced blind tap at (420,1400) with rally_button.png polling
-- **Stats**: `titan_popup_check` 0/7 met -- template NEVER matches on titan on-map popup
-- **Root cause**: rally_button.png was captured from a dialog context, not the titan map popup
-- **Resolution**: Reverted to pre-1502f45 blind tap. See [lessons.md](lessons.md) #001.
+## close_x.png -- Occasional borderline [LOW]
+- **Device :5655**: One hit at 0.815 (+0.015 above threshold)
+- **All other devices**: 0.997-1.0
+- **Risk**: Very low. Single outlier.
 
-## rally_titan_select.png -- Platform-dependent [WATCH]
-- **Windows**: Stable at 0.865 (10/10 hits, 0 misses in 2026-03-02 session)
-- **macOS**: Intermittent (2 hits at 0.866 + 12 misses at 0.418-0.423 in previous sessions)
-- **Used with**: threshold 0.5 (timed_wait) and 0.65 (wait_for_image_and_tap)
-- **Status**: Reliable on Windows, needs investigation on macOS
+## aq_screen vs war_screen -- Tight margin [NEW, WATCH]
+- **Gap**: Only 6-9 points (aq_screen 97-100% vs war_screen 91%)
+- **Impact**: Not currently causing misclassification
+- **Risk**: If aq_screen template quality degrades, war_screen could win the match
+- **Root cause**: Both screens share alliance navigation tab chrome
+- **Data**: 119 aq_screen detections, war_screen runner-up at 91% on every one
 
-## aq_claim.png -- Always misses [LOW]
-- **Platform**: Windows
-- **Session**: 2026-03-02
-- **Stats**: 5 misses, best score 0.442 (far below 0.8 threshold)
-- **Context**: Quest claim button check -- template simply not present (quests not ready to claim)
-- **Risk**: None -- this is expected behavior (checking for claimable quests)
+## back_arrow.png region miss false positive [KNOWN, IGNORE]
+- **Position**: (1001, 1083) -- mid-right of screen, not a real back arrow
+- **Log**: "REGION MISS for back_arrow.png" at 20:01:37 on emulator-5554
+- **Action**: Do NOT widen IMAGE_REGIONS. This is a coincidental pattern match during
+  popup/overlay state. The real back arrow is always at (73-74, 73-74).
 
-## heal.png -- Expected misses [NORMAL]
-- **Platform**: Windows
-- **Session**: 2026-03-02
-- **Stats**: 19 misses (best 0.462-0.476), 2 hits at 1.0
-- **Context**: heal_all checks for heal button; 19 misses are when no injured troops exist
-- **Risk**: None -- working as designed. 100% confidence when button is present.
-
-## close_x.png -- One miss, stable hits [NORMAL]
-- **Platform**: Windows
-- **Session**: 2026-03-02
-- **Stats**: 1 miss at 0.534, 8 hits at 0.997-1.0
-- **Positions**: Two distinct positions: (1005,499) and (991,450) -- two different close buttons
-- **Risk**: None -- single miss is likely a transient overlay or wrong screen state
-
-## war_screen.png -- Bimodal scores [LOW]
-- **Platform**: Windows
-- **Session**: 2026-03-02
-- **Stats**: 44 hits, scores bimodal at 0.94 and 1.0
-- **Risk**: Low -- 0.94 is well above threshold. The bimodal pattern suggests minor UI variation
-  (e.g., war screen with/without active rallies changes layout slightly).
-
-## Dimensional Treasure (mithril) screen -- UNKNOWN [NEW]
-- **Platform**: Windows
-- **Session**: 2026-03-02
-- **Debug screenshot**: `20260302_143838_127.0.0.1_5635_unknown_screen.png`
-- **Issue**: The "Dimensional Treasure" / mithril mining zone selector has no screen template.
-  Detected as UNKNOWN, triggering recovery attempts during mithril mining.
-- **Action needed**: Consider adding a screen template for this screen, or handle it as
-  an expected intermediate state in mine_mithril flow.
-
-## verify_fail_war_screen -- MAP during nav to WAR [NEW]
-- **Platform**: Windows
-- **Session**: 2026-03-02
-- **Debug screenshot**: `20260302_143442_127.0.0.1_5635_verify_fail_war_screen.png`
-- **Issue**: During navigation MAP->WAR, verification found MAP screen instead of WAR.
-  Screenshot shows the map with active rally troops, AP use banner visible.
-  The AP banner may be blocking the alliance button tap that should navigate to WAR.
-- **Stats**: 1 `map_screen->war_screen` nav failure in this session.
+## Dimensional Treasure screen -- UNKNOWN [KNOWN]
+- Mithril mining zone selector has no screen template
+- Detected as UNKNOWN, triggers recovery attempts during mine_mithril
+- **Status**: mine_mithril still succeeds 98% (44/45) -- not blocking
 
 ## Screen detection stability [GOOD]
-- **map_screen.png**: 162 hits, 100% at (911,1817), scores 0.964-1.0 -- excellent
-- **alliance_screen.png**: 44 hits, all at (186,1220), score 1.0 -- perfect
-- **aq_screen.png**: 20 hits, all at (540,478), 0.973-1.0 -- excellent
-- **bl_screen.png**: 25 hits, all at (251,1186), 0.934-1.0 -- solid
-- **td_screen.png**: 22 hits, all at (540,1893), score 1.0 -- perfect
-- **back_arrow.png**: 34 hits, positions (73,73)-(74,74), score 1.0 -- perfect
-- **kingdom_screen.png**: 5 hits, all at (107,1882), score 1.0 -- perfect
+- **map_screen.png**: 586 hits, 100% at 95-99% -- rock solid on current devices
+- **search.png fallback** (for 70-79% MAP): Not needed this session (was added for shoda's emulator)
+- **alliance_screen.png**: 48 hits, all at 100% -- perfect
+- **aq_screen.png**: 119 hits, 97.5% hit rate -- good (3 misses at 55-59% during transitions)
+- **bl_screen.png**: 132 hits, 100% at 91-97% -- solid
+- **td_screen.png**: 30 hits, 100% at 90-100% -- solid
+- **kingdom_screen.png**: 10 hits, 100% -- perfect
+- **war_screen.png**: 127 hits, 96.1% (5 misses at 61% during transitions)
+- **back_arrow.png**: 84 hits, 97% at 99-100% -- 3 near-misses at 65% (screen obstructed)
+
+## Fixed Issues
+- **rally_titan_select.png**: Stable at 0.865 on Windows (50 hits, 0 misses). Was intermittent on macOS.
+- **rally_button.png**: Reverted to blind tap. See lessons.md #001.

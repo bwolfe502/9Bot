@@ -15,10 +15,14 @@ Harden existing features before adding new ones.
 - [x] AP Recovery popup handling — detect game-opened AP popup during EG depart, restore AP inline
 - [ ] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Existing regions verified correct for stationed.png, mithril_depart.png, depart.png (observed positions all within current bounds)
 - [x] Settings validation — validate `settings.json` on startup, catch invalid/corrupt values
-- [ ] Fix join_rally success rate (33%) — `jr_slot_to_depart` transition at 0%, war screen scroll settle broken. Diagnostic screenshots added (`jr_detail_load_fail`, `jr_slot_to_depart_fail`) — awaiting live data
+- [x] Fix join_rally success rate — replaced unreliable slot.png template with blind tap at (148, 1532), fixed close_x auto-dismiss on WAR screen, fixed scroll early-exit, added depart_anyway fallback
 - [ ] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success). Diagnostic screenshot added (`titan_depart_miss_{N}`) — awaiting live data
 - [x] ~~Fix heal flow~~ — 0% transitions are expected: heal button only appears when troops are injured (95% of the time they're healthy). Template works perfectly when healing is needed (100% confidence on hits)
-- [x] Tune timed_wait budgets — `jr_backout_close_x` 3.0→4.0s, `nav_kingdom_to_map` 2→3s, `recover_{name}` 1.5→2.0s
+- [x] Tune timed_wait budgets — multiple rounds: `nav_kingdom_to_map` 2→3s, `recover_{name}` 1.5→2s, `verify_aq_screen` 2→3s, `nav_map_to_alliance` 2→2.5s, `nav_alliance_menu_load` 1→1.5s, `jr_backout_close_x` 4→2s (was over-budgeted)
+- [x] War screen speed optimization — removed label OCR (template match sufficient), disabled owner OCR (deferred to protocol), replaced lambda:False timed_waits with interruptible sleep, reduced scroll settle 1.5→0.8s, removed redundant depart wait
+- [x] Multi-device contention reduction — poll interval 150→300ms, quest check interval 60→300s when troops deployed, auto-install lz4 for protocol
+- [ ] Protocol-based rally blacklist — use `rally.troops[0].name` from protocol data instead of OCR for owner identification. UI-based OCR disabled due to 500-2000ms per-rally cost
+- [ ] Further multi-device performance — screenshot caching within timed_wait cycles, device-scoped OCR locks (Semaphore instead of global Lock), scrcpy/minicap for persistent screenshot streams
 
 ## Phase 2 — Testing & Quality
 
@@ -32,7 +36,7 @@ Build confidence that everything works before shipping updates.
 
 ### Major Test Gaps (P1)
 - [ ] Expand `test_quests.py` — check_quests orchestration, tower quest flow, claim rewards, OCR parsing
-- [ ] Expand `test_rallies.py` — join_rally (649 LOC untested), join_war_rallies, _ocr_error_banner
+- [ ] Expand `test_rallies.py` — join_rally, join_war_rallies, _ocr_error_banner
 - [ ] `test_farming.py` — mine_mithril, mine_mithril_if_due interval logic, _set_gather_level, gather.png template tap (gather_gold updated to use wait_for_image_and_tap)
 
 ### Infrastructure

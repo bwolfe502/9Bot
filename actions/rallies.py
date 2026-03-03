@@ -25,7 +25,7 @@ from navigation import navigate, check_screen, DEBUG_DIR
 from troops import (troops_avail, heal_all, read_panel_statuses,
                     TroopAction, capture_departing_portrait)
 
-from actions._helpers import _last_depart_slot
+from actions._helpers import _last_depart_slot, _interruptible_sleep
 
 _log = get_logger("actions")
 
@@ -278,7 +278,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
             # Try close button first
             tap_image("close_x.png", device)
             timed_wait(device, lambda: check_screen(device) == Screen.WAR,
-                       4.0, "jr_backout_close_x")
+                       2.0, "jr_backout_close_x")
 
             # Check where we are before continuing
             current = check_screen(device)
@@ -458,21 +458,12 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
 
                     join_x, join_y = best_join
 
-                    # Verify the icon's label says the expected type
-                    icon_label = _ocr_label_at(screen, label_y)
-                    log.debug("Icon label OCR (y=%d): %s", label_y, icon_label)
-                    if not _text_matches_type(icon_label, rally_type):
-                        log.debug("Icon label mismatch — expected '%s', got: %s", rally_type, icon_label)
-                        continue
+                    # Owner OCR disabled — too slow (500-2000ms per rally).
+                    # Blacklist checking is handled by protocol path when enabled.
+                    rally_owner = None
 
-                    # OCR the rally owner name and check against blacklist
-                    rally_owner = _ocr_rally_owner(screen, join_y)
-                    if rally_owner and _is_rally_owner_blacklisted(device, rally_owner):
-                        log.info("Skipping %s rally by blacklisted owner '%s'", rally_type, rally_owner)
-                        continue
-
-                    log.info("Found joinable %s rally (icon_y=%d, join_y=%d, dist=%d, owner='%s')",
-                             rally_type, label_y, join_y, best_dist, rally_owner or "unknown")
+                    log.info("Found joinable %s rally (icon_y=%d, join_y=%d, dist=%d)",
+                             rally_type, label_y, join_y, best_dist)
 
                     h, w = join_btn.shape[:2]
                     log.debug("Clicking join at (%d, %d)", join_x + w // 2, join_y + h // 2)
@@ -481,7 +472,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                     # Wait for detail screen to settle, then tap the last slot.
                     # Depart button only appears AFTER a slot is filled, so we
                     # can't use depart.png to confirm the detail screen loaded.
-                    time.sleep(1.5)
+                    time.sleep(1.0)
                     adb_tap(device, 148, 1532)
 
                     # Depart appearing confirms the slot tap worked
@@ -509,12 +500,6 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 if not slot_found:
                     continue  # No slot for this type → try next rally_type
 
-                # Wait for depart button to be ready after slot tap
-                timed_wait(
-                    device,
-                    lambda: find_image(load_screenshot(device),
-                                       "depart.png", threshold=0.75) is not None,
-                    2, "jr_slot_to_depart")
                 # Capture which troop is selected before depart for slot tracking
                 try:
                     portrait_result = capture_departing_portrait(device)
@@ -594,21 +579,6 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                         _save_debug_screenshot(device, "join_failed_after_depart")
                         log.warning("Depart clicked but troops unchanged (%d -> %d) — join failed. Screen: %s",
                                     pre_war_troops, new_troops, current_screen)
-
-                        # Check for in-game error message on screen (e.g. "Cannot march
-                        # across protected zones"). These flash briefly after failed actions.
-                        error_screen = load_screenshot(device)
-                        if error_screen is not None and rally_owner:
-                            error_text = _ocr_error_banner(error_screen)
-                            if error_text:
-                                log.warning("In-game error detected: '%s' — blacklisting '%s' immediately",
-                                            error_text, rally_owner)
-                                _blacklist_rally_owner(device, rally_owner)
-                            else:
-                                _record_rally_owner_failure(device, rally_owner)
-                        elif rally_owner:
-                            _record_rally_owner_failure(device, rally_owner)
-
                         navigate(Screen.WAR, device)
                         continue  # Try next match
                 else:
@@ -652,8 +622,8 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
 
     # Scroll up to top (scroll position persists between visits)
     adb_swipe(device, 560, 300, 560, 1400, 500)
-    timed_wait(device, lambda: False, 1.5, "jr_scroll_up_settle",
-               stop_check=stop_check)
+    if _interruptible_sleep(0.8, stop_check):
+        return False
 
     # Scroll down and check 5 times
     for attempt in range(5):
@@ -662,8 +632,8 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
             return False
         log.debug("Scroll down attempt %d/5", attempt + 1)
         adb_swipe(device, 560, 948, 560, 245, 500)
-        timed_wait(device, lambda: False, 1.5, "jr_scroll_down_settle",
-                   stop_check=stop_check)
+        if _interruptible_sleep(0.8, stop_check):
+            return False
 
         result = check_for_joinable_rally()
         if result not in (False, "lost"):

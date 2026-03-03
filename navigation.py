@@ -519,7 +519,7 @@ def navigate(target_screen, device, _depth=0):
             if not navigate(Screen.BATTLE_LIST, device, _depth=_depth + 1):
                 return False
         tap("quest_button", device)
-        return _verify_screen(Screen.ALLIANCE_QUEST, device, wait_time=2.0)
+        return _verify_screen(Screen.ALLIANCE_QUEST, device, wait_time=3.0)
 
     # To war_screen
     if target_screen == Screen.WAR:
@@ -534,10 +534,10 @@ def navigate(target_screen, device, _depth=0):
                 return False
         adb_tap(device, 640, 1865)
         timed_wait(device, lambda: check_screen(device) == Screen.ALLIANCE,
-                   2, "nav_map_to_alliance")
+                   2.5, "nav_map_to_alliance")
         adb_tap(device, 200, 1200)
         timed_wait(device, lambda: check_screen(device) == Screen.ALLIANCE,
-                   1, "nav_alliance_menu_load")
+                   1.5, "nav_alliance_menu_load")
         adb_tap(device, 550, 170)
         return _verify_screen(Screen.WAR, device)
 

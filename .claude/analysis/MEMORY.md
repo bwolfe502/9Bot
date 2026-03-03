@@ -2,7 +2,7 @@
 
 Index of known issues and patterns discovered from session analysis.
 Run `/analyze` to process new diagnostic data and update these files.
-Last updated: 2026-03-02 (7 sessions: 4 macOS local, 2 Windows inbox, 1 Windows local)
+Last updated: 2026-03-02 (12 sessions: 4 macOS local, 2 Windows inbox, 6 Windows local)
 
 ## Topic Files
 
@@ -16,91 +16,82 @@ Last updated: 2026-03-02 (7 sessions: 4 macOS local, 2 Windows inbox, 1 Windows 
 
 ## Critical Issues
 
-### join_rally -- 0% success, confirmed cross-platform [CRITICAL]
-- Windows session 2026-03-02 (device 5635): 0/10 attempts, all "unknown" failures
-- Average failure time ~15.3s per attempt, total 153.4s wasted
-- `jr_scroll_down_settle` and `jr_scroll_up_settle`: 0/28 combined met -- scroll never settling
-- `jr_detail_load` transition never met on any platform
-- **Root cause**: Scroll-based rally finding flow is broken. Needs protocol fast-path or rework.
+### join_rally -- 0% success, 215 attempts [CRITICAL]
+- 0/215 across 7 devices, 5 sessions, both platforms
+- `jr_detail_load` transition: 0/129 met (3s budget)
+- Rallies fill faster than bot can tap -- 3 EG joins succeeded when rallies were fresh
+- Protocol early bail-out works correctly (instant "no rallies" detection)
 - **Details**: [action_patterns.md](action_patterns.md)
 
-### rally_titan -- 69% success, titan_on_map_select still 0% [HIGH]
-- Windows session 2026-03-02: 9/13 attempts (69%). 4 failures at ~1.4s each.
-- `titan_on_map_select`: 0/10 met -- blind tap at (540,900) never hits after search.
-- `titan_depart_settle`: 0/9 met -- depart confirmation never detected.
-- When blind tap works, success follows. When titan walks off-center, fast 1.3-1.6s fail.
-- **Details**: [action_patterns.md](action_patterns.md)
+### recall_tower -- 21% success [HIGH, NEW]
+- 3/14 attempts, 0/11 on emulator-5554
+- Root cause: `statuses/defending.png` at 52-60% on emulator-5554 (needs 80%)
+- Template is device-specific -- works on :5625 (100%), fails on emulator-5554
+- **Details**: [action_patterns.md](action_patterns.md), [template_issues.md](template_issues.md)
 
-### LOGGED OUT -- 60x on device 5585 [HIGH]
-- Device 127.0.0.1:5585 triggered 60 ATTENTION popup detections across session.
-- Likely game disconnects or server kicks causing repeated login/popup cycles.
-- **Details**: [action_patterns.md](action_patterns.md)
-
-### PVP attack menu failure -- 22x "attack menu did not open" [CONFIRMED]
-- 56 "PVP: attack menu did not open" warnings + 22 "pvp_attack returned failure"
-- Tower state changes between navigation and tap.
-- **Details**: [action_patterns.md](action_patterns.md)
+### Memory spikes -- +5658 MB per check_quests [HIGH, NEW]
+- 3 bot restarts in 43 minutes suggest OOM with 3+ concurrent devices
+- RSS plateaus at ~6.1 GB with 6 active devices
+- Spikes correlate with concurrent EasyOCR across multiple devices
+- **Details**: [timing_issues.md](timing_issues.md)
 
 ## Template Issues
 
-### search.png -- Matching at 66% on Windows [CONFIRMED, CROSS-PLATFORM]
-- Windows session 2026-03-02: all 13 hits at exactly 66% confidence
-- Used with custom threshold 0.65 -- only 1% headroom above threshold
-- **Risk**: Very fragile. Any slight rendering change will break titan search flow.
+### search.png -- 66% confidence [CONFIRMED, CROSS-PLATFORM]
+- 1% headroom above 0.65 threshold -- most fragile template in the system
 - **Details**: [template_issues.md](template_issues.md)
 
-### stationed.png -- Region miss, 65x on Windows [CONFIRMED]
-- IMAGE_REGIONS too narrow, full-screen fallback on every EG probe
+### Device-specific template failures [NEW]
+- `statuses/defending.png`: 0% on emulator-5554, 100% on :5625
+- `mithril_return.png`: 0% on emulator-5554, 100% on :5625
+- Both need recapture from emulator-5554 or multi-template approach
 - **Details**: [template_issues.md](template_issues.md)
 
-### mithril_return.png -- Borderline at 69% [NEW]
-- 3 misses at 0.693 (below 0.8 threshold), 3 hits at 1.0
-- Template works when present but misses when mithril not ready to return
+### aq_screen vs war_screen -- Tight margin [NEW, WATCH]
+- Only 6-9 point gap (97-100% vs 91%) -- narrowest pair
+- Not currently misclassifying but vulnerable to template degradation
 - **Details**: [template_issues.md](template_issues.md)
-
-### Mithril Dimensional Treasure screen -- UNKNOWN [NEW]
-- Debug screenshot shows "Dimensional Treasure" screen detected as UNKNOWN
-- This is the mithril mining zone selector -- no screen template exists for it
-- **Details**: [template_issues.md](template_issues.md)
-
-### rally_titan_select.png -- Stable at 87% on Windows [IMPROVED]
-- Windows session: 10/10 hits at exactly 0.865 (was intermittent on macOS)
-- 0 misses this session (was 12 misses on macOS previously)
-- **Status**: Stable on Windows, still needs monitoring on macOS
 
 ## Timing Issues
 
-### heal_* transitions -- All 0% met [KNOWN]
-- All 4 heal transitions at 0/2 met. These are `lambda: False` waits (just sleeps).
-- Not a real issue -- heal_all still succeeds 100% (19/19).
+### Budget overruns [WATCH]
+- `verify_aq_screen`: avg 2.3s vs 2.0s budget -- needs 3.0s
+- `nav_map_to_alliance`: avg 2.1s vs 2.0s budget -- needs 2.5s
+- `nav_alliance_menu_load`: avg 1.1s vs 1.0s budget -- needs 1.5s
 - **Details**: [timing_issues.md](timing_issues.md)
 
-### Mithril transitions -- All 0% met [KNOWN]
-- 9 mithril transitions all 0% met. Same `lambda: False` sleep pattern.
-- mine_mithril still succeeds 100% (1/1).
-- **Details**: [timing_issues.md](timing_issues.md)
-
-### titan_search_menu_open -- 70% met [WATCH]
-- 7/10 met at budget 1.5s. avg=1.00s, max=1.23s.
-- 3 misses suggest occasional slow menu opens.
+### LZ4 not installed [NEW, EASY FIX]
+- ~954 noise warnings per session (88% of all warnings)
+- `pip install lz4` eliminates noise and enables CompressedMessage decoding
 - **Details**: [timing_issues.md](timing_issues.md)
 
 ## Tunnel Issues
 
-### Frequent disconnects and reconnects [NEW]
-- 77 tunnel warnings across session
-- 17 "no data in 90s" timeouts, 17 connection errors
-- Multiple short-lived sessions (5-61s uptime before server close)
+### Constant 90s idle disconnects [ONGOING]
+- 18+ reconnections per session, 77 tunnel warnings across 21 hours
+- Missing server-side keepalive pings
 - **Details**: [timing_issues.md](timing_issues.md)
+
+## Action Rates Summary
+
+| Action | Rate | Attempts | Trend |
+|--------|------|----------|-------|
+| join_rally | 0% | 215 | Stable (broken) |
+| recall_tower | 21% | 14 | NEW |
+| pvp_attack | 37% | 19 | Worse |
+| rally_eg | 40% | 25 | NEW |
+| occupy_tower | 44% | 18 | NEW |
+| rally_titan | 72% | 197 | Improved |
+| All others | 92-100% | 400+ | Stable |
 
 ## Fixed Issues
 
-### rally_titan_select.png on macOS -- 12 misses [FIXED on Windows]
-- Was 12/14 misses on macOS. Windows shows 10/10 hits at 0.865.
-- May be macOS-specific rendering issue. Cross-platform status unclear.
+- rally_titan_select.png: Stable at 0.865 on Windows (50 hits, 0 misses)
+- nav_kingdom_to_map budget: 100% met at 3.0s (was 0-9% at 1.0s)
+- nav_td_exit_to_map budget: 100% met at 3.5s (was 71-78%)
 
-### nav_kingdom_to_map budget [FIXED]
-- Previously 0-9% met at 1.0s budget. Now widened to 3s, 1/1 met at 1.69s.
+## Training Data Gaps
 
-### nav_td_exit_to_map budget [FIXED]
-- Previously 71-78% met. Now widened to 3.5s, 11/11 met at avg 1.91s.
+- Zero OCR entries logged (1,440 total entries, 0 OCR)
+- 18 orphan training images without JSONL entries
+- **Details**: [training_data.md](training_data.md)
