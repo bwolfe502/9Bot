@@ -495,63 +495,17 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                         should_rescan = True
                         break  # Break rally_locs loop, rescan
 
-                    # Detail screen confirmed — find an open slot
-                    slot_found = False
-                    rally_full = False
-                    last_screen = None
-                    start_time = time.time()
-                    while time.time() - start_time < 4:
-                        if stop_check and stop_check():
-                            return False
-                        s = load_screenshot(device)
-                        if s is None:
-                            time.sleep(0.5)
-                            continue
-                        last_screen = s
-
-                        # Check for empty slot BEFORE full_rally — a rally can
-                        # show full_rally.png while still having an open slot
-                        match = find_image(s, "slot.png", threshold=0.8)
-                        if match is None:
-                            match = find_image(s, "slot.png", threshold=0.65)
-                            if match:
-                                log.debug("slot.png matched at lower threshold (%.0f%%)", get_last_best() * 100)
-                        if match is None:
-                            match = find_image(s, "slot.png", threshold=0.5)
-                            if match:
-                                log.debug("slot.png matched at 0.5 threshold (%.0f%%)", get_last_best() * 100)
-                        if match:
-                            max_val, max_loc, sh, sw = match
-                            cx = max_loc[0] + sw // 2
-                            cy = max_loc[1] + sh // 2
-                            log.debug("Found slot at (%d, %d), confidence %.0f%%", cx, cy, max_val * 100)
-                            adb_tap(device, cx, cy)
-                            slot_found = True
-                            break
-
-                        # Only check full_rally after confirming no open slot
-                        if find_image(s, "full_rally.png", threshold=0.8):
-                            rally_full = True
-                            break
-                        time.sleep(0.5)
-
-                    if rally_full:
-                        log.warning("Rally is full — backing out to try others")
-                        if not _backout_to_war_screen():
-                            return "lost"
-                        retries_left -= 1
-                        should_rescan = True
-                        break  # Break rally_locs loop, rescan in while loop
-
+                    # Detail screen confirmed — tap the last slot position
+                    # (148, 1532) is the final slot; if it's open the rally
+                    # has room, if not the rally is full.
+                    adb_tap(device, 148, 1532)
+                    slot_found = timed_wait(
+                        device,
+                        lambda: find_image(load_screenshot(device),
+                                           "depart.png", threshold=0.75) is not None,
+                        2, "jr_slot_to_depart")
                     if not slot_found:
-                        if last_screen is not None:
-                            from navigation import _save_debug_screenshot
-                            _save_debug_screenshot(device, "slot_not_found", last_screen)
-                            best = get_last_best()
-                            log.warning("No slot found (best match: %.0f%%, detail_loaded: %s) — backing out to try others",
-                                        best * 100, detail_loaded)
-                        else:
-                            log.warning("No slot found (no screenshot captured) — backing out")
+                        log.warning("Rally is full — backing out to try others")
                         if not _backout_to_war_screen():
                             return "lost"
                         retries_left -= 1
@@ -812,51 +766,34 @@ def join_war_rallies(device):
                         h, w = join_btn.shape[:2]
                         adb_tap(device, join_x + w // 2, join_y + h // 2)
 
-                        # Wait for an open slot, also check for titan error or full rally
-                        slot_found = False
+                        # Wait for detail screen, check for errors, then tap last slot
                         need_backout = False
                         backout_reason = None
-                        last_screen = None
                         start_time = time.time()
-                        while time.time() - start_time < 5:
+                        while time.time() - start_time < 3:
                             s = load_screenshot(device)
                             if s is None:
                                 time.sleep(0.5)
                                 continue
-                            last_screen = s
                             if find_image(s, "titanrally_error.png", threshold=0.8):
                                 need_backout = True
                                 backout_reason = "Titan rally detected"
                                 break
-                            if find_image(s, "full_rally.png", threshold=0.8):
-                                need_backout = True
-                                backout_reason = "Rally is full"
-                                break
-                            # Check for empty slot — try normal threshold, then lower
-                            match = find_image(s, "slot.png", threshold=0.8)
-                            if match is None:
-                                match = find_image(s, "slot.png", threshold=0.65)
-                                if match:
-                                    log.debug("slot.png matched at lower threshold (%.0f%%)", get_last_best() * 100)
-                            if match:
-                                max_val, max_loc, sh, sw = match
-                                cx = max_loc[0] + sw // 2
-                                cy = max_loc[1] + sh // 2
-                                log.debug("Found slot at (%d, %d), confidence %.0f%%", cx, cy, max_val * 100)
-                                adb_tap(device, cx, cy)
-                                slot_found = True
-                                break
+                            if find_image(s, "depart.png", threshold=0.75):
+                                break  # Detail screen loaded
                             time.sleep(0.5)
 
                         if need_backout:
                             return _backout_and_retry(backout_reason)
 
+                        # Tap the last slot position — if open, depart appears;
+                        # if not, rally is full
+                        adb_tap(device, 148, 1532)
+                        time.sleep(1)
+                        slot_found = find_image(load_screenshot(device),
+                                                "depart.png", threshold=0.75) is not None
                         if not slot_found:
-                            # Save debug screenshot so we can see the rally detail screen
-                            if last_screen is not None:
-                                from navigation import _save_debug_screenshot
-                                _save_debug_screenshot(device, "slot_not_found", last_screen)
-                            return _backout_and_retry("No open slot found, rally may be full")
+                            return _backout_and_retry("Rally is full")
 
                         time.sleep(1)
                         if tap_image("depart.png", device):
