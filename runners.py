@@ -107,6 +107,7 @@ def run_auto_quest(device, stop_event):
     dlog.info("Auto Quest started")
     reset_quest_tracking(device)
     reset_rally_blacklist(device)
+    _last_quest_check.pop(device, None)  # Force quest check on first iteration
     stop_check = stop_event.is_set
     lock = config.get_device_lock(device)
     try:
