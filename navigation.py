@@ -190,17 +190,33 @@ def check_screen(device):
                 device, f"{best_name}.png", cx, cy, best_val)
             log.debug("Screen identified: %s (%.0f%%)", best_name, best_val * 100)
             identified = best_name
+        elif (best_name == Screen.MAP and best_val >= 0.7):
+            # MAP near-miss (70-79%): confirm with search.png as secondary check.
+            # map_screen.png is a tiny corner crop that drops below 80% on some
+            # emulators/accounts; search.png (the big yellow SEARCH button) is
+            # more robust and only appears on the MAP screen.
+            search_tpl = get_template("elements/search.png")
+            if search_tpl is not None:
+                search_area = screen[960:1920, 0:1080]  # lower half
+                sr = cv2.matchTemplate(search_area, search_tpl, cv2.TM_CCOEFF_NORMED)
+                _, sv, _, _ = cv2.minMaxLoc(sr)
+                if sv >= 0.7:
+                    log.debug("MAP confirmed via search.png fallback (map: %.0f%%, search: %.0f%%)",
+                              best_val * 100, sv * 100)
+                    identified = Screen.MAP
 
         training.log_screen(device, scores, best_name, identified is not None)
         if not identified:
             training.save_training_image(device, "unknown_screen", screen,
                                          {"best": best_name, "conf": round(best_val * 100)})
 
-        # Soft popup dismiss (close_x) — try on any screen EXCEPT map_screen.
+        # Soft popup dismiss (close_x) — try on any screen EXCEPT map/war.
         # On MAP, close_x appears as part of normal flows (rally dialog, AP
         # window, search overlay) and must NOT be auto-dismissed.
+        # On WAR, close_x is part of rally detail/search UI — dismissing it
+        # closes the rally menu and breaks rally joining.
         # On other screens (td_screen overlays, unknown popups) it's safe.
-        if identified != Screen.MAP:
+        if identified not in (Screen.MAP, Screen.WAR):
             for tpl_path, popup_name, threshold in _POPUP_SOFT:
                 tpl = get_template(tpl_path)
                 if tpl is None:

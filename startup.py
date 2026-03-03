@@ -259,7 +259,7 @@ def get_protocol_troop_snapshot(device):
 
     troops = []
     now = time.time()
-    server_ts = state.server_time  # epoch seconds from HeartBeatAck
+    server_ts = state.server_time  # epoch milliseconds from HeartBeatAck
 
     for lid, lu in lineups.items():
         ls = lineup_states.get(lid)
@@ -268,10 +268,12 @@ def get_protocol_troop_snapshot(device):
 
         seconds_remaining = None
         if ls is not None and ls.stateEndTs > 0 and server_ts:
-            seconds_remaining = max(0, ls.stateEndTs - server_ts)
+            # Both stateEndTs and server_ts are epoch milliseconds —
+            # subtract then convert to seconds.
+            seconds_remaining = max(0, (ls.stateEndTs - server_ts) // 1000)
         elif ls is not None and ls.stateEndTs > 0:
-            # No server_ts — treat stateEndTs as epoch and compute from wall clock
-            seconds_remaining = max(0, ls.stateEndTs - int(now))
+            # No server_ts — treat stateEndTs as epoch ms and compute from wall clock
+            seconds_remaining = max(0, (ls.stateEndTs - int(now * 1000)) // 1000)
 
         if action == TroopAction.HOME:
             troops.append(TroopStatus(action=TroopAction.HOME, read_at=now))
@@ -700,20 +702,36 @@ def upload_bug_report(settings=None, notes=None):
     body = prefix + zip_bytes + suffix
 
     import requests as _req
-    try:
-        resp = _req.post(
-            upload_url,
-            data=_ProgressReader(body, _on_progress),
-            headers={
-                "Authorization": f"Bearer {relay_secret}",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-            },
-            timeout=300,
-        )
-    except Exception as e:
-        _last_upload_error = str(e)
-        _upload_progress.update(phase="error", percent=0, message=str(e))
-        return False, f"Upload failed: {e}"
+    _max_retries = 3
+    resp = None
+    for _attempt in range(_max_retries):
+        try:
+            resp = _req.post(
+                upload_url,
+                data=_ProgressReader(body, _on_progress),
+                headers={
+                    "Authorization": f"Bearer {relay_secret}",
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                },
+                timeout=300,
+            )
+            break  # success — got a response
+        except (_req.ConnectionError, _req.Timeout, IOError) as e:
+            if _attempt < _max_retries - 1:
+                _wait = 2 ** (_attempt + 1)
+                logging.getLogger("startup").warning("Upload attempt %d failed: %s — retrying in %ds",
+                             _attempt + 1, e, _wait)
+                _upload_progress.update(
+                    message=f"Retry {_attempt + 1}/{_max_retries} in {_wait}s...")
+                time.sleep(_wait)
+            else:
+                _last_upload_error = str(e)
+                _upload_progress.update(phase="error", percent=0, message=str(e))
+                return False, f"Upload failed after {_max_retries} attempts: {e}"
+        except Exception as e:
+            _last_upload_error = str(e)
+            _upload_progress.update(phase="error", percent=0, message=str(e))
+            return False, f"Upload failed: {e}"
 
     if resp.status_code == 200:
         from datetime import datetime

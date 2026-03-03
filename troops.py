@@ -9,8 +9,8 @@ from enum import Enum
 from typing import Optional, List, Dict, Tuple
 
 import config
-from vision import (load_screenshot, tap_image, adb_tap, logged_tap,
-                    get_template, save_failure_screenshot, timed_wait)
+from vision import (load_screenshot, tap_image, wait_for_image_and_tap, adb_tap,
+                    logged_tap, get_template, save_failure_screenshot, timed_wait)
 from navigation import navigate
 from config import Screen
 from botlog import get_logger, timed_action
@@ -258,7 +258,10 @@ def heal_all(device):
         healed_any = True
         log.debug("Starting heal sequence...")
         timed_wait(device, lambda: False, 1, "heal_dialog_open")
-        logged_tap(device, 700, 1460, "heal_all_btn")
+        if not wait_for_image_and_tap("oneclickrecovery.png", device, timeout=3):
+            log.warning("Could not find One Click Recovery button")
+            save_failure_screenshot(device, "heal_no_oneclick")
+            break
         timed_wait(device, lambda: False, 1, "heal_confirm_ready")
         logged_tap(device, 542, 1425, "heal_confirm")
         timed_wait(device, lambda: False, 1, "heal_result_show")

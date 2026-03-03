@@ -1,11 +1,10 @@
 # 9Bot Roadmap
 
-Forward-looking development plan (current: **v2.0.0**).
 Priority: bug fixes, clean code, maintainability, usability — then new features.
 
 ---
 
-## Phase 1 — Bug Fixes & Reliability (v1.4.0)
+## Phase 1 — Bug Fixes & Reliability
 
 Harden existing features before adding new ones.
 
@@ -21,7 +20,7 @@ Harden existing features before adding new ones.
 - [x] ~~Fix heal flow~~ — 0% transitions are expected: heal button only appears when troops are injured (95% of the time they're healthy). Template works perfectly when healing is needed (100% confidence on hits)
 - [x] Tune timed_wait budgets — `jr_backout_close_x` 3.0→4.0s, `nav_kingdom_to_map` 2→3s, `recover_{name}` 1.5→2.0s
 
-## Phase 2 — Testing & Quality (v1.4.0)
+## Phase 2 — Testing & Quality
 
 Build confidence that everything works before shipping updates.
 
@@ -95,7 +94,7 @@ a small trusted user base. Revisit when charging money or user count grows signi
 - [ ] Replace Google Sheets with server-side API (when: need usage tracking, auto-provisioning, or professional storefront)
 - [ ] Periodic re-validation during runtime (when: piracy becomes an actual problem, not preemptively)
 
-## Phase 3 — UI & Project Cleanup (v1.5.0)
+## Phase 3 — UI & Project Cleanup
 
 Clean up the interface and codebase structure for long-term maintainability.
 
@@ -114,7 +113,7 @@ Clean up the interface and codebase structure for long-term maintainability.
 - [x] Split actions.py (~3600 lines) into `actions/` package (quests, rallies, combat, titans, evil_guard, farming)
 - [x] Eliminate dashboard duplication — `web/dashboard.py` now imports from `runners.py` and `settings.py`
 
-## Phase 4 — Quest Expansion (v1.6.0)
+## Phase 4 — Quest Expansion
 
 Extend auto quest to handle more quest types. The classification infrastructure already exists
 (`_classify_quest_text` recognizes all types) — they just need to be wired up.
@@ -125,7 +124,7 @@ Extend auto quest to handle more quest types. The classification infrastructure 
 - [x] Expand `_classify_quest_text` and `_get_actionable_quests` for new types
 - [x] New template images for tower/gather/PvP quest UI elements
 
-## Phase 5 — New Automations (v1.7.0)
+## Phase 5 — New Automations
 
 Entirely new game automations.
 

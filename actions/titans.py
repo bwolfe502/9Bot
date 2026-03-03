@@ -412,6 +412,7 @@ def rally_titan(device):
         logged_tap(device, 420, 1400, "titan_confirm")
 
         # Wait for deployment panel — poll for depart button
+        depart_anyway_found = False
         depart_start = time.time()
         while time.time() - depart_start < 8:
             s = load_screenshot(device)
@@ -421,10 +422,26 @@ def rally_titan(device):
                     depart_match = match
                     depart_screen = s
                     break
+                # Also check for Depart Anyway (low health troops)
+                if find_image(s, "depart_anyway.png", threshold=0.6) is not None:
+                    depart_anyway_found = True
+                    break
             time.sleep(0.4)
 
         if depart_match is not None:
             break  # found depart — proceed to tap it
+
+        if depart_anyway_found:
+            log.warning("Low health troops — 'Depart Anyway' visible")
+            if config.get_device_config(device, "auto_heal"):
+                log.info("Healing troops before titan rally")
+                navigate(Screen.MAP, device)
+                heal_all(device)
+                return False  # caller will retry
+            else:
+                log.info("Auto heal off — tapping Depart Anyway")
+                tap_image("depart_anyway.png", device)
+                return True
 
         save_failure_screenshot(device, f"titan_depart_miss_{search_attempt + 1}")
         log.warning("Depart not found — titan may have walked (attempt %d/%d)",
