@@ -74,6 +74,7 @@ class DeviceTroopSnapshot:
     device: str
     troops: List[TroopStatus]
     read_at: float = field(default_factory=time.time)
+    source: str = "vision"  # "protocol" or "vision"
 
     @property
     def home_count(self) -> int:

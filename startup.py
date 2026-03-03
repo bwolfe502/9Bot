@@ -392,7 +392,7 @@ def get_protocol_troop_snapshot(device):
                 read_at=now,
             ))
 
-    return DeviceTroopSnapshot(device=device, troops=troops, read_at=now)
+    return DeviceTroopSnapshot(device=device, troops=troops, read_at=now, source="protocol")
 
 
 def apply_settings(settings):

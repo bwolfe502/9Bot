@@ -130,10 +130,18 @@
         </div>
         <span class="mithril-timer" style="display:none">&#9935; <span class="mithril-time"></span></span>
     </div>
-    <div class="section-label troop-label">Troops <span class="troop-age"></span></div>
+    <div class="section-label troop-label">Troops <span class="troop-source"></span><span class="troop-age"></span></div>
     <div class="troop-slots"></div>
     <div class="section-label quest-label quest-header" style="display:none">Quests <span class="quest-age"></span></div>
     <div class="quest-tracking"></div>
+
+    <!-- Mini chat feed (protocol-enabled devices only) -->
+    <div class="chat-feed" data-device="{{ dev.id }}" style="display:none" onclick="openDeviceChat('{{ dev.id }}')">
+        <div class="chat-feed-well">
+            <div class="chat-feed-messages"></div>
+            <div class="chat-feed-fade"></div>
+        </div>
+    </div>
 
     {% if not (device_readonly is defined and device_readonly) %}
     <!-- Collapsible auto modes -->
@@ -330,9 +338,9 @@ var _stoppingModes = {};
 // before the task thread appears in the active task list. Keyed by "device_modeKey".
 var _startingModes = {};
 
-function renderTroops(container, troops, age, elapsed) {
+function renderTroops(container, troops, age, elapsed, source) {
     container.textContent = '';
-    // Update age in the section label
+    // Update age and source in the section label
     var card = container.closest('.device-card');
     var ageEl = card ? card.querySelector('.troop-label .troop-age') : null;
     if (ageEl) {
@@ -341,6 +349,18 @@ function renderTroops(container, troops, age, elapsed) {
             ageEl.textContent = displayAge < 60 ? displayAge + 's ago' : Math.floor(displayAge/60) + 'm ago';
         } else {
             ageEl.textContent = '';
+        }
+    }
+    var srcEl = card ? card.querySelector('.troop-label .troop-source') : null;
+    if (srcEl) {
+        if (source === 'protocol') {
+            srcEl.textContent = '(proto) ';
+            srcEl.style.color = '#00e5ff';
+        } else if (source === 'vision') {
+            srcEl.textContent = '(vision) ';
+            srcEl.style.color = '#999';
+        } else {
+            srcEl.textContent = '';
         }
     }
     if (!troops || troops.length === 0) {
@@ -386,7 +406,7 @@ function tickTroopTimers() {
         var card = document.querySelector('.device-card[data-device="' + deviceId + '"]');
         if (!card) return;
         var troopEl = card.querySelector('.troop-slots');
-        if (troopEl) renderTroops(troopEl, entry.troops, entry.snapshotAge, elapsed);
+        if (troopEl) renderTroops(troopEl, entry.troops, entry.snapshotAge, elapsed, entry.source);
     });
 }
 setInterval(tickTroopTimers, 1000);
@@ -550,9 +570,10 @@ function refreshStatus() {
                     _troopData[dev.id] = {
                         troops: dev.troops,
                         snapshotAge: dev.snapshot_age,
-                        lastPollTime: Date.now()
+                        lastPollTime: Date.now(),
+                        source: dev.troop_source
                     };
-                    renderTroops(troopEl, dev.troops, dev.snapshot_age, 0);
+                    renderTroops(troopEl, dev.troops, dev.snapshot_age, 0, dev.troop_source);
                 }
                 var questEl = card.querySelector('.quest-tracking');
                 if (questEl) renderQuests(questEl, dev.quests, dev.quest_age);

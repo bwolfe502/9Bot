@@ -490,6 +490,7 @@ def create_app():
             "status": config.DEVICE_STATUS.get(d, "Idle"),
             "troops": troops_list,
             "snapshot_age": snapshot_age,
+            "troop_source": snapshot.source if snapshot else None,
             "quests": get_quest_tracking_state(d),
             "quest_age": get_quest_last_checked(d),
             "mithril_next": mithril_next,
