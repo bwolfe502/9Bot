@@ -246,8 +246,13 @@ screen. Returns 0-5.
 **Panel statuses** — Protocol fast path first (when `PROTOCOL_ENABLED`): `get_protocol_troop_snapshot()`
 builds a `DeviceTroopSnapshot` from `LineupsNtf`/`NewLineupStateNtf` data with `seconds_remaining`
 from `stateEndTs` (instant, ≤30s freshness). Falls through to icon template matching on `None` or error.
-LineupState→TroopAction mapping: IDLE/HOME→HOME, MARCHING→MARCHING, BATTLING→BATTLING, GATHERING→GATHERING,
-RETURNING→RETURNING, DEFENDING→DEFENDING, RALLYING→RALLYING. Unknown states default to MARCHING.
+LineupState enum (extracted from game binary via Frida IL2CPP API):
+0=ERR(home), 1=DEFENDER(home), 2=OUT_CITY→MARCHING, 3=CAMP→STATIONING, 4=RALLY→RALLYING,
+5=REINFORCE→DEFENDING, 6=GATHERING→GATHERING, 7=TROOP_FIGHT→BATTLING, 8=RALLY_FIGHT→BATTLING,
+9=RETURN→RETURNING, 10=BUILDING_BUILD→MARCHING, 11=BUILDING_OCCUPY→DEFENDING,
+12=BUILDING_DEFEND→DEFENDING, 13=MINE_EXPLORE→ADVENTURING, 14=PICKUP→MARCHING,
+15=SCORE_GATHERING→GATHERING. Unknown states default to MARCHING.
+`DeviceTroopSnapshot.source` field: `"protocol"` or `"vision"` — shown on dashboard as indicator.
 
 **Healing** — `heal_all(device)`: finds heal.png, taps through heal dialogs in a loop until no more heal buttons.
 
@@ -463,6 +468,14 @@ so only relevant rallies are considered (e.g. castle rallies are ignored when re
 `_rally_matches_target()` helper performs the check. NPC `cfgID` values are logged at debug level
 for future fine-grained type mapping. Does NOT skip the UI join flow when joinable rallies exist —
 only provides early bail-out. Same try/except pattern as AP/troops.
+
+**Heartbeat keepalive** (game_state.py): `_on_heartbeat()` (every ~10s) touches "lineups" and
+"rallies" freshness categories when data exists, preventing stale-data fallback when no
+state-change messages arrive (e.g. troops sitting idle for minutes).
+
+**Chat mirroring** (dashboard.py): Devices without protocol can view chat messages from a
+protocol-active device (excludes PRIVATE channel for privacy). `chat_mirror` setting (default
+True). Mini chat feed on device cards + full chat modal with channel tabs.
 
 **Safety**: Zero-risk to existing users. Protocol off by default, one set-membership check when disabled.
 InterceptorThread auto-reconnects (10s interval) if gadget not running. Stale data returns
