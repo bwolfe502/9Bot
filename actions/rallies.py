@@ -583,7 +583,23 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                         log.debug("Departing troop: slot %d", portrait_result[0])
                 except Exception:
                     log.debug("Portrait capture failed — proceeding without slot tracking")
-                if tap_image("depart.png", device):
+                depart_tapped = tap_image("depart.png", device)
+                if not depart_tapped:
+                    # Check for low health troops (Depart Anyway button)
+                    da_screen = load_screenshot(device)
+                    if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.75) is not None:
+                        log.warning("Low health troops — 'Depart Anyway' visible")
+                        if config.get_device_config(device, "auto_heal"):
+                            log.info("Healing troops before retry")
+                            if _backout_to_war_screen():
+                                heal_all(device)
+                            should_rescan = True
+                            break  # breaks rally_types loop → rescan
+                        else:
+                            log.info("Auto heal off — tapping Depart Anyway")
+                            depart_tapped = tap_image("depart_anyway.png", device)
+
+                if depart_tapped:
                     # Verify join succeeded — game should transition to map screen
                     timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                                2, "jr_depart_to_map")
@@ -708,18 +724,6 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
         adb_swipe(device, 560, 948, 560, 245, 500)
         timed_wait(device, lambda: False, 1.5, "jr_scroll_down_settle",
                    stop_check=stop_check)
-
-        # If no join buttons in the bottom quarter of the screen, we've
-        # scrolled past all rallies into the marches section — stop early
-        quick_screen = load_screenshot(device)
-        if quick_screen is not None:
-            join_locs = find_all_matches(quick_screen, "rally/join.png")
-            screen_h = quick_screen.shape[0]
-            bottom_quarter = screen_h * 3 // 4  # y=1440 on 1920px screen
-            has_bottom_joins = any(jy >= bottom_quarter for _, jy in join_locs)
-            if not has_bottom_joins:
-                log.info("No join buttons in bottom quarter (below y=%d) — past rally section, stopping scroll", bottom_quarter)
-                break
 
         result = check_for_joinable_rally()
         if result not in (False, "lost"):
@@ -895,18 +899,6 @@ def join_war_rallies(device):
             return
         adb_swipe(device, 560, 948, 560, 245, 500)
         time.sleep(1.5)  # Wait for scroll momentum to settle
-
-        # If no join buttons in the bottom quarter of the screen, we've
-        # scrolled past all rallies into the marches section — stop early
-        quick_screen = load_screenshot(device)
-        if quick_screen is not None:
-            join_locs = find_all_matches(quick_screen, "rally/join.png")
-            screen_h = quick_screen.shape[0]
-            bottom_quarter = screen_h * 3 // 4
-            has_bottom_joins = any(jy >= bottom_quarter for _, jy in join_locs)
-            if not has_bottom_joins:
-                log.info("No join buttons in bottom quarter (below y=%d) — past rally section, stopping scroll", bottom_quarter)
-                break
 
         if check_all_rallies_on_screen():
             return
