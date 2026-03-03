@@ -749,10 +749,14 @@ def check_quests(device, stop_check=None):
         return True
 
     # Recall stray stationed troops (stuck from failed EG rally).
+    # Only navigate to MAP if a stray troop is actually detected — avoids
+    # a wasteful MAP round-trip when already on the quest screen.
     # Stray defender recall is handled by _run_tower_quest AFTER quest OCR,
     # so we know whether an active tower quest needs the defender.
-    if navigate(Screen.MAP, device):
-        _recall_stray_stationed(device, stop_check)
+    snapshot = get_troop_status(device)
+    if snapshot is not None and snapshot.any_doing(TroopAction.STATIONING):
+        if navigate(Screen.MAP, device):
+            _recall_stray_stationed(device, stop_check)
     if stop_check and stop_check():
         return True
 
