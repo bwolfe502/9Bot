@@ -161,7 +161,7 @@ All session-scoped, reset on restart:
 - Thread-local storage in vision.py for `get_last_best()` template scores
 - **Error recovery**: Auto runners wrap their main loop in try/except, logging errors and continuing. Navigation failures retry after a short delay.
 - **Smart idle status**: `_deployed_status(device)` in `run_auto_quest` reads the troop snapshot and shows "Gathering/Defending..." instead of generic "Waiting for Troops..." when all troops are deployed.
-- **Periodic quest check**: `run_auto_quest` calls `check_quests` every 60s (`_QUEST_CHECK_INTERVAL`) even when all troops are deployed, to detect quest completion and recall troops promptly.
+- **Periodic quest check**: `run_auto_quest` calls `check_quests` every 300s (`_QUEST_CHECK_INTERVAL`) when all troops are deployed, to detect quest completion and recall troops. Kept infrequent to reduce ADB/OCR contention across devices.
 - **ADB auto-reconnect**: `_try_reconnect(device)` in vision.py runs `adb connect` on TCP devices when `load_screenshot`/`adb_tap`/`adb_swipe` timeout. One retry after reconnect.
 
 ### Screen Resolution
@@ -222,7 +222,7 @@ of the rally detail/search panel. Dismissing it on either screen would break nor
 
 ### Adaptive Timing (vision.py + botlog.py)
 `timed_wait(device, condition_fn, budget_s, label)`:
-- Polls condition_fn every ~150ms until met or budget expires
+- Polls condition_fn every ~300ms until met or budget expires
 - `StatsTracker.get_adaptive_budget()` can shorten budget based on P90 of observed transition times
 - Config: min 8 samples, 80% success rate gate, 1.3x headroom, never below 40% of original budget
 - Persists across sessions (loads from previous session stats file)
@@ -269,11 +269,11 @@ OCR-reads coordinates, saves to `data/territory_coordinates.json`). `scan_test_s
 only 4 corners for calibration.
 
 ### Rally Owner Blacklist (actions/rallies.py)
-- `_ocr_rally_owner()` reads "{Name}'s Troop" from war screen card
-- `_ocr_error_banner()` detects in-game error banners → instant blacklist
-- 2 consecutive failures without error text → blacklist owner
-- 30-minute expiry, reset on auto-quest start
-- Per-device, session-scoped
+- **UI-based OCR disabled** — owner name OCR was too slow (500-2000ms per rally candidate),
+  causing multi-device contention. The blacklist infrastructure remains but is only populated
+  via the protocol path when `PROTOCOL_ENABLED` (uses `rally.troops[0].name` from protocol data).
+- `_ocr_rally_owner()` and `_ocr_error_banner()` still exist but are not called during join flow.
+- 30-minute expiry, reset on auto-quest start. Per-device, session-scoped.
 
 ### Quest Dispatch (actions/quests.py)
 **Dispatch priority chain**: PVP attack → Tower quest → EG/Titan rallies → pending rally wait → gather gold.
