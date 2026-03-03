@@ -230,7 +230,7 @@ def _classify_quest_text(text):
         return QuestType.TITAN
     if "evil" in t or "guard" in t:
         return QuestType.EVIL_GUARD
-    if "pvp" in t or "attack" in t or "enemy" in t:
+    if "pvp" in t or "attack" in t or "enem" in t:
         return QuestType.PVP
     if "gather" in t:
         return QuestType.GATHER
@@ -251,8 +251,10 @@ def _ocr_quest_rows(device):
     if screen is None:
         return None
 
-    # Crop quest list region — must reach all Side Quest entries below Alliance Quest
-    quest_region = screen[590:1820, :]
+    # Crop quest text region — focused on quest name + counter area only.
+    # Excludes icons, rewards, GO buttons, and Main Quest visual card.
+    # Region (x1=204, y1=1023, x2=844, y2=1907) calibrated to quest text columns.
+    quest_region = screen[1023:1907, 204:844]
     gray = cv2.cvtColor(quest_region, cv2.COLOR_BGR2GRAY)
     gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
@@ -264,20 +266,27 @@ def _ocr_quest_rows(device):
     raw_text = " ".join(results)
     log.debug("Quest OCR raw: %s", raw_text)
 
-    # macOS only: fix missing '(' before quest counters — Apple Vision sometimes
-    # drops it, producing "Defeat Titans 14/15)" instead of "Defeat Titans(14/15)".
-    # Pattern: 3+ alpha chars, whitespace, then digits/digits) with no opening '('.
-    # Safe: won't match timestamps (digits), "Limit: 3/9)" (colon blocks \s+),
-    # or already-correct "Gather(0/200,000)" ('(' is not \s+).
-    if sys.platform == "darwin":
-        fixed_text = re.sub(
-            r'([A-Za-z]{3,})\s+(\d[\doO, ]*/\s*\d[\doO, ]*?\s*\))',
-            r'\1(\2',
-            raw_text,
-        )
-        if fixed_text != raw_text:
-            log.debug("Quest OCR fixed parens: %s", fixed_text)
-            raw_text = fixed_text
+    # Fix missing '(' before quest counters — both Apple Vision and EasyOCR can
+    # drop it.  Two cases:
+    #   Case 1: "Defeat Titans 14/15)" — space between name and bare digits
+    #           Pattern: 3+ alpha chars, whitespace, then digits/digits) with no '('.
+    #           Safe: won't match "Limit: 3/9)" (colon blocks \s+) or
+    #           already-correct "Gather(0/200,000)" ('(' is not \s+).
+    #   Case 2: "(sec)720/1,200)" — closing paren immediately before bare digits
+    #           EasyOCR drops the '(' between annotation and counter.
+    fixed_text = re.sub(
+        r'([A-Za-z]{3,})\s+(\d[\doO, ]*/\s*\d[\doO, ]*?\s*\))',
+        r'\1(\2',
+        raw_text,
+    )
+    fixed_text = re.sub(
+        r'\)(\d[\doO, ]*/\s*[\doO, ]+?\s*\))',
+        r')(\1',
+        fixed_text,
+    )
+    if fixed_text != raw_text:
+        log.debug("Quest OCR fixed parens: %s", fixed_text)
+        raw_text = fixed_text
 
     if not raw_text.strip():
         log.warning("Quest OCR: no text detected")
