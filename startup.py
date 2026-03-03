@@ -445,7 +445,9 @@ def apply_settings(settings):
     set_protocol_enabled(settings.get("protocol_enabled", False))
     # Territory passes & safe zones
     config.TERRITORY_PASSES = settings.get("territory_passes", {})
+    config.TERRITORY_MUTUAL_ZONES = settings.get("territory_mutual_zones", {})
     config.TERRITORY_SAFE_ZONES = settings.get("territory_safe_zones", {})
+    config.TERRITORY_HOME_ZONES = settings.get("territory_home_zones", {})
     config.recompute_pass_blocked()
     # Per-device protocol reconciliation (after device_settings are applied below)
     # Deferred to end of function — see _reconcile_protocol() call.

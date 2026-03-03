@@ -43,7 +43,9 @@ def reset_territory_state():
     config.AUTO_HEAL_ENABLED = False
     config.MIN_TROOPS_AVAILABLE = 0
     config.TERRITORY_PASSES = {}
+    config.TERRITORY_MUTUAL_ZONES = {}
     config.TERRITORY_SAFE_ZONES = {}
+    config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
     yield
     config.MY_TEAM_COLOR = orig_team
@@ -52,7 +54,9 @@ def reset_territory_state():
     config.MANUAL_IGNORE_SQUARES.clear()
     config.LAST_ATTACKED_SQUARE.clear()
     config.TERRITORY_PASSES = {}
+    config.TERRITORY_MUTUAL_ZONES = {}
     config.TERRITORY_SAFE_ZONES = {}
+    config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
 
 
@@ -1193,38 +1197,74 @@ class TestDiagnoseGrid:
 # ============================================================
 
 class TestRecomputePassBlocked:
-    """Test config.recompute_pass_blocked() correctness."""
+    """Test config.recompute_pass_blocked() correctness.
 
-    def test_empty_passes_and_zones(self):
+    Zone model: mutual zones (frontlines gated by pass pairs),
+    home zones (team areas gated by team's passes), safe zones.
+    Passes are toggles only — no zone arrays.
+    """
+
+    def test_empty_everything(self):
         config.TERRITORY_PASSES = {}
+        config.TERRITORY_MUTUAL_ZONES = {}
         config.TERRITORY_SAFE_ZONES = {}
+        config.TERRITORY_HOME_ZONES = {}
         config.recompute_pass_blocked()
         assert config.PASS_BLOCKED_SQUARES == set()
 
-    def test_unowned_pass_blocks_zone(self):
+    def test_mutual_zone_blocked_both_unowned(self):
+        """Fire-Earth front blocked when both Fire North and Earth South unowned."""
         config.TERRITORY_PASSES = {
-            "1": {"name": "Fire North", "zone": [[5, 5], [5, 6]], "owned": False}
+            "1": {"name": "Fire North", "owned": False},
+            "3": {"name": "Earth South", "owned": False},
+        }
+        config.TERRITORY_MUTUAL_ZONES = {
+            "fire_earth": [[5, 5], [5, 6]],
         }
         config.recompute_pass_blocked()
         assert (5, 5) in config.PASS_BLOCKED_SQUARES
         assert (5, 6) in config.PASS_BLOCKED_SQUARES
 
-    def test_owned_pass_not_blocked(self):
+    def test_mutual_zone_unlocked_one_pass_owned(self):
+        """Fire-Earth front unlocked when either pass is owned."""
         config.TERRITORY_PASSES = {
-            "1": {"name": "Fire North", "zone": [[5, 5], [5, 6]], "owned": True}
+            "1": {"name": "Fire North", "owned": False},
+            "3": {"name": "Earth South", "owned": True},
+        }
+        config.TERRITORY_MUTUAL_ZONES = {
+            "fire_earth": [[5, 5], [5, 6]],
         }
         config.recompute_pass_blocked()
         assert (5, 5) not in config.PASS_BLOCKED_SQUARES
         assert (5, 6) not in config.PASS_BLOCKED_SQUARES
 
-    def test_mixed_owned_unowned(self):
+    def test_mutual_zone_unlocked_other_pass_owned(self):
+        """Fire-Earth front unlocked when the other pass is owned."""
         config.TERRITORY_PASSES = {
-            "1": {"name": "A", "zone": [[1, 1]], "owned": True},
-            "2": {"name": "B", "zone": [[2, 2]], "owned": False},
+            "1": {"name": "Fire North", "owned": True},
+            "3": {"name": "Earth South", "owned": False},
+        }
+        config.TERRITORY_MUTUAL_ZONES = {
+            "fire_earth": [[5, 5]],
         }
         config.recompute_pass_blocked()
-        assert (1, 1) not in config.PASS_BLOCKED_SQUARES
-        assert (2, 2) in config.PASS_BLOCKED_SQUARES
+        assert (5, 5) not in config.PASS_BLOCKED_SQUARES
+
+    def test_multiple_mutual_zones(self):
+        """Different fronts blocked/unlocked independently."""
+        config.TERRITORY_PASSES = {
+            "1": {"name": "Fire North", "owned": True},   # fire_earth unlocked
+            "3": {"name": "Earth South", "owned": False},
+            "2": {"name": "Fire East", "owned": False},    # fire_ice blocked
+            "7": {"name": "Ice West", "owned": False},
+        }
+        config.TERRITORY_MUTUAL_ZONES = {
+            "fire_earth": [[5, 5]],
+            "fire_ice": [[8, 8]],
+        }
+        config.recompute_pass_blocked()
+        assert (5, 5) not in config.PASS_BLOCKED_SQUARES  # fire_earth unlocked
+        assert (8, 8) in config.PASS_BLOCKED_SQUARES       # fire_ice blocked
 
     def test_enemy_safe_zones_blocked(self):
         config.MY_TEAM_COLOR = "red"
@@ -1234,23 +1274,54 @@ class TestRecomputePassBlocked:
             "yellow": [[0, 23]],
         }
         config.recompute_pass_blocked()
-        # Own safe zone NOT blocked
         assert (0, 0) not in config.PASS_BLOCKED_SQUARES
-        # Enemy safe zones blocked
         assert (23, 23) in config.PASS_BLOCKED_SQUARES
         assert (0, 23) in config.PASS_BLOCKED_SQUARES
 
-    def test_union_of_passes_and_safe_zones(self):
+    def test_mutual_and_safe_zones_combined(self):
         config.MY_TEAM_COLOR = "red"
         config.TERRITORY_PASSES = {
-            "1": {"name": "A", "zone": [[3, 3]], "owned": False}
+            "1": {"name": "Fire North", "owned": False},
+            "3": {"name": "Earth South", "owned": False},
         }
-        config.TERRITORY_SAFE_ZONES = {
-            "blue": [[7, 7]],
-        }
+        config.TERRITORY_MUTUAL_ZONES = {"fire_earth": [[3, 3]]}
+        config.TERRITORY_SAFE_ZONES = {"blue": [[7, 7]]}
         config.recompute_pass_blocked()
         assert (3, 3) in config.PASS_BLOCKED_SQUARES
         assert (7, 7) in config.PASS_BLOCKED_SQUARES
+
+    def test_own_home_zone_never_blocked(self):
+        """Own team's home zone is always accessible."""
+        config.MY_TEAM_COLOR = "red"
+        config.TERRITORY_PASSES = {
+            "1": {"name": "Fire North", "owned": False},
+            "2": {"name": "Fire East", "owned": False},
+        }
+        config.TERRITORY_HOME_ZONES = {"red": [[5, 5]]}
+        config.recompute_pass_blocked()
+        assert (5, 5) not in config.PASS_BLOCKED_SQUARES
+
+    def test_enemy_home_zone_blocked_no_passes(self):
+        """Enemy home zone blocked when none of their passes are owned."""
+        config.MY_TEAM_COLOR = "yellow"
+        config.TERRITORY_PASSES = {
+            "1": {"name": "Fire North", "owned": False},
+            "2": {"name": "Fire East", "owned": False},
+        }
+        config.TERRITORY_HOME_ZONES = {"red": [[5, 5]]}
+        config.recompute_pass_blocked()
+        assert (5, 5) in config.PASS_BLOCKED_SQUARES
+
+    def test_enemy_home_zone_unlocked_by_team_pass(self):
+        """Enemy home zone unlocked when any of their passes is owned."""
+        config.MY_TEAM_COLOR = "yellow"
+        config.TERRITORY_PASSES = {
+            "1": {"name": "Fire North", "owned": True},
+            "2": {"name": "Fire East", "owned": False},
+        }
+        config.TERRITORY_HOME_ZONES = {"red": [[5, 5]]}
+        config.recompute_pass_blocked()
+        assert (5, 5) not in config.PASS_BLOCKED_SQUARES
 
 
 class TestScanTargetsPassFiltering:

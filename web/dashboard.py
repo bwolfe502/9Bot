@@ -732,7 +732,7 @@ def create_app():
                      "ap_allow_large_potions", "ap_use_gems", "verbose_logging",
                      "eg_rally_own", "titan_rally_own", "web_dashboard", "gather_enabled",
                      "tower_quest_enabled", "remote_access", "auto_upload_logs",
-                     "collect_training_data", "chat_mirror"]:
+                     "collect_training_data", "chat_mirror", "chat_translate_enabled"]:
             # Toggle switches send hidden input with value "on"; checkboxes send key presence
             val = request.form.get(key, "")
             settings[key] = bool(val and val != "")
@@ -745,7 +745,7 @@ def create_app():
             if val.isdigit():
                 settings[key] = int(val)
 
-        for key in ["pass_mode", "my_team", "mode"]:
+        for key in ["pass_mode", "my_team", "mode", "chat_translate_api_key"]:
             val = request.form.get(key)
             if val is not None:
                 settings[key] = val
@@ -1063,6 +1063,8 @@ def create_app():
                     "timestamp": m.get("timestamp", 0),
                     "union_name": m.get("union_name", ""),
                     "payload_type": m.get("payload_type", 0),
+                    "translated": m.get("translated"),
+                    "source_language": m.get("source_language", ""),
                 })
         serializable.sort(key=lambda m: m.get("timestamp", 0))
         result = {"messages": serializable, "count": len(serializable)}
@@ -1174,22 +1176,30 @@ def create_app():
     def api_territory_zones():
         return jsonify({
             "passes": config.TERRITORY_PASSES,
+            "mutual_zones": config.TERRITORY_MUTUAL_ZONES,
             "safe_zones": config.TERRITORY_SAFE_ZONES,
+            "home_zones": config.TERRITORY_HOME_ZONES,
         })
 
     @app.route("/api/territory/zones", methods=["POST"])
     def api_territory_zones_save():
         data = request.get_json()
         passes = data.get("passes", {})
+        mutual_zones = data.get("mutual_zones", {})
         safe_zones = data.get("safe_zones", {})
+        home_zones = data.get("home_zones", {})
         config.TERRITORY_PASSES = passes
+        config.TERRITORY_MUTUAL_ZONES = mutual_zones
         config.TERRITORY_SAFE_ZONES = safe_zones
+        config.TERRITORY_HOME_ZONES = home_zones
         config.recompute_pass_blocked()
         # Persist to settings.json
         from settings import load_settings, save_settings
         settings = load_settings()
         settings["territory_passes"] = passes
+        settings["territory_mutual_zones"] = mutual_zones
         settings["territory_safe_zones"] = safe_zones
+        settings["territory_home_zones"] = home_zones
         save_settings(settings)
         return jsonify({"ok": True, "blocked": len(config.PASS_BLOCKED_SQUARES)})
 
@@ -1234,6 +1244,37 @@ def create_app():
                        GRID_OFFSET_X:GRID_OFFSET_X + gw]
         _, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 40])
         return send_file(io.BytesIO(buf.tobytes()), mimetype="image/jpeg")
+
+    @app.route("/api/territory/screenshot/save", methods=["POST"])
+    def api_territory_screenshot_save():
+        """Save territory grid screenshot as permanent background."""
+        device = request.json.get("device", "") if request.is_json else ""
+        if not device:
+            return jsonify({"error": "Missing device"}), 400
+        known = set(_cached_devices()[0])
+        if device not in known:
+            return jsonify({"error": "Unknown device"}), 404
+        import cv2
+        from config import GRID_OFFSET_X, GRID_OFFSET_Y, GRID_WIDTH, GRID_HEIGHT, SQUARE_SIZE
+        screen = load_screenshot(device)
+        if screen is None:
+            return jsonify({"error": "Screenshot failed"}), 500
+        gw = int(GRID_WIDTH * SQUARE_SIZE)
+        gh = int(GRID_HEIGHT * SQUARE_SIZE)
+        crop = screen[GRID_OFFSET_Y:GRID_OFFSET_Y + gh,
+                       GRID_OFFSET_X:GRID_OFFSET_X + gw]
+        bg_path = os.path.join(app.static_folder, "territory_bg.jpg")
+        cv2.imwrite(bg_path, crop, [cv2.IMWRITE_JPEG_QUALITY, 50])
+        return jsonify({"ok": True})
+
+    @app.route("/api/territory/screenshot/saved")
+    def api_territory_screenshot_saved():
+        """Serve saved territory background if it exists."""
+        from flask import send_file
+        bg_path = os.path.join(app.static_folder, "territory_bg.jpg")
+        if not os.path.exists(bg_path):
+            return "", 404
+        return send_file(bg_path, mimetype="image/jpeg")
 
     # --- QR code generator ---
 
@@ -1806,6 +1847,8 @@ def create_app():
                     "timestamp": m.get("timestamp", 0),
                     "union_name": m.get("union_name", ""),
                     "payload_type": m.get("payload_type", 0),
+                    "translated": m.get("translated"),
+                    "source_language": m.get("source_language", ""),
                 })
         serializable.sort(key=lambda m: m.get("timestamp", 0))
         result = {"messages": serializable, "count": len(serializable)}

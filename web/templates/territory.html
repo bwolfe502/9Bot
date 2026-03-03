@@ -8,45 +8,16 @@
 
 <!-- Tab toggle -->
 <div class="terr-tabs">
-    <div class="terr-tab active" id="tab-passes" onclick="switchTab('passes')">Passes</div>
+    <div class="terr-tab active" id="tab-zones" onclick="switchTab('zones')">Zones</div>
     <div class="terr-tab" id="tab-targets" onclick="switchTab('targets')">Targets</div>
 </div>
 
-<!-- Passes mode controls -->
-<div id="passes-controls">
-    <div class="terr-controls">
-        <select id="device-select" style="min-width:160px">
-            <option value="">Select device...</option>
-            {% for d in devices %}
-            <option value="{{ d }}">{{ d }}</option>
-            {% endfor %}
-        </select>
-        <button class="btn" style="padding:6px 12px;font-size:12px" onclick="loadBackground()">Load BG</button>
-    </div>
-    <div class="terr-controls">
-        <select id="zone-select" onchange="onZoneChange()">
-            <optgroup label="Passes">
-                <option value="pass-1">Pass 1</option>
-                <option value="pass-2">Pass 2</option>
-                <option value="pass-3">Pass 3</option>
-                <option value="pass-4">Pass 4</option>
-                <option value="pass-5">Pass 5</option>
-                <option value="pass-6">Pass 6</option>
-                <option value="pass-7">Pass 7</option>
-                <option value="pass-8">Pass 8</option>
-            </optgroup>
-            <optgroup label="Safe Zones">
-                <option value="safe-yellow">Safe: Yellow (Earth)</option>
-                <option value="safe-green">Safe: Green (Forest)</option>
-                <option value="safe-red">Safe: Red (Fire)</option>
-                <option value="safe-blue">Safe: Blue (Ice)</option>
-            </optgroup>
-        </select>
-        <input type="text" id="zone-name" placeholder="Name..." oninput="onNameChange()">
-    </div>
-
-    <!-- Pass ownership toggles -->
-    <div class="terr-pass-toggles" id="pass-toggles"></div>
+<!-- Zones mode: paint brush selector -->
+<div id="zones-controls">
+    <p class="muted" style="margin-bottom:8px;font-size:12px">
+        Select a zone below, then tap squares on the grid to paint. Tap again to remove.
+    </p>
+    <div class="zone-picker" id="zone-picker"></div>
 </div>
 
 <!-- Targets mode controls -->
@@ -59,6 +30,7 @@
 </div>
 
 <!-- Grid -->
+<div class="terr-grid-container">
 <div class="card" style="padding:10px;overflow-x:auto">
     <div class="terr-grid-wrap">
         <div class="terr-grid-corner"></div>
@@ -69,10 +41,22 @@
         <div class="terr-grid" id="territory-grid"></div>
     </div>
 </div>
+</div>
 
-<div style="display:flex;gap:8px;margin-top:12px">
+<!-- Device + BG loader -->
+<div style="display:flex;gap:8px;margin-top:8px;align-items:center">
+    <select id="device-select" style="flex:1;background:#14142a;border:1px solid rgba(255,255,255,0.1);color:#e0e0f0;border-radius:6px;padding:5px 8px;font-size:11px">
+        {% for d in devices %}
+        <option value="{{ d }}">{{ d }}</option>
+        {% endfor %}
+    </select>
+    <button class="btn" style="padding:5px 10px;font-size:11px;white-space:nowrap" onclick="loadBackground()">Reload BG</button>
+    <button class="btn" style="padding:5px 10px;font-size:11px;white-space:nowrap" onclick="saveBG()">Save BG</button>
+</div>
+
+<div style="display:flex;gap:8px;margin-top:10px">
     <button class="btn btn-start" style="flex:1" onclick="saveAll()">Save</button>
-    <button class="btn" style="flex:1" onclick="clearCurrent()">Clear</button>
+    <button class="btn" style="flex:1" onclick="clearCurrent()">Clear Selected</button>
 </div>
 
 <div id="save-status" style="margin-top:8px;font-size:12px;color:#4caf50;display:none"></div>
@@ -83,46 +67,149 @@
 <script>
 var GRID_SIZE = 24;
 var THRONE = {};
-var currentTab = 'passes'; // 'passes' or 'targets'
+var currentTab = 'zones';
 
-// Throne set
 [[11,11],[11,12],[12,11],[12,12]].forEach(function(rc) {
     THRONE[rc[0] + ',' + rc[1]] = true;
 });
 
 // --- Targets mode state ---
-var cellStates = {}; // "r,c" -> "none" | "attack" | "ignore"
+var cellStates = {};
 
-// --- Passes mode state ---
-var DEFAULT_NAMES = {
-    '1': 'Fire North', '2': 'Fire East',
-    '3': 'Earth South', '4': 'Earth East',
-    '5': 'Forest West', '6': 'Forest South',
-    '7': 'Ice West', '8': 'Ice North'
-};
-var PASS_COLORS = {
-    '1': 'terr-pass-1', '2': 'terr-pass-2', '3': 'terr-pass-3', '4': 'terr-pass-4',
-    '5': 'terr-pass-5', '6': 'terr-pass-6', '7': 'terr-pass-7', '8': 'terr-pass-8'
-};
-var SAFE_COLORS = {
-    'yellow': 'terr-safe-yellow', 'green': 'terr-safe-green',
-    'red': 'terr-safe-red', 'blue': 'terr-safe-blue'
-};
-var PASS_SWATCH_COLORS = {
-    '1': '#ef5350', '2': '#ff8a65', '3': '#ffd54f', '4': '#ffb74d',
-    '5': '#66bb6a', '6': '#81c784', '7': '#4fc3f7', '8': '#64b5f6'
-};
-var SAFE_SWATCH_COLORS = {
-    'yellow': '#ffeb3b', 'green': '#4caf50', 'red': '#f44336', 'blue': '#2196f3'
+// --- Pass definitions (toggles only, no painted zones) ---
+var PASS_DEFS = {
+    '1': 'Fire North',   '2': 'Fire East',
+    '3': 'Earth South',  '4': 'Earth East',
+    '5': 'Forest West',  '6': 'Forest South',
+    '7': 'Ice West',     '8': 'Ice North'
 };
 
-// Zone data: passes[id] = {name, zone: [[r,c],...], owned: bool}
-var passes = {};
-var safeZones = {}; // {team: [[r,c],...]}
+// --- Zone definitions ---
+var ZONES = [
+    {id: 'mutual-fire_earth',    type: 'mutual', key: 'fire_earth',    label: 'Fire-Earth Front',    color: '#ff7043', cls: 'terr-mutual-1'},
+    {id: 'mutual-fire_ice',      type: 'mutual', key: 'fire_ice',      label: 'Fire-Ice Front',      color: '#ab47bc', cls: 'terr-mutual-2'},
+    {id: 'mutual-earth_forest',  type: 'mutual', key: 'earth_forest',  label: 'Earth-Forest Front',  color: '#26a69a', cls: 'terr-mutual-3'},
+    {id: 'mutual-forest_ice',    type: 'mutual', key: 'forest_ice',    label: 'Forest-Ice Front',    color: '#78909c', cls: 'terr-mutual-4'},
+    {id: 'home-red',    type: 'home', key: 'red',    label: 'Fire Home',   color: '#ef9a9a', cls: 'terr-home-red'},
+    {id: 'home-yellow', type: 'home', key: 'yellow', label: 'Earth Home',  color: '#fff176', cls: 'terr-home-yellow'},
+    {id: 'home-green',  type: 'home', key: 'green',  label: 'Forest Home', color: '#a5d6a7', cls: 'terr-home-green'},
+    {id: 'home-blue',   type: 'home', key: 'blue',   label: 'Ice Home',    color: '#90caf9', cls: 'terr-home-blue'},
+    {id: 'safe-red',    type: 'safe', key: 'red',    label: 'Fire Safe',   color: '#f44336', cls: 'terr-safe-red'},
+    {id: 'safe-yellow', type: 'safe', key: 'yellow', label: 'Earth Safe',  color: '#ffeb3b', cls: 'terr-safe-yellow'},
+    {id: 'safe-green',  type: 'safe', key: 'green',  label: 'Forest Safe', color: '#4caf50', cls: 'terr-safe-green'},
+    {id: 'safe-blue',   type: 'safe', key: 'blue',   label: 'Ice Safe',    color: '#2196f3', cls: 'terr-safe-blue'},
+];
 
-// Initialize default passes
-for (var i = 1; i <= 8; i++) {
-    passes[i] = {name: DEFAULT_NAMES[i], zone: [], owned: false};
+// Which passes gate each mutual zone
+var MUTUAL_PASSES = {
+    'fire_earth':   ['1', '3'],
+    'fire_ice':     ['2', '7'],
+    'earth_forest': ['4', '5'],
+    'forest_ice':   ['6', '8'],
+};
+
+// Zone data
+var passes = {};     // {id: {name, owned}} — toggles only
+var mutualZones = {}; // {fire_earth: [[r,c],...], ...}
+var homeZones = {};
+var safeZones = {};
+var hiddenZones = {};
+var selectedZone = 'mutual-fire_earth';
+
+// Init passes with defaults
+for (var pid in PASS_DEFS) {
+    passes[pid] = {name: PASS_DEFS[pid], owned: false};
+}
+
+// ============================================================
+// Zone picker
+// ============================================================
+
+function _getZoneArr(type, key) {
+    if (type === 'mutual') return mutualZones[key] || [];
+    if (type === 'home') return homeZones[key] || [];
+    if (type === 'safe') return safeZones[key] || [];
+    return [];
+}
+
+function _zoneBtn(z, count) {
+    var active = selectedZone === z.id;
+    var hidden = !!hiddenZones[z.id];
+    var html = '<div class="zone-btn' + (active ? ' active' : '') + (hidden ? ' zone-hidden' : '') + '" onclick="selectZone(\'' + z.id + '\')">';
+    html += '<span class="zone-swatch" style="background:' + z.color + '"></span>';
+    html += '<span class="zone-label">' + z.label + (count ? ' <span class="zone-count">' + count + '</span>' : '') + '</span>';
+    if (active) {
+        html += '<span class="zone-vis-toggle" onclick="event.stopPropagation(); toggleVis(\'' + z.id + '\')" title="' + (hidden ? 'Show' : 'Hide') + '">' + (hidden ? '&#9675;' : '&#9679;') + '</span>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function buildZonePicker() {
+    var html = '';
+
+    // Mutual zones with pass toggles
+    html += '<div class="zone-section-label">Frontlines</div>';
+    for (var i = 0; i < 4; i++) {
+        var z = ZONES[i];
+        var arr = mutualZones[z.key] || [];
+        var passIds = MUTUAL_PASSES[z.key];
+        html += '<div class="zone-front-row">';
+        html += _zoneBtn(z, arr.length);
+        html += '<span class="zone-pass-toggles">';
+        for (var p = 0; p < passIds.length; p++) {
+            var pid = passIds[p];
+            var pass = passes[pid];
+            html += '<label class="zone-pass-cb"><input type="checkbox"' + (pass.owned ? ' checked' : '') + ' onchange="togglePass(\'' + pid + '\', this.checked)"><span>' + pass.name + '</span></label>';
+        }
+        html += '</span>';
+        html += '</div>';
+    }
+
+    // Home zones
+    html += '<div class="zone-section-label" style="margin-top:8px">Home Zones (team area, gated by team\'s passes)</div><div class="zone-btn-row">';
+    for (var i = 4; i < 8; i++) {
+        var z = ZONES[i];
+        html += _zoneBtn(z, (homeZones[z.key] || []).length);
+    }
+    html += '</div>';
+
+    // Safe zones
+    html += '<div class="zone-section-label" style="margin-top:8px">Safe Zones (enemies can never enter)</div><div class="zone-btn-row">';
+    for (var i = 8; i < 12; i++) {
+        var z = ZONES[i];
+        html += _zoneBtn(z, (safeZones[z.key] || []).length);
+    }
+    html += '</div>';
+
+    document.getElementById('zone-picker').innerHTML = html;
+}
+
+function selectZone(id) {
+    selectedZone = id;
+    buildZonePicker();
+}
+
+function toggleVis(id) {
+    if (hiddenZones[id]) delete hiddenZones[id];
+    else hiddenZones[id] = true;
+    buildZonePicker();
+    renderGrid();
+}
+
+function togglePass(pid, owned) {
+    passes[pid].owned = owned;
+    fetch(RELAY_PREFIX + '/api/territory/passes/toggle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({id: pid, owned: owned})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) showStatus(passes[pid].name + ': ' + (owned ? 'Owned' : 'Unowned') + ' — ' + data.blocked + ' blocked');
+    })
+    .catch(function(err) { console.error('Toggle failed:', err); });
+    buildZonePicker();
 }
 
 // ============================================================
@@ -168,15 +255,15 @@ function buildGrid() {
 
 function switchTab(tab) {
     currentTab = tab;
-    document.getElementById('tab-passes').classList.toggle('active', tab === 'passes');
+    document.getElementById('tab-zones').classList.toggle('active', tab === 'zones');
     document.getElementById('tab-targets').classList.toggle('active', tab === 'targets');
-    document.getElementById('passes-controls').style.display = tab === 'passes' ? '' : 'none';
+    document.getElementById('zones-controls').style.display = tab === 'zones' ? '' : 'none';
     document.getElementById('targets-controls').style.display = tab === 'targets' ? '' : 'none';
     renderGrid();
 }
 
 // ============================================================
-// Cell click handler (delegates to current mode)
+// Cell click
 // ============================================================
 
 function onCellClick(el) {
@@ -187,61 +274,35 @@ function onCellClick(el) {
     }
 }
 
-// ============================================================
-// Targets mode
-// ============================================================
-
 function cycleTargetCell(el) {
-    var r = el.getAttribute('data-r');
-    var c = el.getAttribute('data-c');
-    var key = r + ',' + c;
+    var key = el.getAttribute('data-r') + ',' + el.getAttribute('data-c');
     var current = cellStates[key] || 'none';
-    var next;
-    if (current === 'none') next = 'attack';
-    else if (current === 'attack') next = 'ignore';
-    else next = 'none';
+    var next = current === 'none' ? 'attack' : current === 'attack' ? 'ignore' : 'none';
     cellStates[key] = next;
     renderGrid();
-}
-
-// ============================================================
-// Passes mode — zone painting
-// ============================================================
-
-function getSelectedZone() {
-    return document.getElementById('zone-select').value;
 }
 
 function paintZoneCell(el) {
     var r = parseInt(el.getAttribute('data-r'));
     var c = parseInt(el.getAttribute('data-c'));
-    var sel = getSelectedZone();
-    var parts = sel.split('-');
-    var type = parts[0]; // 'pass' or 'safe'
-    var id = parts[1];   // '1'-'8' or team color
+    var parts = selectedZone.split('-');
+    var type = parts[0];
+    var key = parts.slice(1).join('-');
 
-    if (type === 'pass') {
-        var zone = passes[id].zone;
-        var idx = _findRC(zone, r, c);
-        if (idx >= 0) {
-            zone.splice(idx, 1); // remove
-        } else {
-            // Remove from any other pass or safe zone first
-            _removeFromAll(r, c);
-            zone.push([r, c]);
-        }
+    var store;
+    if (type === 'mutual') store = mutualZones;
+    else if (type === 'home') store = homeZones;
+    else store = safeZones;
+
+    if (!store[key]) store[key] = [];
+    var arr = store[key];
+    var idx = _findRC(arr, r, c);
+    if (idx >= 0) {
+        arr.splice(idx, 1);
     } else {
-        // safe zone
-        if (!safeZones[id]) safeZones[id] = [];
-        var sz = safeZones[id];
-        var idx = _findRC(sz, r, c);
-        if (idx >= 0) {
-            sz.splice(idx, 1);
-        } else {
-            _removeFromAll(r, c);
-            sz.push([r, c]);
-        }
+        arr.push([r, c]);
     }
+    buildZonePicker();
     renderGrid();
 }
 
@@ -252,137 +313,57 @@ function _findRC(arr, r, c) {
     return -1;
 }
 
-function _removeFromAll(r, c) {
-    for (var id in passes) {
-        var idx = _findRC(passes[id].zone, r, c);
-        if (idx >= 0) passes[id].zone.splice(idx, 1);
-    }
-    for (var team in safeZones) {
-        var idx = _findRC(safeZones[team], r, c);
-        if (idx >= 0) safeZones[team].splice(idx, 1);
-    }
-}
-
-// ============================================================
-// Zone name handling
-// ============================================================
-
-function onZoneChange() {
-    var sel = getSelectedZone();
-    var nameInput = document.getElementById('zone-name');
-    var parts = sel.split('-');
-    if (parts[0] === 'pass') {
-        nameInput.style.display = '';
-        nameInput.value = passes[parts[1]].name || '';
-    } else {
-        nameInput.style.display = 'none';
-    }
-    // Update dropdown text with name
-    updateDropdownLabels();
-}
-
-function onNameChange() {
-    var sel = getSelectedZone();
-    var parts = sel.split('-');
-    if (parts[0] === 'pass') {
-        passes[parts[1]].name = document.getElementById('zone-name').value;
-        updateDropdownLabels();
-        buildPassToggles();
-    }
-}
-
-function updateDropdownLabels() {
-    var opts = document.getElementById('zone-select').querySelectorAll('option');
-    opts.forEach(function(opt) {
-        if (opt.value.startsWith('pass-')) {
-            var id = opt.value.split('-')[1];
-            var name = passes[id].name || DEFAULT_NAMES[id];
-            opt.textContent = 'Pass ' + id + (name ? ' — ' + name : '');
-        }
-    });
-}
-
-// ============================================================
-// Pass ownership toggles
-// ============================================================
-
-function buildPassToggles() {
-    var html = '';
-    for (var i = 1; i <= 8; i++) {
-        var p = passes[i];
-        var owned = p.owned;
-        var name = p.name || DEFAULT_NAMES[i];
-        var count = p.zone.length;
-        html += '<label class="terr-pass-toggle' + (owned ? ' owned' : '') + '" data-id="' + i + '">';
-        html += '<input type="checkbox"' + (owned ? ' checked' : '') + ' onchange="togglePass(' + i + ', this.checked)">';
-        html += '<span class="terr-pass-swatch" style="background:' + PASS_SWATCH_COLORS[i] + '"></span>';
-        html += name + (count ? ' (' + count + ')' : '');
-        html += '</label>';
-    }
-    document.getElementById('pass-toggles').innerHTML = html;
-}
-
-function togglePass(id, owned) {
-    passes[id].owned = owned;
-    // Quick toggle — save immediately
-    fetch(RELAY_PREFIX + '/api/territory/passes/toggle', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({id: String(id), owned: owned})
-    })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-        if (data.ok) {
-            showStatus('Pass ' + id + ' ' + (owned ? 'owned' : 'unowned') + ' — ' + data.blocked + ' squares blocked');
-        }
-    })
-    .catch(function(err) { console.error('Toggle failed:', err); });
-    buildPassToggles();
-    renderGrid();
-}
-
 // ============================================================
 // Grid rendering
 // ============================================================
 
 function renderGrid() {
     var cells = document.querySelectorAll('.terr-cell');
-    // Build lookup for fast zone painting
-    var cellZone = {}; // "r,c" -> class name
+    var cellClasses = {}; // key -> [cls, ...]
 
-    if (currentTab === 'passes') {
-        // Paint pass zones
-        for (var id in passes) {
-            var cls = PASS_COLORS[id];
-            var unowned = !passes[id].owned;
-            passes[id].zone.forEach(function(rc) {
-                cellZone[rc[0] + ',' + rc[1]] = cls + (unowned ? ' terr-pass-unowned' : '');
+    if (currentTab === 'zones') {
+        // Mutual zones
+        for (var zk in mutualZones) {
+            if (hiddenZones['mutual-' + zk]) continue;
+            var z = ZONES.find(function(zz) { return zz.key === zk && zz.type === 'mutual'; });
+            if (!z) continue;
+            mutualZones[zk].forEach(function(rc) {
+                var key = rc[0] + ',' + rc[1];
+                if (!cellClasses[key]) cellClasses[key] = [];
+                cellClasses[key].push(z.cls);
             });
         }
-        // Paint safe zones
+        // Home zones
+        for (var team in homeZones) {
+            if (hiddenZones['home-' + team]) continue;
+            var cls = 'terr-home-' + team;
+            homeZones[team].forEach(function(rc) {
+                var key = rc[0] + ',' + rc[1];
+                if (!cellClasses[key]) cellClasses[key] = [];
+                cellClasses[key].push(cls);
+            });
+        }
+        // Safe zones
         for (var team in safeZones) {
-            var cls = SAFE_COLORS[team];
-            if (!cls) continue;
+            if (hiddenZones['safe-' + team]) continue;
+            var cls = 'terr-safe-' + team;
             safeZones[team].forEach(function(rc) {
-                cellZone[rc[0] + ',' + rc[1]] = cls;
+                var key = rc[0] + ',' + rc[1];
+                if (!cellClasses[key]) cellClasses[key] = [];
+                cellClasses[key].push(cls);
             });
         }
     }
 
     cells.forEach(function(el) {
-        var r = el.getAttribute('data-r');
-        var c = el.getAttribute('data-c');
-        var key = r + ',' + c;
+        var key = el.getAttribute('data-r') + ',' + el.getAttribute('data-c');
         if (THRONE[key]) return;
 
-        // Clear all zone/target classes
         el.className = 'terr-cell';
 
-        if (currentTab === 'passes') {
-            var zc = cellZone[key];
-            if (zc) {
-                zc.split(' ').forEach(function(cn) { if (cn) el.classList.add(cn); });
-            }
+        if (currentTab === 'zones') {
+            var cc = cellClasses[key];
+            if (cc) cc.forEach(function(cn) { el.classList.add(cn); });
         } else {
             var state = cellStates[key] || 'none';
             if (state === 'attack') el.classList.add('terr-attack');
@@ -397,11 +378,43 @@ function renderGrid() {
 
 function loadBackground() {
     var device = document.getElementById('device-select').value;
-    if (!device) { alert('Select a device first'); return; }
+    if (!device) return;
     var grid = document.getElementById('territory-grid');
-    var url = RELAY_PREFIX + '/api/territory/screenshot?device=' + encodeURIComponent(device);
-    grid.style.backgroundImage = 'url(' + url + '&t=' + Date.now() + ')';
+    grid.style.backgroundImage = 'url(' + RELAY_PREFIX + '/api/territory/screenshot?device=' + encodeURIComponent(device) + '&t=' + Date.now() + ')';
     grid.classList.add('has-bg');
+}
+
+function loadSavedBG() {
+    var grid = document.getElementById('territory-grid');
+    var img = new Image();
+    img.onload = function() {
+        grid.style.backgroundImage = 'url(' + RELAY_PREFIX + '/api/territory/screenshot/saved?t=' + Date.now() + ')';
+        grid.classList.add('has-bg');
+    };
+    img.onerror = function() {
+        // No saved BG — load live from first device
+        var sel = document.getElementById('device-select');
+        if (sel.options.length > 0) { sel.selectedIndex = 0; loadBackground(); }
+    };
+    img.src = RELAY_PREFIX + '/api/territory/screenshot/saved?t=' + Date.now();
+}
+
+function saveBG() {
+    var device = document.getElementById('device-select').value;
+    if (!device) return;
+    fetch(RELAY_PREFIX + '/api/territory/screenshot/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({device: device})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        if (data.ok) {
+            showStatus('Background saved');
+            loadSavedBG();
+        }
+    })
+    .catch(function(err) { console.error('Save BG failed:', err); });
 }
 
 // ============================================================
@@ -412,19 +425,18 @@ function loadZones() {
     fetch(RELAY_PREFIX + '/api/territory/zones')
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            // Merge loaded passes with defaults
+            // Passes (toggles only)
             var loaded = data.passes || {};
-            for (var id in loaded) {
-                passes[id] = {
-                    name: loaded[id].name || DEFAULT_NAMES[id] || '',
-                    zone: loaded[id].zone || [],
-                    owned: !!loaded[id].owned
+            for (var pid in loaded) {
+                passes[pid] = {
+                    name: loaded[pid].name || PASS_DEFS[pid] || '',
+                    owned: !!loaded[pid].owned
                 };
             }
+            mutualZones = data.mutual_zones || {};
             safeZones = data.safe_zones || {};
-            buildPassToggles();
-            updateDropdownLabels();
-            onZoneChange();
+            homeZones = data.home_zones || {};
+            buildZonePicker();
             renderGrid();
         })
         .catch(function(err) { console.error('Failed to load zones:', err); });
@@ -447,41 +459,38 @@ function loadTargets() {
 }
 
 function saveAll() {
-    if (currentTab === 'passes') {
-        saveZones();
-    } else {
-        saveTargets();
-    }
+    if (currentTab === 'zones') saveZones();
+    else saveTargets();
 }
 
 function saveZones() {
-    // Build clean passes object for API
     var cleanPasses = {};
-    for (var id in passes) {
-        if (passes[id].zone.length > 0 || passes[id].name !== DEFAULT_NAMES[id]) {
-            cleanPasses[id] = {
-                name: passes[id].name,
-                zone: passes[id].zone,
-                owned: passes[id].owned
-            };
-        }
+    for (var pid in passes) {
+        cleanPasses[pid] = {name: passes[pid].name, owned: passes[pid].owned};
+    }
+    var cleanMutual = {};
+    for (var k in mutualZones) {
+        if (mutualZones[k].length > 0) cleanMutual[k] = mutualZones[k];
     }
     var cleanSafe = {};
-    for (var team in safeZones) {
-        if (safeZones[team].length > 0) {
-            cleanSafe[team] = safeZones[team];
-        }
+    for (var t in safeZones) {
+        if (safeZones[t].length > 0) cleanSafe[t] = safeZones[t];
+    }
+    var cleanHome = {};
+    for (var t in homeZones) {
+        if (homeZones[t].length > 0) cleanHome[t] = homeZones[t];
     }
     fetch(RELAY_PREFIX + '/api/territory/zones', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({passes: cleanPasses, safe_zones: cleanSafe})
+        body: JSON.stringify({passes: cleanPasses, mutual_zones: cleanMutual, safe_zones: cleanSafe, home_zones: cleanHome})
     })
     .then(function(r) { return r.json(); })
     .then(function(data) {
         if (data.ok) {
             var total = 0;
-            for (var id in passes) total += passes[id].zone.length;
+            for (var k in mutualZones) total += mutualZones[k].length;
+            for (var t in homeZones) total += homeZones[t].length;
             for (var t in safeZones) total += safeZones[t].length;
             showStatus('Zones saved (' + total + ' squares, ' + data.blocked + ' blocked)');
         }
@@ -490,8 +499,7 @@ function saveZones() {
 }
 
 function saveTargets() {
-    var attack = [];
-    var ignore = [];
+    var attack = [], ignore = [];
     Object.keys(cellStates).forEach(function(key) {
         var parts = key.split(',');
         var rc = [parseInt(parts[0]), parseInt(parts[1])];
@@ -511,15 +519,14 @@ function saveTargets() {
 }
 
 function clearCurrent() {
-    if (currentTab === 'passes') {
-        var sel = getSelectedZone();
-        var parts = sel.split('-');
-        if (parts[0] === 'pass') {
-            passes[parts[1]].zone = [];
-        } else {
-            safeZones[parts[1]] = [];
-        }
-        buildPassToggles();
+    if (currentTab === 'zones') {
+        var parts = selectedZone.split('-');
+        var type = parts[0];
+        var key = parts.slice(1).join('-');
+        if (type === 'mutual') mutualZones[key] = [];
+        else if (type === 'home') homeZones[key] = [];
+        else safeZones[key] = [];
+        buildZonePicker();
     } else {
         cellStates = {};
     }
@@ -538,8 +545,11 @@ function showStatus(msg) {
 // ============================================================
 
 buildGrid();
+buildZonePicker();
 loadZones();
 loadTargets();
-onZoneChange();
+
+// Auto-load saved background (falls back to live screenshot)
+loadSavedBG();
 </script>
 {% endblock %}

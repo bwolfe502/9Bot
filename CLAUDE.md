@@ -34,7 +34,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `protocol/game_state.py` | Per-device reactive game state | `GameState`, `GameStateRegistry`, `get_game_state` |
 | `protocol/registry.py` | BKDR hash ↔ message name mapping | `bkdr_hash`, `msg_id`, `wire_id`, `get_wire_registry` |
 | `protocol/patch_apk.py` | APK patching + pure Python signing | Pull splits from device, LIEF inject, v1 sign, install |
-| `config.py` | Global mutable state, enums, constants | `QuestType`, `RallyType`, `Screen`, ADB path, thresholds, team colors, `alert_queue` |
+| `config.py` | Global mutable state, enums, constants | `QuestType`, `RallyType`, `Screen`, ADB path, thresholds, team colors, `alert_queue`, `recompute_pass_blocked` |
 | `devices.py` | ADB device detection + emulator window mapping | `auto_connect_emulators`, `get_devices`, `get_emulator_instances` |
 | `botlog.py` | Logging, metrics, timing | `setup_logging`, `get_logger`, `set_console_verbose`, `StatsTracker`, `timed_action`, `stats`, `BOT_VERSION` |
 | `web/dashboard.py` | Flask web dashboard (mobile remote control) | `create_app`, routes, auto-mode toggles |
@@ -262,6 +262,7 @@ LineupState enum (extracted from game binary via Frida IL2CPP API):
 - Flag detection: red pixel analysis in square
 - Adjacency check: only attack squares bordering own territory
 - `MANUAL_ATTACK_SQUARES` / `MANUAL_IGNORE_SQUARES` override auto-detection
+- `PASS_BLOCKED_SQUARES` — computed set of squares the bot can't reach (see Pass Zone Model below)
 - `open_territory_manager(device)`: Tkinter window for visual square selection (click to cycle: none → attack → ignore)
 - `diagnose_grid(device)`: diagnostic tool — screenshots all 576 squares, classifies each using the same
   `_get_border_color` + `_classify_square_team` pipeline as `attack_territory`, logs a 24-row character grid
@@ -269,6 +270,51 @@ LineupState enum (extracted from game binary via Frida IL2CPP API):
   image to `debug/territory_diag_{device}.png` and structured JSON to
   `data/territory_diag_{device}_{timestamp}.json`. `sample_specific_squares` is retained as an alias for
   backward compatibility.
+
+### Territory Pass Zone Model (config.py + settings.py + web/territory.html)
+
+The territory map has 8 mountain passes that gate access to different areas.  During territory
+war (BL), teams capture passes to unlock regions.  The pass zone model lets the bot skip
+unreachable squares during auto-occupy.
+
+**Zone types** (all defined as `[row, col]` lists in `settings.py` defaults):
+- **Mutual zones** (4 frontlines): border areas between adjacent teams, gated by a pass pair.
+  Blocked if BOTH passes unowned — owning either unlocks the zone.
+- **Home zones** (4 corners): team's home area around their safe zone.  Own team always
+  accessible.  Enemy home blocked if both that enemy's passes are unowned.
+- **Safe zones** (4 corners): always blocked for enemies, always open for own team.
+
+**8 passes and their pairings**:
+
+| Pass | Name | Gates mutual zone | Gates home zone |
+|------|------|-------------------|-----------------|
+| 1 | Fire North | fire_earth | red |
+| 2 | Fire East | fire_ice | red |
+| 3 | Earth South | fire_earth | yellow |
+| 4 | Earth East | earth_forest | yellow |
+| 5 | Forest West | earth_forest | green |
+| 6 | Forest South | forest_ice | green |
+| 7 | Ice West | fire_ice | blue |
+| 8 | Ice North | forest_ice | blue |
+
+**Blocking logic** (`config.recompute_pass_blocked()`):
+1. Mutual zone blocked if NEITHER of its two passes is owned (OR logic)
+2. Enemy home zone blocked if NEITHER of that team's two passes is owned
+3. Own home/safe always accessible regardless of pass ownership
+4. Enemy safe always blocked regardless of pass ownership
+5. `PASS_BLOCKED_SQUARES` = union of all blocked squares
+
+**`scan_targets`** skips `PASS_BLOCKED_SQUARES` alongside `THRONE_SQUARES` and
+`MANUAL_IGNORE_SQUARES`.
+
+**UI** (`/territory` page): Two-tab layout — "Passes" tab for zone painting + pass toggles,
+"Targets" tab for attack/ignore overrides.  Screenshot background overlay with 55% dim.
+Zones paintable by clicking grid cells.  Pass ownership toggles update in real-time and
+persist to `settings.json`.
+
+**Settings persistence**: `territory_passes`, `territory_mutual_zones`, `territory_safe_zones`,
+`territory_home_zones` in `settings.json`.  Zone coordinates are pre-populated as defaults in
+`settings.py` (map layout is fixed).  Only pass ownership changes during war.
 
 ### Auto Occupy System (territory.py + runners.py)
 

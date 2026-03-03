@@ -22,6 +22,7 @@ DEFAULTS = {
     "pass_mode": "Rally Joiner",
     "my_team": "yellow",
     "enemy_team": "green",
+    "enemy_teams": [],
     "mode": "bl",
     "verbose_logging": False,
     "eg_rally_own": True,
@@ -38,6 +39,8 @@ DEFAULTS = {
     "collect_training_data": False,
     "protocol_enabled": False,
     "chat_mirror": True,
+    "chat_translate_enabled": False,
+    "chat_translate_api_key": "",
 }
 
 

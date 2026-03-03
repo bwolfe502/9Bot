@@ -1300,6 +1300,9 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     max-width: 100%;
     padding: 12px 8px;
 }
+.terr-grid-container {
+    max-width: 540px;
+}
 
 .terr-grid-wrap {
     display: flex;
@@ -1401,23 +1404,16 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     user-select: none;
 }
 
-/* Pass zone colors (semi-transparent overlays) */
-.terr-pass-1 { background: rgba(239, 83, 80, 0.45); }   /* Fire North — red */
-.terr-pass-2 { background: rgba(255, 138, 101, 0.45); }  /* Fire East — orange-red */
-.terr-pass-3 { background: rgba(255, 213, 79, 0.45); }   /* Earth South — amber */
-.terr-pass-4 { background: rgba(255, 183, 77, 0.45); }   /* Earth East — orange */
-.terr-pass-5 { background: rgba(102, 187, 106, 0.45); }  /* Forest West — green */
-.terr-pass-6 { background: rgba(129, 199, 132, 0.45); }  /* Forest South — light green */
-.terr-pass-7 { background: rgba(79, 195, 247, 0.45); }   /* Ice West — light blue */
-.terr-pass-8 { background: rgba(100, 181, 246, 0.45); }   /* Ice North — blue */
+/* Mutual zone (frontline) colors */
+.terr-mutual-1 { background: rgba(255, 112, 67, 0.45); }  /* Fire-Earth — deep orange */
+.terr-mutual-2 { background: rgba(171, 71, 188, 0.45); }  /* Fire-Ice — purple */
+.terr-mutual-3 { background: rgba(38, 166, 154, 0.45); }  /* Earth-Forest — teal */
+.terr-mutual-4 { background: rgba(120, 144, 156, 0.45); } /* Forest-Ice — blue-grey */
 /* Safe zone colors */
 .terr-safe-yellow { background: rgba(255, 235, 59, 0.35); }
 .terr-safe-green  { background: rgba(76, 175, 80, 0.35); }
 .terr-safe-red    { background: rgba(244, 67, 54, 0.35); }
 .terr-safe-blue   { background: rgba(33, 150, 243, 0.35); }
-
-/* Dimmed state for unowned passes */
-.terr-pass-unowned { opacity: 0.4; }
 
 /* Pass zone editor controls */
 .terr-tabs {
@@ -1462,45 +1458,144 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 }
 .terr-controls select { min-width: 140px; }
 .terr-controls input[type="text"] { width: 120px; }
-.terr-pass-toggles {
+/* Zone picker buttons */
+.zone-picker { margin-bottom: 10px; }
+.zone-section-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #667;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+.zone-btn-row {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin: 10px 0;
+    gap: 4px;
+    margin-bottom: 6px;
 }
-.terr-pass-toggle {
+.zone-btn {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 8px;
+    padding: 5px 8px;
     border-radius: 6px;
     font-size: 11px;
+    color: #aab;
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.08);
     cursor: pointer;
     user-select: none;
-    transition: all 0.15s;
+    transition: all 0.12s;
 }
-.terr-pass-toggle.owned {
-    background: rgba(0, 188, 212, 0.12);
-    border-color: rgba(0, 188, 212, 0.25);
-    color: #4dd0e1;
+.zone-btn:active { filter: brightness(1.2); }
+.zone-btn.active {
+    background: rgba(0, 188, 212, 0.15);
+    border-color: rgba(0, 188, 212, 0.4);
+    color: #e0e0f0;
 }
-.terr-pass-toggle input { display: none; }
-.terr-pass-swatch {
+.zone-swatch {
     width: 10px;
     height: 10px;
     border-radius: 2px;
     flex-shrink: 0;
 }
-/* Background image behind grid */
+.zone-label { white-space: nowrap; }
+.zone-count {
+    font-size: 9px;
+    opacity: 0.6;
+}
+.zone-owned-cb {
+    width: 14px;
+    height: 14px;
+    margin: 0 0 0 4px;
+    cursor: pointer;
+    accent-color: #4dd0e1;
+}
+.zone-vis-toggle {
+    margin-left: auto;
+    padding: 0 2px;
+    font-size: 10px;
+    cursor: pointer;
+    color: #667;
+    user-select: none;
+    line-height: 1;
+}
+.zone-vis-toggle:hover { color: #aab; }
+.zone-front-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+.zone-pass-toggles {
+    display: flex;
+    gap: 6px;
+    margin-left: 4px;
+}
+.zone-pass-cb {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    color: #778;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.zone-pass-cb input {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    accent-color: #4dd0e1;
+    cursor: pointer;
+}
+.zone-btn.zone-hidden {
+    opacity: 0.35;
+}
+.zone-btn.zone-hidden .zone-label {
+    text-decoration: line-through;
+}
+
+/* Home zone colors (visual reference only — no blocking) */
+.terr-home-yellow { background: rgba(255, 241, 118, 0.35); }
+.terr-home-green  { background: rgba(165, 214, 167, 0.35); }
+.terr-home-red    { background: rgba(239, 154, 154, 0.35); }
+.terr-home-blue   { background: rgba(144, 202, 249, 0.35); }
+
+/* Background image behind grid — dimmed so painted zones pop */
 .terr-grid.has-bg {
     background-size: 100% 100%;
     background-position: top left;
+    position: relative;
+}
+.terr-grid.has-bg::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 0;
+    pointer-events: none;
 }
 .terr-grid.has-bg .terr-cell {
     background: transparent;
+    position: relative;
+    z-index: 1;
 }
+/* Painted zones stay visible over background — high opacity + outline */
+.terr-grid.has-bg .terr-cell.terr-attack { background: rgba(46, 125, 50, 0.75); box-shadow: inset 0 0 0 1px #4caf50; }
+.terr-grid.has-bg .terr-cell.terr-ignore { background: rgba(198, 40, 40, 0.75); box-shadow: inset 0 0 0 1px #ef5350; }
+.terr-grid.has-bg .terr-cell.terr-mutual-1 { background: rgba(255, 112, 67, 0.7); box-shadow: inset 0 0 0 1px #ff7043; }
+.terr-grid.has-bg .terr-cell.terr-mutual-2 { background: rgba(171, 71, 188, 0.7); box-shadow: inset 0 0 0 1px #ab47bc; }
+.terr-grid.has-bg .terr-cell.terr-mutual-3 { background: rgba(38, 166, 154, 0.7); box-shadow: inset 0 0 0 1px #26a69a; }
+.terr-grid.has-bg .terr-cell.terr-mutual-4 { background: rgba(120, 144, 156, 0.7); box-shadow: inset 0 0 0 1px #78909c; }
+.terr-grid.has-bg .terr-cell.terr-safe-yellow { background: rgba(255, 235, 59, 0.6); box-shadow: inset 0 0 0 1px #ffeb3b; }
+.terr-grid.has-bg .terr-cell.terr-safe-green  { background: rgba(76, 175, 80, 0.6); box-shadow: inset 0 0 0 1px #4caf50; }
+.terr-grid.has-bg .terr-cell.terr-safe-red    { background: rgba(244, 67, 54, 0.6); box-shadow: inset 0 0 0 1px #f44336; }
+.terr-grid.has-bg .terr-cell.terr-safe-blue   { background: rgba(33, 150, 243, 0.6); box-shadow: inset 0 0 0 1px #2196f3; }
+.terr-grid.has-bg .terr-cell.terr-home-yellow { background: rgba(255, 241, 118, 0.5); box-shadow: inset 0 0 0 1px #fff176; }
+.terr-grid.has-bg .terr-cell.terr-home-green  { background: rgba(165, 214, 167, 0.5); box-shadow: inset 0 0 0 1px #a5d6a7; }
+.terr-grid.has-bg .terr-cell.terr-home-red    { background: rgba(239, 154, 154, 0.5); box-shadow: inset 0 0 0 1px #ef9a9a; }
+.terr-grid.has-bg .terr-cell.terr-home-blue   { background: rgba(144, 202, 249, 0.5); box-shadow: inset 0 0 0 1px #90caf9; }
 .terr-grid.has-bg .terr-cell.terr-throne {
     background: rgba(51, 51, 85, 0.5);
 }
@@ -2551,6 +2646,16 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 }
 .chat-content-coord {
     color: #8be9fd;
+}
+.chat-content-translated {
+    font-size: 12px;
+    font-style: italic;
+    color: rgba(100, 216, 255, 0.7);
+    padding: 0 0 3px 38px;
+    word-break: break-word;
+}
+.chat-content-translated::before {
+    content: "\21B3 ";
 }
 
 /* --- Chat footer --- */

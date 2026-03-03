@@ -37,7 +37,9 @@ def reset_occupy_state():
     config.MIN_TROOPS_AVAILABLE = 0
     config.DEVICE_STATUS.clear()
     config.TERRITORY_PASSES = {}
+    config.TERRITORY_MUTUAL_ZONES = {}
     config.TERRITORY_SAFE_ZONES = {}
+    config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
     yield
     config.MY_TEAM_COLOR = orig_team
@@ -47,7 +49,9 @@ def reset_occupy_state():
     config.LAST_ATTACKED_SQUARE.clear()
     config.DEVICE_STATUS.clear()
     config.TERRITORY_PASSES = {}
+    config.TERRITORY_MUTUAL_ZONES = {}
     config.TERRITORY_SAFE_ZONES = {}
+    config.TERRITORY_HOME_ZONES = {}
     config.PASS_BLOCKED_SQUARES = set()
 
 

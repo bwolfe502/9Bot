@@ -251,9 +251,11 @@ GRID_HEIGHT = 24
 THRONE_SQUARES = {(11, 11), (11, 12), (12, 11), (12, 12)}
 
 # Territory passes & safe zones (loaded from settings.json)
-TERRITORY_PASSES = {}       # {"1": {"name": "Fire North", "zone": [[r,c],...], "owned": false}, ...}
-TERRITORY_SAFE_ZONES = {}   # {"yellow": [[r,c],...], "green": [...], ...}
-PASS_BLOCKED_SQUARES = set()  # computed: union of unowned pass zones + enemy safe zones
+TERRITORY_PASSES = {}         # {"1": {"name": "Fire North", "owned": false}, ...}
+TERRITORY_MUTUAL_ZONES = {}   # {"fire_earth": [[r,c],...], ...} — frontlines between teams
+TERRITORY_SAFE_ZONES = {}     # {"yellow": [[r,c],...], ...}
+TERRITORY_HOME_ZONES = {}     # {"yellow": [[r,c],...], ...}
+PASS_BLOCKED_SQUARES = set()  # computed from mutual/home/safe zones + pass ownership
 
 BORDER_COLORS = {
     "yellow": (107, 223, 239),
@@ -285,6 +287,8 @@ SETTINGS_RULES = {
     "collect_training_data": {"type": bool},
     "protocol_enabled":      {"type": bool},
     "chat_mirror":           {"type": bool},
+    "chat_translate_enabled":{"type": bool},
+    "chat_translate_api_key":{"type": str},
     # Ints — type + optional min/max
     "ap_gem_limit":          {"type": int, "min": 0, "max": 3500},
     "min_troops":            {"type": int, "min": 0, "max": 5},
@@ -578,19 +582,57 @@ def set_territory_config(my_team, enemy_teams=None):
 
 
 def recompute_pass_blocked():
-    """Rebuild PASS_BLOCKED_SQUARES from current passes and safe zones.
+    """Rebuild PASS_BLOCKED_SQUARES from mutual zones, home zones, and safe zones.
 
-    Blocked = union of (unowned pass zones) + (enemy safe zones).
+    Three zone types are gated by passes:
+    - **Mutual zones** (frontlines): each gated by a pass pair from adjacent teams.
+      Blocked if BOTH passes are unowned — owning either unlocks it.
+    - **Home zones** (team corners): gated by that team's two passes.
+      Own team's home is always accessible.  Enemy home blocked if both their
+      passes are unowned.
+    - **Safe zones**: always blocked for enemies, always open for own team.
+
+    Pass pair mapping:
+      fire_earth   → passes 1 (Fire North) + 3 (Earth South)
+      fire_ice     → passes 2 (Fire East)  + 7 (Ice West)
+      earth_forest → passes 4 (Earth East) + 5 (Forest West)
+      forest_ice   → passes 6 (Forest South) + 8 (Ice North)
+    Home: red → 1,2  yellow → 3,4  green → 5,6  blue → 7,8
+
     Called on settings load, pass toggle, or team color change.
     """
     global PASS_BLOCKED_SQUARES
+    _MUTUAL_PASS_IDS = {
+        "fire_earth": ["1", "3"], "fire_ice": ["2", "7"],
+        "earth_forest": ["4", "5"], "forest_ice": ["6", "8"],
+    }
+    _HOME_PASS_IDS = {
+        "red": ["1", "2"], "yellow": ["3", "4"],
+        "green": ["5", "6"], "blue": ["7", "8"],
+    }
+
+    def _any_owned(pass_ids):
+        return any(
+            TERRITORY_PASSES.get(pid, {}).get("owned", False)
+            for pid in pass_ids
+        )
+
     blocked = set()
-    # Unowned pass zones
-    for pass_info in TERRITORY_PASSES.values():
-        if not pass_info.get("owned", False):
-            for rc in pass_info.get("zone", []):
+    # Mutual zones: blocked if both gating passes are unowned
+    for zone_key, squares in TERRITORY_MUTUAL_ZONES.items():
+        pass_ids = _MUTUAL_PASS_IDS.get(zone_key, [])
+        if not _any_owned(pass_ids):
+            for rc in squares:
                 blocked.add(tuple(rc))
-    # Enemy safe zones (everything except own team)
+    # Home zones: gated by team's pass pair; own team always accessible
+    for team, squares in TERRITORY_HOME_ZONES.items():
+        if team == MY_TEAM_COLOR:
+            continue  # own home never blocked
+        pass_ids = _HOME_PASS_IDS.get(team, [])
+        if not _any_owned(pass_ids):
+            for rc in squares:
+                blocked.add(tuple(rc))
+    # Enemy safe zones always blocked
     for team, zone in TERRITORY_SAFE_ZONES.items():
         if team != MY_TEAM_COLOR:
             for rc in zone:
