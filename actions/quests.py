@@ -780,24 +780,24 @@ def check_quests(device, stop_check=None):
         _run_tower_quest(device, quests, stop_check)
 
         if not actionable:
-            # Gold fallback: use visual OCR counters, not pending rally tracking
-            if config.get_device_config(device, "gather_enabled") and _all_quests_visually_complete(device, quests):
+            # Check pending rallies FIRST — don't mine gold while rallies are
+            # in-flight, even if OCR shows quests as visually complete.
+            pending_types = [qt for (dev, qt), cnt in _quest_rallies_pending.items() if dev == device and cnt > 0]
+            if pending_types:
+                pending_str = ", ".join(f"{qt} ({_quest_rallies_pending[(device, qt)]})" for qt in pending_types)
+                if config.RALLY_PANEL_WAIT_ENABLED:
+                    log.info("Pending rallies: %s — watching troop panel", pending_str)
+                    if navigate(Screen.MAP, device):
+                        _wait_for_rallies(device, stop_check)
+                else:
+                    log.info("Waiting for pending rallies to complete: %s", pending_str)
+            elif config.get_device_config(device, "gather_enabled") and _all_quests_visually_complete(device, quests):
                 log.info("All quests visually complete — gathering gold as fallback")
                 config.set_device_status(device, "All Quests Complete, Mining Gold...")
                 if navigate(Screen.MAP, device):
                     gather_gold_loop(device, stop_check)
             else:
-                pending_types = [qt for (dev, qt), cnt in _quest_rallies_pending.items() if dev == device and cnt > 0]
-                if pending_types:
-                    pending_str = ", ".join(f"{qt} ({_quest_rallies_pending[(device, qt)]})" for qt in pending_types)
-                    if config.RALLY_PANEL_WAIT_ENABLED:
-                        log.info("Pending rallies: %s — watching troop panel", pending_str)
-                        if navigate(Screen.MAP, device):
-                            _wait_for_rallies(device, stop_check)
-                    else:
-                        log.info("Waiting for pending rallies to complete: %s", pending_str)
-                else:
-                    log.info("No actionable quests remaining (all complete or skip-only)")
+                log.info("No actionable quests remaining (all complete or skip-only)")
             return True
 
         remaining_str = ", ".join(
