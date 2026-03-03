@@ -832,6 +832,13 @@ class GameState:
         with self._lock:
             self._server_ts = ts
             self._touch("heartbeat")
+            # Keep data categories fresh — many protocol messages only
+            # arrive on state changes, so categories go stale after 30s
+            # even though the data is still valid.  Heartbeats come every ~10s.
+            if self._lineups:
+                self._touch("lineups")
+            if "rallies" in self._last_update:
+                self._touch("rallies")
 
     def _on_connected(self, *args: Any) -> None:
         """EVT_CONNECTED — mark protocol as live."""
