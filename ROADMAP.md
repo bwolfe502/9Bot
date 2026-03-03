@@ -8,20 +8,19 @@ Priority: bug fixes, clean code, maintainability, usability — then new feature
 
 Harden existing features before adding new ones.
 
-- [ ] Improve mithril mining reliability — detect occupied mines and plundered troops
+- [x] Improve mithril mining reliability — detect occupied mines and plundered troops
 - [x] Improve titan rally miss detection — handle titan walking away, detect miss + retry
 - [ ] Teleport system improvements — more reliable targeting and validation
 - [x] Error recovery — stuck-state detection, disconnect handling, popup resilience
 - [x] AP Recovery popup handling — detect game-opened AP popup during EG depart, restore AP inline
-- [ ] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Existing regions verified correct for stationed.png, mithril_depart.png, depart.png (observed positions all within current bounds)
+- [x] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Existing regions verified correct for stationed.png, mithril_depart.png, depart.png (observed positions all within current bounds)
 - [x] Settings validation — validate `settings.json` on startup, catch invalid/corrupt values
 - [x] Fix join_rally success rate — replaced unreliable slot.png template with blind tap at (148, 1532), fixed close_x auto-dismiss on WAR screen, fixed scroll early-exit, added depart_anyway fallback
-- [ ] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success). Diagnostic screenshot added (`titan_depart_miss_{N}`) — awaiting live data
+- [x] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success). Diagnostic screenshot added (`titan_depart_miss_{N}`) — confirmed working after war screen speed optimizations
 - [x] ~~Fix heal flow~~ — 0% transitions are expected: heal button only appears when troops are injured (95% of the time they're healthy). Template works perfectly when healing is needed (100% confidence on hits)
 - [x] Tune timed_wait budgets — multiple rounds: `nav_kingdom_to_map` 2→3s, `recover_{name}` 1.5→2s, `verify_aq_screen` 2→3s, `nav_map_to_alliance` 2→2.5s, `nav_alliance_menu_load` 1→1.5s, `jr_backout_close_x` 4→2s (was over-budgeted)
 - [x] War screen speed optimization — removed label OCR (template match sufficient), disabled owner OCR (deferred to protocol), replaced lambda:False timed_waits with interruptible sleep, reduced scroll settle 1.5→0.8s, removed redundant depart wait
 - [x] Multi-device contention reduction — poll interval 150→300ms, quest check interval 60→300s when troops deployed, auto-install lz4 for protocol
-- [ ] Protocol-based rally blacklist — use `rally.troops[0].name` from protocol data instead of OCR for owner identification. UI-based OCR disabled due to 500-2000ms per-rally cost
 - [ ] Further multi-device performance — screenshot caching within timed_wait cycles, device-scoped OCR locks (Semaphore instead of global Lock), scrcpy/minicap for persistent screenshot streams
 
 ## Phase 2 — Testing & Quality

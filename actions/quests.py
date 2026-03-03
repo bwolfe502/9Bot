@@ -312,6 +312,8 @@ def _ocr_quest_rows(device):
             target = 15
         elif quest_type == QuestType.EVIL_GUARD:
             target = 3
+        elif quest_type == QuestType.FORTRESS:
+            target = 1800
         elif quest_type == QuestType.PVP:
             target = 500000000
         elif quest_type == QuestType.GATHER:
@@ -1288,12 +1290,14 @@ def _run_tower_quest(device, quests, stop_check=None):
     all_done = len(active) == 0
 
     if all_done:
-        # All tower quests completed — recall troop if defending
-        if device in _tower_quest_state or (
-                config.get_device_config(device, "tower_quest_enabled") and
-                _is_troop_defending_relaxed(device)):
-            log.info("Tower quests complete — recalling troop")
-            recall_tower_troop(device, stop_check)
+        # All tower/fortress quests are completed but still visible on screen.
+        # Keep the troop defending — the quest row stays visible until the user
+        # collects rewards or the quest resets.  Only recall when the quest
+        # disappears from screen entirely (handled by the "no tower quests"
+        # branch above).
+        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+            log.info("Tower quests complete but still on screen — keeping troop defending")
+            config.set_device_status(device, "Tower Quest: Complete, Defending...")
         return
 
     # Tower quest is active — check if already defending.

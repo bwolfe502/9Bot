@@ -299,11 +299,15 @@ Recalls stray DEFENDING troops (not deployed by bot) and stray STATIONING troops
 **EG troop gate**: `_eg_troops_available(device)` requires 2 troops not gathering or defending.
 Falls back to `troops_avail() >= 2` if no snapshot.
 
-**Tower quest**: `_navigate_to_tower()` uses Friend tab + `find_all_matches("friend_marker.png")`
+**Tower/fortress quest**: `_navigate_to_tower()` uses Friend tab + `find_all_matches("friend_marker.png")`
 for marker counting. `occupy_tower()` detects wrong tower type (attack vs reinforce button) and
 sets `_marker_errors`. `recall_tower_troop()` uses verified multi-step recall with panel-status
 confirmation (2 approaches: panel icon → friend marker fallback). `_is_troop_defending_relaxed()`
 extends snapshot freshness to 120s (vs 30s default) since quest OCR takes 60+ seconds.
+**Fortress recall policy**: troop stays defending as long as fortress/tower quest rows are visible
+on screen (even if completed). Only recalls when quests disappear entirely (quest reset/new day).
+**Quest target overrides**: Titan ≥15, EG=3, Fortress=1800, PVP=500M, Gather=1M — OCR right-of-slash
+is unreliable so these are hardcoded caps.
 
 **PVP attack**: `_attack_pvp_tower()` uses `target()` (Enemy tab + marker counting) to navigate
 to enemy tower. Checks button type (attack=correct, reinforce=wrong). Single march completes 500M
