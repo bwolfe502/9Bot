@@ -32,11 +32,26 @@
         </div>
         <div class="settings-row settings-row-inline" data-key="my_team">
             <span class="settings-row-label">My Team</span>
-            <select class="settings-select" onchange="saveSetting('my_team', this.value)">
+            <select class="settings-select" onchange="saveSetting('my_team', this.value); updateEnemyCheckboxes()">
                 {% for color in ['yellow', 'red', 'blue', 'green'] %}
                 <option value="{{ color }}" {% if settings.my_team == color %}selected{% endif %}>{{ color|capitalize }}</option>
                 {% endfor %}
             </select>
+        </div>
+        <div class="settings-row" data-key="enemy_teams">
+            <span class="settings-row-label">Enemy Teams</span>
+            <div class="enemy-teams-checks" style="display:flex;gap:12px;flex-wrap:wrap;">
+                {% set et = settings.get('enemy_teams', []) %}
+                {% for color in ['yellow', 'red', 'blue', 'green'] %}
+                {% if color != settings.my_team %}
+                <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);">
+                    <input type="checkbox" value="{{ color }}" {% if color in et or not et %}checked{% endif %}
+                           onchange="saveEnemyTeams()">{{ color|capitalize }}
+                </label>
+                {% endif %}
+                {% endfor %}
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">Uncheck to skip that team in auto occupy</div>
         </div>
     </div>
 
@@ -303,6 +318,33 @@ function saveSetting(key, value) {
     }).catch(function() {
         if (row) showIndicator(row, false);
     });
+}
+
+function saveEnemyTeams() {
+    var checks = document.querySelectorAll('.enemy-teams-checks input[type="checkbox"]');
+    var selected = [];
+    checks.forEach(function(cb) { if (cb.checked) selected.push(cb.value); });
+    saveSetting('enemy_teams', selected);
+}
+
+function updateEnemyCheckboxes() {
+    var myTeam = document.querySelector('[data-key="my_team"] select').value;
+    var container = document.querySelector('.enemy-teams-checks');
+    if (!container) return;
+    var colors = ['yellow', 'red', 'blue', 'green'];
+    container.innerHTML = '';
+    colors.forEach(function(c) {
+        if (c === myTeam) return;
+        var lbl = document.createElement('label');
+        lbl.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);';
+        var cb = document.createElement('input');
+        cb.type = 'checkbox'; cb.value = c; cb.checked = true;
+        cb.onchange = saveEnemyTeams;
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(c.charAt(0).toUpperCase() + c.slice(1)));
+        container.appendChild(lbl);
+    });
+    saveEnemyTeams();
 }
 
 function saveDeviceTroops(devId, count) {

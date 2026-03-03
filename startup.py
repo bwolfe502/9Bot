@@ -421,7 +421,11 @@ def apply_settings(settings):
     set_min_troops(settings.get("min_troops", 0))
     set_eg_rally_own(settings.get("eg_rally_own", True))
     set_titan_rally_own(settings.get("titan_rally_own", True))
-    set_territory_config(settings.get("my_team", "yellow"))
+    enemy_teams = settings.get("enemy_teams", [])
+    # Migrate legacy single enemy_team to list
+    if not enemy_teams and settings.get("enemy_team"):
+        enemy_teams = [settings["enemy_team"]]
+    set_territory_config(settings.get("my_team", "yellow"), enemy_teams or None)
     config.MITHRIL_INTERVAL = settings.get("mithril_interval", 19)
     for dev_id, ts in settings.get("last_mithril_time", {}).items():
         try:
