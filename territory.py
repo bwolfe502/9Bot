@@ -666,6 +666,10 @@ def _do_depart(device, log, action_type):
         log.warning("Low health troops — 'Depart Anyway' visible")
         if config.get_device_config(device, "auto_heal"):
             log.info("Healing troops before retry — returning False for cycle retry")
+            # Dismiss the depart dialog first — BACK key closes it reliably
+            adb_keyevent(device, 4)  # KEYCODE_BACK
+            time.sleep(0.5)
+            navigate(Screen.MAP, device)
             heal_all(device)
             return False  # caller will retry the full cycle from MAP
         else:

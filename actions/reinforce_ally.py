@@ -174,6 +174,10 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
         log.warning("Low health troops — 'Depart Anyway' visible for %s", label)
         if config.get_device_config(device, "auto_heal"):
             log.info("Healing troops before retry for %s", label)
+            # Dismiss the depart dialog first — BACK key closes it reliably
+            adb_keyevent(device, 4)  # KEYCODE_BACK
+            _interruptible_sleep(0.5, stop_check)
+            navigate(Screen.MAP, device)
             heal_all(device)
             return False  # retry on next cycle (heal_all navigates to MAP)
         log.info("Auto heal off — tapping Depart Anyway for %s", label)
