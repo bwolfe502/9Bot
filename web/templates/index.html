@@ -221,6 +221,32 @@
     {% endif %}
     {% endif %}
 
+    {% if not (device_readonly is defined and device_readonly) %}
+    <!-- Collapsible Events section -->
+    <div class="device-events-section">
+        <div class="events-header" onclick="toggleEvents(this)">
+            <span class="events-label">Events</span>
+            <span class="controls-arrow">&#9660;</span>
+        </div>
+        <div class="events-body" style="display:none">
+            {% set groot_key = dev.id ~ '_auto_groot' %}
+            <div class="auto-row" data-mode="auto_groot" data-device="{{ dev.id }}">
+                <span class="auto-label">Join Groot</span>
+                <button type="button" class="toggle{% if groot_key in active_tasks %} on{% endif %}"
+                        onclick="toggleAutoMode('auto_groot', '{{ dev.id }}')"
+                        title="Join Groot"></button>
+            </div>
+            {% set esb_key = dev.id ~ '_auto_esb' %}
+            <div class="auto-row" data-mode="auto_esb" data-device="{{ dev.id }}">
+                <span class="auto-label">Phantom Clash</span>
+                <button type="button" class="toggle{% if esb_key in active_tasks %} on{% endif %}"
+                        onclick="toggleAutoMode('auto_esb', '{{ dev.id }}')"
+                        title="Phantom Clash"></button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="live-view-section">
         <div class="live-view-buttons">
             {% if not (dev.recently_started is defined and dev.recently_started) %}
@@ -778,6 +804,15 @@ function toggleActions(header) {
     var isOpen = grid.style.display !== 'none';
     grid.style.display = isOpen ? 'none' : '';
     arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
+}
+
+function toggleEvents(header) {
+    var section = header.closest('.device-events-section');
+    var body = section.querySelector('.events-body');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : '';
+    arrow.textContent = isOpen ? '\u25B6' : '\u25BC';
 }
 
 function toggleControls(header) {

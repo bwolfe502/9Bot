@@ -34,8 +34,8 @@ from navigation import check_screen, navigate
 from vision import (adb_tap, load_screenshot, find_image, tap_image,
                     wait_for_image_and_tap)
 from troops import troops_avail, heal_all, read_panel_statuses, get_troop_status, TroopAction
-from actions import (attack, reinforce_throne, target, check_quests,
-                     rally_titan, search_eg_reset, join_rally,
+from actions import (attack, phantom_clash_attack, reinforce_throne, target,
+                     check_quests, rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop)
 from territory import auto_occupy_loop
@@ -252,6 +252,27 @@ def run_auto_groot(device, stop_event, interval, variation):
     dlog.info("Rally Groot stopped")
 
 
+def run_auto_esb(device, stop_event, interval, variation):
+    """Loop phantom_clash_attack on a configurable interval."""
+    dlog = get_logger("runner", device)
+    dlog.info("Phantom Clash started (interval: %ss +/-%ss)", interval, variation)
+    stop_check = stop_event.is_set
+    lock = config.get_device_lock(device)
+    try:
+        while not stop_check():
+            with lock:
+                config.set_device_status(device, "Phantom Clash...")
+                phantom_clash_attack(device, stop_check=stop_check)
+            if stop_check():
+                break
+            config.set_device_status(device, "Idle")
+            sleep_interval(interval, variation, stop_check)
+    except Exception as e:
+        dlog.error("ERROR in Phantom Clash: %s", e, exc_info=True)
+    config.clear_device_status(device)
+    dlog.info("Phantom Clash stopped")
+
+
 def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
     dlog = get_logger("runner", device)
     stop_check = stop_event.is_set
@@ -365,6 +386,13 @@ def run_auto_occupy(device, stop_event):
     auto_occupy_loop(device, stop_check=stop_event.is_set)
     config.clear_device_status(device)
     get_logger("runner", device).info("Auto Occupy stopped")
+
+
+def run_debug_occupy(device, stop_event):
+    config.set_device_status(device, "Debug Occupy...")
+    auto_occupy_loop(device, stop_check=stop_event.is_set, skip_troop_gate=True)
+    config.clear_device_status(device)
+    get_logger("runner", device).info("Debug Occupy stopped")
 
 
 def run_auto_reinforce(device, stop_event, interval, variation):
@@ -500,6 +528,8 @@ _MODE_LABELS = {
     "auto_reinforce": "Reinforce Throne",
     "auto_mithril":   "Mine Mithril",
     "auto_gold":      "Gather Gold",
+    "auto_esb":       "Phantom Clash",
+    "debug_occupy":   "Debug Occupy",
 }
 
 

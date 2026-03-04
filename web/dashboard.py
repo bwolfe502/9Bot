@@ -135,7 +135,9 @@ ONESHOT_DEBUG = ["Check Screen", "Check Troops", "Diagnose Grid",
 
 from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
                      run_auto_pass, run_auto_occupy, run_auto_reinforce,
-                     run_auto_mithril, run_auto_gold, run_once, run_repeat,
+                     run_auto_mithril, run_auto_gold, run_auto_esb,
+                     run_debug_occupy,
+                     run_once, run_repeat,
                      launch_task, stop_task, stop_all_tasks_matching,
                      force_stop_all)
 
@@ -153,6 +155,8 @@ AUTO_RUNNERS = {
     "auto_reinforce": lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
     "auto_mithril":   lambda dev, se, s: run_auto_mithril(dev, se),
     "auto_gold":      lambda dev, se, s: run_auto_gold(dev, se),
+    "auto_esb":       lambda dev, se, s: run_auto_esb(dev, se, 5, s.get("variation", 0)),
+    "debug_occupy":   lambda dev, se, s: run_debug_occupy(dev, se),
 }
 
 
