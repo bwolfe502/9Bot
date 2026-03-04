@@ -132,17 +132,55 @@
         </div>
     </div>
 
-    <!-- Auto Occupy -->
+    <!-- General -->
     <div class="card settings-card">
-        <div class="settings-card-header">Auto Occupy</div>
+        <div class="settings-card-header">General</div>
         {{ select_row('my_team', 'My Team', [('yellow', 'Yellow'), ('red', 'Red'), ('blue', 'Blue'), ('green', 'Green')]) }}
         {{ number_row('min_troops', 'Min Troops', 0, 5) }}
+        {{ select_row('pass_mode', 'Pass Mode', [('Rally Joiner', 'Rally Joiner'), ('Rally Starter', 'Rally Starter')]) }}
+        <div class="settings-row settings-row-inline" data-key="device_troops">
+            <span class="settings-row-label">Total Troops</span>
+            <div class="settings-row-input">
+                <input type="number" value="{{ device_troop_count }}"
+                       min="1" max="5" class="input-sm"
+                       onchange="saveDeviceTroops(parseInt(this.value))">
+            </div>
+        </div>
     </div>
 
     <!-- Timing -->
     <div class="card settings-card">
         <div class="settings-card-header">Timing</div>
+        {{ number_row('variation', 'Randomize +/-', 0, unit='sec') }}
+        {{ number_row('titan_interval', 'Titan', 1, unit='sec') }}
+        {{ number_row('groot_interval', 'Groot', 1, unit='sec') }}
+        {{ number_row('reinforce_interval', 'Reinforce', 1, unit='sec') }}
+        {{ number_row('pass_interval', 'Pass', 1, unit='sec') }}
         {{ number_row('mithril_interval', 'Mithril', 1, unit='min') }}
+    </div>
+
+    <!-- Schedules -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Schedules</div>
+        <div id="schedules-list"></div>
+        <div class="schedule-add-form" style="padding:8px 16px;">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select id="sched-mode" class="settings-select" style="flex:1;min-width:120px;">
+                    {% for m in schedule_modes %}
+                    <option value="{{ m.key }}">{{ m.label }}</option>
+                    {% endfor %}
+                </select>
+                <input type="time" id="sched-start" value="08:00" class="input-sm">
+                <span style="color:var(--text-secondary);">-</span>
+                <input type="time" id="sched-end" value="22:00" class="input-sm">
+            </div>
+            <div style="display:flex;gap:12px;align-items:center;margin-top:6px;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);">
+                    <input type="checkbox" id="sched-boot"> Boot Emulator
+                </label>
+                <button type="button" class="btn btn-sm" onclick="addSchedule()" style="margin-left:auto;">+ Add</button>
+            </div>
+        </div>
     </div>
 
     <!-- Shared User Permissions (owner only) -->
@@ -257,6 +295,39 @@ function saveDevSetting(key, value) {
     });
 }
 
+function saveDeviceTroops(count) {
+    fetch(RELAY_PREFIX + '/api/settings/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: 'device_troops_{{ device_id }}', value: count})
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        var row = document.querySelector('[data-key="device_troops"]');
+        if (row) showIndicator(row, data.ok);
+    }).catch(function() {});
+}
+
+function captureHome(deviceId) {
+    var btn = document.getElementById('capture-home-btn');
+    btn.disabled = true;
+    btn.textContent = 'Capturing...';
+    fetch('/api/device/' + deviceId + '/capture-home', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok) {
+                btn.textContent = 'Captured!';
+                setTimeout(function() { location.reload(); }, 800);
+            } else {
+                btn.textContent = 'Failed';
+                btn.disabled = false;
+                alert('Capture failed: ' + (data.error || 'unknown error'));
+            }
+        })
+        .catch(function() {
+            btn.textContent = 'Error';
+            btn.disabled = false;
+        });
+}
+
 function resetKey(key) {
     var row = document.querySelector('[data-key="' + key + '"]');
     var url;
@@ -314,28 +385,6 @@ function togglePermissions(enabled) {
     inputs.forEach(function(el) { el.disabled = !enabled; });
 }
 
-function captureHome(deviceId) {
-    var btn = document.getElementById('capture-home-btn');
-    btn.disabled = true;
-    btn.textContent = 'Capturing...';
-    fetch('/api/device/' + deviceId + '/capture-home', {method: 'POST'})
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            if (data.ok) {
-                btn.textContent = 'Captured!';
-                setTimeout(function() { location.reload(); }, 800);
-            } else {
-                btn.textContent = 'Failed';
-                btn.disabled = false;
-                alert('Capture failed: ' + (data.error || 'unknown error'));
-            }
-        })
-        .catch(function() {
-            btn.textContent = 'Error';
-            btn.disabled = false;
-        });
-}
-
 // Collapsible sections
 function toggleCollapse(sectionId) {
     var el = document.getElementById('collapse-' + sectionId);
@@ -344,5 +393,80 @@ function toggleCollapse(sectionId) {
     el.classList.toggle('collapsed');
     if (chevron) chevron.classList.toggle('collapsed');
 }
+
+// --- Schedules ---
+var _schedules = {{ overrides.get('schedules', []) | tojson }};
+var _modeLabelMap = { {% for m in schedule_modes %}'{{ m.key }}': '{{ m.label }}'{% if not loop.last %}, {% endif %}{% endfor %} };
+
+function _saveSchedules() {
+    var url;
+    if (_isDeviceScoped) {
+        url = _apiBase + '/save?token={{ device_token }}';
+    } else {
+        url = _apiBase + '/save';
+    }
+    fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({key: 'schedules', value: _schedules})
+    }).then(function(r) { return r.json(); }).then(function(data) {
+        if (!data.ok) console.error('Schedule save failed:', data.error);
+    }).catch(function(e) { console.error('Schedule save error:', e); });
+}
+
+function _renderSchedules() {
+    var list = document.getElementById('schedules-list');
+    list.innerHTML = '';
+    _schedules.forEach(function(s) {
+        var row = document.createElement('div');
+        row.className = 'settings-row settings-row-inline schedule-row';
+        row.setAttribute('data-id', s.id);
+        var label = _modeLabelMap[s.mode] || s.mode;
+        var bootTag = s.boot ? ' (Boot)' : '';
+        row.innerHTML =
+            '<span class="settings-row-label" style="flex:1;">' +
+                '<span class="schedule-mode-label">' + label + '</span>' +
+                '<span class="settings-row-hint">' + s.start + ' - ' + s.end + bootTag + '</span>' +
+            '</span>' +
+            '<button type="button" class="toggle' + (s.enabled !== false ? ' on' : '') + '" ' +
+                'onclick="toggleScheduleEnabled(this, \'' + s.id + '\')"></button>' +
+            '<button type="button" class="btn-icon schedule-delete" ' +
+                'onclick="deleteSchedule(\'' + s.id + '\')" title="Delete">&times;</button>';
+        list.appendChild(row);
+    });
+}
+
+function addSchedule() {
+    var mode = document.getElementById('sched-mode').value;
+    var start = document.getElementById('sched-start').value;
+    var end = document.getElementById('sched-end').value;
+    var boot = document.getElementById('sched-boot').checked;
+    if (!mode || !start || !end) return;
+    var id = Math.random().toString(16).slice(2, 10);
+    _schedules.push({id: id, mode: mode, start: start, end: end, boot: boot, enabled: true});
+    _renderSchedules();
+    _saveSchedules();
+}
+
+function deleteSchedule(id) {
+    _schedules = _schedules.filter(function(s) { return s.id !== id; });
+    _renderSchedules();
+    _saveSchedules();
+}
+
+function toggleScheduleEnabled(btn, id) {
+    btn.classList.toggle('on');
+    var enabled = btn.classList.contains('on');
+    for (var i = 0; i < _schedules.length; i++) {
+        if (_schedules[i].id === id) {
+            _schedules[i].enabled = enabled;
+            break;
+        }
+    }
+    _saveSchedules();
+}
+
+// Render schedules on page load
+_renderSchedules();
 </script>
 {% endblock %}

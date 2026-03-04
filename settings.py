@@ -26,6 +26,8 @@ DEVICE_OVERRIDABLE_KEYS = {
     "my_team", "enemy_teams", "gather_enabled", "gather_mine_level", "gather_max_troops",
     "tower_quest_enabled", "eg_rally_own", "titan_rally_own", "mithril_interval",
     "protocol_enabled", "home_x", "home_z", "max_reinforce_distance",
+    "variation", "titan_interval", "groot_interval", "reinforce_interval",
+    "pass_interval", "pass_mode",
 }
 
 # ── Default territory zone data ──

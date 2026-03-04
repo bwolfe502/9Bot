@@ -3021,6 +3021,16 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     word-break: break-all;
 }
 
+/* Schedule rows */
+.schedule-row { gap: 8px; }
+.schedule-mode-label { font-weight: 500; }
+.schedule-delete {
+    background: none; border: none; color: var(--text-secondary);
+    font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;
+}
+.schedule-delete:hover { color: var(--danger, #e74c3c); }
+.schedule-add-form { border-top: 1px solid var(--border-color, #333); }
+
 /* Safe area for notched iPhones */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
     main {

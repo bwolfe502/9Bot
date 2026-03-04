@@ -13,109 +13,6 @@
 </div>
 {% endif %}
 
-    <!-- Auto Quest -->
-    <div class="card settings-card">
-        <div class="settings-card-header">Auto Quest</div>
-        <div class="settings-row" data-key="auto_heal">
-            <span class="settings-row-label">Auto Heal</span>
-            <button type="button" class="toggle{% if settings.auto_heal %} on{% endif %}"
-                    onclick="toggleAndSave(this, 'auto_heal')"></button>
-        </div>
-        <div class="settings-row" data-key="eg_rally_own">
-            <span class="settings-row-label">Rally Own Evil Guard</span>
-            <button type="button" class="toggle{% if settings.eg_rally_own %} on{% endif %}"
-                    onclick="toggleAndSave(this, 'eg_rally_own')"></button>
-        </div>
-        <div class="settings-row" data-key="titan_rally_own">
-            <span class="settings-row-label">Rally Own Titans</span>
-            <button type="button" class="toggle{% if settings.titan_rally_own %} on{% endif %}"
-                    onclick="toggleAndSave(this, 'titan_rally_own')"></button>
-        </div>
-        <div class="settings-row" data-key="tower_quest_enabled">
-            <span class="settings-row-label">
-                Tower Quest
-                <span class="settings-row-hint">Mark tower with target marker first</span>
-            </span>
-            <button type="button" class="toggle{% if settings.tower_quest_enabled %} on{% endif %}"
-                    onclick="toggleAndSave(this, 'tower_quest_enabled')"></button>
-        </div>
-
-        <!-- Gathering sub-section -->
-        <div class="settings-section-divider" onclick="toggleCollapse('gather')">
-            <span class="settings-section-divider-label">Gathering</span>
-            <span class="settings-section-chevron{% if not settings.gather_enabled %} collapsed{% endif %}" id="chevron-gather">&#9662;</span>
-        </div>
-        <div class="settings-collapse{% if not settings.gather_enabled %} collapsed{% endif %}" id="collapse-gather">
-            <div class="settings-row" data-key="gather_enabled">
-                <span class="settings-row-label">Gather Gold</span>
-                <button type="button" class="toggle{% if settings.gather_enabled %} on{% endif %}"
-                        onclick="toggleAndSave(this, 'gather_enabled'); autoCollapseSection('gather', this.classList.contains('on'))"></button>
-            </div>
-            <div class="settings-row settings-row-inline settings-row-indent{% if not settings.gather_enabled %} setting-disabled{% endif %}"
-                 data-key="gather_mine_level" data-depends-on="gather_enabled">
-                <span class="settings-row-label">Mine Level</span>
-                <select class="settings-select" onchange="saveSetting('gather_mine_level', parseInt(this.value))">
-                    {% for lv in [4, 5, 6] %}
-                    <option value="{{ lv }}" {% if settings.gather_mine_level == lv %}selected{% endif %}>{{ lv }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="settings-row settings-row-inline settings-row-indent{% if not settings.gather_enabled %} setting-disabled{% endif %}"
-                 data-key="gather_max_troops" data-depends-on="gather_enabled">
-                <span class="settings-row-label">Max Gather Troops</span>
-                <select class="settings-select" onchange="saveSetting('gather_max_troops', parseInt(this.value))">
-                    {% for n in [1, 2, 3, 4, 5] %}
-                    <option value="{{ n }}" {% if settings.gather_max_troops == n %}selected{% endif %}>{{ n }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-        </div>
-
-        <!-- AP Restoration sub-section -->
-        <div class="settings-section-divider" onclick="toggleCollapse('ap')">
-            <span class="settings-section-divider-label">AP Restoration</span>
-            <span class="settings-section-chevron{% if not settings.auto_restore_ap %} collapsed{% endif %}" id="chevron-ap">&#9662;</span>
-        </div>
-        <div class="settings-collapse{% if not settings.auto_restore_ap %} collapsed{% endif %}" id="collapse-ap">
-            <div class="settings-row" data-key="auto_restore_ap">
-                <span class="settings-row-label">Auto Restore AP</span>
-                <button type="button" class="toggle{% if settings.auto_restore_ap %} on{% endif %}"
-                        onclick="toggleAndSave(this, 'auto_restore_ap'); autoCollapseSection('ap', this.classList.contains('on'))"></button>
-            </div>
-            <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
-                 data-key="ap_use_free" data-depends-on="auto_restore_ap">
-                <span class="settings-row-label">Use Free Restores</span>
-                <button type="button" class="toggle{% if settings.ap_use_free %} on{% endif %}"
-                        onclick="toggleAndSave(this, 'ap_use_free')"></button>
-            </div>
-            <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
-                 data-key="ap_use_potions" data-depends-on="auto_restore_ap">
-                <span class="settings-row-label">Use Potions</span>
-                <button type="button" class="toggle{% if settings.ap_use_potions %} on{% endif %}"
-                        onclick="toggleAndSave(this, 'ap_use_potions')"></button>
-            </div>
-            <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
-                 data-key="ap_allow_large_potions" data-depends-on="auto_restore_ap">
-                <span class="settings-row-label">Allow Large Potions</span>
-                <button type="button" class="toggle{% if settings.ap_allow_large_potions %} on{% endif %}"
-                        onclick="toggleAndSave(this, 'ap_allow_large_potions')"></button>
-            </div>
-            <div class="settings-row settings-row-indent{% if not settings.auto_restore_ap %} setting-disabled{% endif %}"
-                 data-key="ap_use_gems" data-depends-on="auto_restore_ap">
-                <span class="settings-row-label">Use Gems</span>
-                <button type="button" class="toggle{% if settings.ap_use_gems %} on{% endif %}"
-                        onclick="toggleAndSave(this, 'ap_use_gems')"></button>
-            </div>
-            <div class="settings-row settings-row-inline settings-row-indent{% if not settings.auto_restore_ap or not settings.ap_use_gems %} setting-disabled{% endif %}"
-                 data-key="ap_gem_limit" data-depends-on="ap_use_gems">
-                <span class="settings-row-label">Gem Limit</span>
-                <input type="number" value="{{ settings.ap_gem_limit }}"
-                       min="0" max="3500" class="input-sm"
-                       onchange="saveSetting('ap_gem_limit', parseInt(this.value))">
-            </div>
-        </div>
-    </div>
-
     <!-- Auto Occupy -->
     <div class="card settings-card">
         <div class="settings-card-header">Auto Occupy</div>
@@ -143,98 +40,6 @@
         </div>
         <a href="/territory" class="btn btn-full btn-territory" style="margin:12px 16px;width:auto;">Territory Grid</a>
     </div>
-
-    <!-- General -->
-    <div class="card settings-card">
-        <div class="settings-card-header">General</div>
-        <div class="settings-row settings-row-inline" data-key="min_troops">
-            <span class="settings-row-label">Min Troops</span>
-            <input type="number" value="{{ settings.min_troops }}"
-                   min="0" max="5" class="input-sm"
-                   onchange="saveSetting('min_troops', parseInt(this.value))">
-        </div>
-        <div class="settings-row settings-row-inline" data-key="pass_mode">
-            <span class="settings-row-label">Pass Mode</span>
-            <select class="settings-select" onchange="saveSetting('pass_mode', this.value)">
-                <option value="Rally Joiner" {% if settings.pass_mode == 'Rally Joiner' %}selected{% endif %}>Rally Joiner</option>
-                <option value="Rally Starter" {% if settings.pass_mode == 'Rally Starter' %}selected{% endif %}>Rally Starter</option>
-            </select>
-        </div>
-    </div>
-
-    <!-- Timing -->
-    <div class="card settings-card">
-        <div class="settings-card-header">Timing</div>
-        <div class="settings-row settings-row-inline" data-key="variation">
-            <span class="settings-row-label">Randomize +/-</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.variation }}"
-                       min="0" class="input-sm"
-                       onchange="saveSetting('variation', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="titan_interval">
-            <span class="settings-row-label">Titan</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.titan_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('titan_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="groot_interval">
-            <span class="settings-row-label">Groot</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.groot_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('groot_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="reinforce_interval">
-            <span class="settings-row-label">Reinforce</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.reinforce_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('reinforce_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="pass_interval">
-            <span class="settings-row-label">Pass</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.pass_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('pass_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="mithril_interval">
-            <span class="settings-row-label">Mithril</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.mithril_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('mithril_interval', parseInt(this.value))">
-                <span class="unit">min</span>
-            </div>
-        </div>
-    </div>
-
-    <!-- Devices (conditional) -->
-    {% if device_troops %}
-    <div class="card settings-card">
-        <div class="settings-card-header">Devices</div>
-        {% for dev_id, count in device_troops.items() %}
-        <div class="settings-row settings-row-inline">
-            <span class="settings-row-label">{{ device_names.get(dev_id, dev_id.split(":")[-1]) }}</span>
-            <input type="number" value="{{ count }}"
-                   min="1" max="5" class="input-sm"
-                   onchange="saveDeviceTroops('{{ dev_id }}', parseInt(this.value))">
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
 
     <!-- System -->
     <div class="card settings-card">
@@ -307,13 +112,6 @@
 <script>
 // Dependency map: child -> parent
 var DEPS = {
-    'gather_mine_level': 'gather_enabled',
-    'gather_max_troops': 'gather_enabled',
-    'ap_use_free': 'auto_restore_ap',
-    'ap_use_potions': 'auto_restore_ap',
-    'ap_allow_large_potions': 'auto_restore_ap',
-    'ap_use_gems': 'auto_restore_ap',
-    'ap_gem_limit': 'ap_use_gems',
     'upload_interval_hours': 'auto_upload_logs',
     'chat_translate_api_key': 'chat_translate_enabled'
 };
@@ -365,27 +163,6 @@ function updateEnemyCheckboxes() {
     saveEnemyTeams();
 }
 
-function saveDeviceTroops(devId, count) {
-    fetch(RELAY_PREFIX + '/api/settings/save', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({key: 'device_troops_' + devId, value: count})
-    }).then(function(r) {
-        if (!r.ok) {
-            var dt = {};
-            document.querySelectorAll('[onchange*="saveDeviceTroops"]').forEach(function(inp) {
-                var m = inp.getAttribute('onchange').match(/saveDeviceTroops\('([^']+)'/);
-                if (m) dt[m[1]] = parseInt(inp.value) || 5;
-            });
-            return fetch(RELAY_PREFIX + '/api/settings/save', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({key: 'device_troops', value: dt})
-            });
-        }
-    }).catch(function() {});
-}
-
 function showIndicator(row, ok) {
     var old = row.querySelector('.save-indicator');
     if (old) old.remove();
@@ -417,28 +194,6 @@ function updateDeps(key, value) {
             }
         }
     });
-}
-
-// Collapsible sections
-function toggleCollapse(sectionId) {
-    var el = document.getElementById('collapse-' + sectionId);
-    var chevron = document.getElementById('chevron-' + sectionId);
-    if (!el) return;
-    el.classList.toggle('collapsed');
-    if (chevron) chevron.classList.toggle('collapsed');
-}
-
-function autoCollapseSection(sectionId, isOn) {
-    var el = document.getElementById('collapse-' + sectionId);
-    var chevron = document.getElementById('chevron-' + sectionId);
-    if (!el) return;
-    if (isOn) {
-        el.classList.remove('collapsed');
-        if (chevron) chevron.classList.remove('collapsed');
-    } else {
-        el.classList.add('collapsed');
-        if (chevron) chevron.classList.add('collapsed');
-    }
 }
 </script>
 {% endblock %}

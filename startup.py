@@ -113,6 +113,7 @@ def validate_device_token(device_id, token):
 _device_protocol = {}
 _device_protocol_lock = threading.Lock()
 _FRIDA_BASE_PORT = 27042
+_stale_lineup_warned = {}  # {device: last_warn_time} — throttle "lineups stale (never)" logs
 
 
 def _allocate_port():
@@ -398,6 +399,15 @@ def get_protocol_troop_snapshot(device):
             age_s = f"{time.time() - age:.1f}s ago" if age else "never"
         except Exception:
             age_s = "unknown"
+        # Throttle "never" logs — only log once per 60s per device to avoid
+        # spamming when interceptor restarts mid-session and hasn't received
+        # LineupsNtf yet (which only arrives at login).
+        if age_s == "never":
+            now = time.time()
+            last = _stale_lineup_warned.get(device, 0)
+            if now - last < 60:
+                return None
+            _stale_lineup_warned[device] = now
         log.debug("proto_snapshot[%s]: lineups stale (%s)", device, age_s)
         return None
     lineups = state.lineups
@@ -485,6 +495,12 @@ def apply_settings(settings):
         settings.get("gather_max_troops", 3),
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
+    config.VARIATION = settings.get("variation", 0)
+    config.TITAN_INTERVAL = settings.get("titan_interval", 30)
+    config.GROOT_INTERVAL = settings.get("groot_interval", 30)
+    config.REINFORCE_INTERVAL = settings.get("reinforce_interval", 30)
+    config.PASS_INTERVAL = settings.get("pass_interval", 30)
+    config.PASS_MODE = settings.get("pass_mode", "Rally Joiner")
     set_protocol_enabled(settings.get("protocol_enabled", False))
     # Territory passes & safe zones
     config.TERRITORY_PASSES = settings.get("territory_passes", {})
