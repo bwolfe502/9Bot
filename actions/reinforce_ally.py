@@ -3,8 +3,10 @@
 Key exports:
     navigate_to_coord     — jump map camera to world coordinates via game search UI
     reinforce_ally_castle — full reinforce flow for an ally castle at given coordinates
+    capture_home_coords   — navigate away/back to center camera on home castle, OCR coordinates
 """
 
+import re
 import time
 
 import config
@@ -12,7 +14,7 @@ from config import Screen
 from botlog import get_logger, timed_action
 from vision import (
     tap_image, wait_for_image_and_tap, load_screenshot, find_image,
-    adb_tap, adb_keyevent, logged_tap, save_failure_screenshot,
+    adb_tap, adb_keyevent, logged_tap, save_failure_screenshot, read_text,
 )
 from navigation import navigate, check_screen
 from troops import troops_avail, heal_all
@@ -44,6 +46,56 @@ def _minimize_quest_dialog(device, stop_check=None) -> bool:
         return True
     log.warning("quest_minimize.png found but tap failed")
     return False
+
+
+def capture_home_coords(device, stop_check=None):
+    """Read home castle coordinates from the MAP screen coordinate banner.
+
+    Reads the coordinate banner at the bottom of the MAP screen (region
+    520,1640 → 734,1681). The game must already be on the MAP screen centered
+    on the home castle before calling this.
+
+    Returns (x, z) as display-unit integers (e.g. X:2276 Y:3394 → (2276, 3394)),
+    or None on failure.
+    """
+    log = get_logger("actions", device)
+
+    # Ensure on MAP before the screen switch.
+    if check_screen(device) != Screen.MAP:
+        if not navigate(Screen.MAP, device):
+            log.warning("capture_home_coords: failed to reach MAP screen")
+            return None
+
+    # Quick screen switch to reset camera, centering on home castle.
+    adb_tap(device, 452, 1841)
+    _interruptible_sleep(0.5, stop_check)
+    adb_tap(device, 987, 1841)
+    _interruptible_sleep(0.5, stop_check)
+
+    _minimize_quest_dialog(device, stop_check)
+    _interruptible_sleep(0.3, stop_check)
+
+    screen = load_screenshot(device)
+    if screen is None:
+        log.warning("capture_home_coords: screenshot failed")
+        return None
+
+    # Coordinate banner region: (x1, y1, x2, y2) — "X:2276 Y:3394" style text.
+    coord_text = read_text(screen, (520, 1640, 734, 1681))
+    if not coord_text:
+        log.warning("capture_home_coords: no text found in coordinate region")
+        return None
+
+    # Parse "X:2276 Y:3394" — Y often misread as V/U by OCR, so match any letter.
+    m = re.search(r'[Xx][:\s]*(\d+)[^\d]+[A-Za-z][:\s]*(\d+)', coord_text)
+    if not m:
+        log.warning("capture_home_coords: could not parse coords from %r", coord_text)
+        return None
+
+    x = int(m.group(1))
+    z = int(m.group(2))
+    log.info("Home castle coordinates captured: X=%d Y=%d", x, z)
+    return x, z
 
 
 def navigate_to_coord(device, x: int, z: int, stop_check=None) -> bool:
@@ -151,9 +203,29 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
     if stop_check and stop_check():
         return False
 
-    # Tap center of screen to open the castle detail panel.
-    logged_tap(device, 540, 960, "ally_castle_select")
-    _interruptible_sleep(1, stop_check)
+    # Tap a 3x3 grid across the castle area to find and open the castle detail panel.
+    # Castle may not be perfectly centered after navigate_to_coord.
+    # Start from center and spiral outward.
+    _grid_points = [
+        (551, 966),  # center first
+        (476, 906), (551, 906), (626, 906),  # top row
+        (626, 966),                           # middle right
+        (626, 1025), (551, 1025), (476, 1025), # bottom row
+        (476, 966),                           # middle left
+    ]
+    panel_opened = False
+    for gx, gy in _grid_points:
+        adb_tap(device, gx, gy)
+        time.sleep(0.15)
+        screen = load_screenshot(device)
+        if screen is not None and find_image(screen, "detail_button.png", threshold=0.7) is not None:
+            log.debug("Castle panel opened at grid tap (%d, %d)", gx, gy)
+            panel_opened = True
+            break
+    if not panel_opened:
+        log.warning("Castle panel did not open after grid tap for %s", label)
+
+    _interruptible_sleep(0.3, stop_check)
 
     # The ally castle panel always shows the yellow REINFORCE button at a fixed position.
     logged_tap(device, 529, 1043, "ally_reinforce_button")

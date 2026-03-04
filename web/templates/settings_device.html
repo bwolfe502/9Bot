@@ -114,6 +114,24 @@
         </div>
     </div>
 
+    <!-- Auto Reinforce Ally -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Auto Reinforce Ally</div>
+        {{ number_row('max_reinforce_distance', 'Max Distance', 0, unit='tiles (0 = unlimited)') }}
+        {% set hx = overrides.get('home_x') or globals.get('home_x', 0) %}
+        {% set hz = overrides.get('home_z') or globals.get('home_z', 0) %}
+        <div class="settings-row settings-row-inline">
+            <span class="settings-row-label">
+                Home Castle
+                <span class="settings-row-hint">{% if hx and hz %}X:{{ hx }} Y:{{ hz }}{% else %}Not captured{% endif %}</span>
+            </span>
+            <div class="settings-override-controls">
+                <button type="button" class="btn btn-sm" id="capture-home-btn"
+                        onclick="captureHome('{{ device_id }}')">Recapture</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Auto Occupy -->
     <div class="card settings-card">
         <div class="settings-card-header">Auto Occupy</div>
@@ -294,6 +312,28 @@ function togglePermissions(enabled) {
     detail.style.display = enabled ? '' : 'none';
     var inputs = detail.querySelectorAll('.perm-item input');
     inputs.forEach(function(el) { el.disabled = !enabled; });
+}
+
+function captureHome(deviceId) {
+    var btn = document.getElementById('capture-home-btn');
+    btn.disabled = true;
+    btn.textContent = 'Capturing...';
+    fetch('/api/device/' + deviceId + '/capture-home', {method: 'POST'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.ok) {
+                btn.textContent = 'Captured!';
+                setTimeout(function() { location.reload(); }, 800);
+            } else {
+                btn.textContent = 'Failed';
+                btn.disabled = false;
+                alert('Capture failed: ' + (data.error || 'unknown error'));
+            }
+        })
+        .catch(function() {
+            btn.textContent = 'Error';
+            btn.disabled = false;
+        });
 }
 
 // Collapsible sections

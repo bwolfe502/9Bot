@@ -25,7 +25,7 @@ DEVICE_OVERRIDABLE_KEYS = {
     "ap_allow_large_potions", "ap_use_gems", "ap_gem_limit", "min_troops",
     "my_team", "enemy_teams", "gather_enabled", "gather_mine_level", "gather_max_troops",
     "tower_quest_enabled", "eg_rally_own", "titan_rally_own", "mithril_interval",
-    "protocol_enabled",
+    "protocol_enabled", "home_x", "home_z", "max_reinforce_distance",
 }
 
 # ── Default territory zone data ──
@@ -93,6 +93,9 @@ DEFAULTS = {
     "upload_interval_hours": 24,
     "collect_training_data": False,
     "protocol_enabled": False,
+    "home_x": 0,
+    "home_z": 0,
+    "max_reinforce_distance": 55,
     "chat_mirror": True,
     "chat_translate_enabled": False,
     "chat_translate_api_key": "",
