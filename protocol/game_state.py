@@ -247,7 +247,7 @@ class GameState:
         self._lineup_states: Dict[int, NewLineupStateInfo] = {}  # lineupID -> state
         self._union_entities: Dict[Any, dict] = {}           # entity_id -> raw dict (ally PLAYER_CITY only)
         self._own_union_id: int = 0                          # populated from UnionNtf
-        self._territory_grid: Dict[Tuple[int, int], int] = {}  # (row, col) -> FactionId (0=unowned)
+        self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id)
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
 
         # -- connection metadata ----------------------------------- #
@@ -366,8 +366,8 @@ class GameState:
             return list(self._union_entities.values())
 
     @property
-    def territory_grid(self) -> Dict[Tuple[int, int], int]:
-        """Territory grid: (row, col) -> FactionId. Empty dict if no snapshot received."""
+    def territory_grid(self) -> Dict[Tuple[int, int], Tuple[int, int, int]]:
+        """Territory grid: (row, col) -> (faction_id, cur_faction_id, legion_id). Empty dict if no snapshot."""
         with self._lock:
             return dict(self._territory_grid)
 
@@ -1113,7 +1113,7 @@ class GameState:
         if not lands:
             log.info("KvkTerritoryInfoAck: no lands")
             return
-        new_grid: Dict[Tuple[int, int], int] = {}
+        new_grid: Dict[Tuple[int, int], Tuple[int, int, int]] = {}
         for raw_land in lands:
             land = LandInfo.from_dict(raw_land) if isinstance(raw_land, dict) else raw_land
             if land.coord is None:
@@ -1121,7 +1121,7 @@ class GameState:
             row = land.coord.Z // 300000
             col = land.coord.X // 300000
             if 0 <= row < 24 and 0 <= col < 24:
-                new_grid[(row, col)] = land.FactionId
+                new_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId)
         with self._lock:
             self._territory_grid = new_grid
             self._touch("territory")
@@ -1140,9 +1140,10 @@ class GameState:
         if 0 <= row < 24 and 0 <= col < 24:
             with self._lock:
                 if self._territory_grid:  # only update after full snapshot received
-                    self._territory_grid[(row, col)] = land.FactionId
+                    self._territory_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId)
                     self._touch("territory")
-            log.debug("KvkTerritoryInfoNtf: (%d,%d) → FactionId=%d", row, col, land.FactionId)
+            log.debug("KvkTerritoryInfoNtf: (%d,%d) → faction=%d cur=%d legion=%d",
+                      row, col, land.FactionId, land.curFactionId, land.legionId)
 
     def _on_del_union_entities(self, msg: Any) -> None:
         """msg:UnionDelEntitiesNtf — remove ally entities by ID."""

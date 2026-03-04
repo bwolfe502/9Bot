@@ -380,23 +380,33 @@ def open_territory_manager(device):
 # TERRITORY ATTACK SYSTEM
 # ============================================================
 
-def _build_target_lists(grid, image, device, my_team, enemy_teams, blocked):
+def _build_target_lists(grid, image, device, my_team, enemy_teams, blocked,
+                        empty_enemy_squares=None, contested_by_us=None):
     """Build prioritized target lists from a classified grid.
 
     Args:
         grid: dict mapping (row, col) → team string or "throne"/"blocked"/None
-        image: screenshot (np.ndarray) used for flag detection on enemy squares
+        image: screenshot (np.ndarray) for flag detection; may be None when
+               empty_enemy_squares/contested_by_us are provided by protocol data
         device: ADB device ID (for flag detection logging)
         my_team: own team color string
         enemy_teams: list/set of enemy team color strings
         blocked: set of (row, col) squares that are pass-blocked
+        empty_enemy_squares: set of (row, col) known to have no defender (protocol).
+               When provided, replaces _has_flag — empty → unflagged, defended → flagged,
+               contested by us → skipped entirely.
+        contested_by_us: set of (row, col) where our team is already contesting.
+               Squares in this set are skipped (already handled by our troop).
 
     Returns:
-        (unflagged_enemies, flagged_enemies, friendly_reinforce) — each a list of (row, col)
+        (unflagged_enemies, flagged_enemies, friendly_reinforce) — each a list of (row, col).
+        unflagged_enemies = empty enemy squares (best — no defender, just walk in).
+        flagged_enemies   = defended enemy squares (need battle).
     """
     unflagged_enemies = []
     flagged_enemies = []
     friendly_reinforce = []
+    use_protocol_flags = empty_enemy_squares is not None
 
     for row in range(GRID_HEIGHT):
         for col in range(GRID_WIDTH):
@@ -408,16 +418,25 @@ def _build_target_lists(grid, image, device, my_team, enemy_teams, blocked):
             team = grid.get((row, col))
 
             if team in enemy_teams:
+                # Skip if we already have a troop contesting this square
+                if contested_by_us and (row, col) in contested_by_us:
+                    continue
                 adj = False
                 for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
                     if grid.get((nr, nc)) == my_team:
                         adj = True
                         break
                 if adj:
-                    if _has_flag(image, row, col):
-                        flagged_enemies.append((row, col))
+                    if use_protocol_flags:
+                        if (row, col) in empty_enemy_squares:
+                            unflagged_enemies.append((row, col))
+                        else:
+                            flagged_enemies.append((row, col))
                     else:
-                        unflagged_enemies.append((row, col))
+                        if _has_flag(image, row, col):
+                            flagged_enemies.append((row, col))
+                        else:
+                            unflagged_enemies.append((row, col))
 
             elif team == my_team:
                 for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
@@ -434,24 +453,21 @@ def scan_targets(device):
     Must be called while on the TERRITORY screen.
 
     Returns dict with keys:
-        'unflagged_enemies': [(row, col), ...] — unflagged enemy squares adjacent to own territory
-        'flagged_enemies':   [(row, col), ...] — flagged enemy squares adjacent to own territory
+        'unflagged_enemies': [(row, col), ...] — empty enemy squares adjacent to own territory
+                              (no defender = walk straight in; or unflagged when using vision)
+        'flagged_enemies':   [(row, col), ...] — defended enemy squares adjacent to own territory
+                              (need battle; or flagged when using vision)
         'friendly':          [(row, col), ...] — own team squares adjacent to enemy territory (for reinforcement)
-        'image':             np.ndarray — the screenshot used for analysis
-    Returns None if screenshot fails.
+        'image':             np.ndarray or None — screenshot used for vision path (None for protocol path)
+    Returns None if screenshot fails (vision path only).
     """
     log = get_logger("territory", device)
-    image = load_screenshot(device)
-    if image is None:
-        log.error("scan_targets: failed to load screenshot")
-        return None
-
     my_team = config.get_device_config(device, "my_team")
     enemy_teams = config.get_device_enemy_teams(device)
     blocked = config.PASS_BLOCKED_SQUARES
     log.debug("Scanning grid — my_team=%s, enemies=%s", my_team, enemy_teams)
 
-    # --- Protocol fast path: skip 576-square vision scan when fresh data available ---
+    # --- Protocol fast path: no screenshot needed when fresh territory data available ---
     try:
         import startup
         proto_grid = startup.get_protocol_territory_grid(device)
@@ -459,17 +475,33 @@ def scan_targets(device):
         proto_grid = None
 
     if proto_grid is not None:
-        log.info("scan_targets: using protocol grid (%d owned squares)", len(proto_grid))
-        # Fill in throne and blocked squares so _build_target_lists can skip them
-        grid = dict(proto_grid)
+        # proto_grid: {(row,col): (owner_team, contester_team, has_defender)}
+        empty_enemy_squares = set()   # no defending troop — walk straight in
+        contested_by_us = set()       # our troop already contesting — skip
+        grid = {}
+        for (row, col), (owner_team, contester_team, has_defender) in proto_grid.items():
+            if owner_team:
+                grid[(row, col)] = owner_team
+            if not has_defender and owner_team in enemy_teams:
+                empty_enemy_squares.add((row, col))
+            if contester_team == my_team:
+                contested_by_us.add((row, col))
         for sq in THRONE_SQUARES:
             grid[sq] = "throne"
         for sq in blocked:
             grid.setdefault(sq, "blocked")
+        log.info("scan_targets: protocol grid — %d towers, %d empty enemy, %d contested by us",
+                 len(proto_grid), len(empty_enemy_squares), len(contested_by_us))
         unflagged_enemies, flagged_enemies, friendly_reinforce = _build_target_lists(
-            grid, image, device, my_team, enemy_teams, blocked)
+            grid, None, device, my_team, enemy_teams, blocked,
+            empty_enemy_squares=empty_enemy_squares, contested_by_us=contested_by_us)
+        image = None
     else:
-        # --- Vision path: classify every square from screenshot ---
+        # --- Vision path: take screenshot and classify every square ---
+        image = load_screenshot(device)
+        if image is None:
+            log.error("scan_targets: failed to load screenshot")
+            return None
         zone_expected = config.ZONE_EXPECTED_TEAMS
         zone_overrides = 0
         grid = {}
