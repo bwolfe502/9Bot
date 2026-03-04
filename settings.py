@@ -95,7 +95,7 @@ DEFAULTS = {
     "protocol_enabled": False,
     "home_x": 0,
     "home_z": 0,
-    "max_reinforce_distance": 700,
+    "max_reinforce_distance": 55,
     "chat_mirror": True,
     "chat_translate_enabled": False,
     "chat_translate_api_key": "",

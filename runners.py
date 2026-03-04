@@ -422,7 +422,7 @@ def run_auto_reinforce(device, stop_event, interval, variation):
     dlog.info("Auto Reinforce Throne stopped")
 
 
-_ALLY_REINFORCE_COOLDOWN_S = 1800  # 30 minutes per entity ID
+_ALLY_REINFORCE_COOLDOWN_S = 1800  # 30 minutes per entity ID + position
 
 
 def _save_home_coords(device, x, z):
@@ -468,8 +468,8 @@ def run_auto_reinforce_ally(device, stop_event):
     dlog.info("Auto Reinforce Ally started")
     stop_check = stop_event.is_set
     lock = config.get_device_lock(device)
-    reinforced = {}  # entity_id -> monotonic timestamp of last successful reinforce
-    pending = _queue.Queue()
+    reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
+    pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
     try:
         from startup import get_protocol_event_bus, set_protocol_ally_monitoring
@@ -485,28 +485,29 @@ def run_auto_reinforce_ally(device, stop_event):
         config.set_device_status(device, "Error: Enable protocol first")
         return
 
-    # Capture home coordinates on first start if not already stored.
-    home_x = config.get_device_config(device, "home_x")
-    home_z = config.get_device_config(device, "home_z")
-    if not home_x or not home_z:
-        dlog.info("Home coordinates not set — capturing now")
-        config.set_device_status(device, "Capturing Home Coordinates...")
-        with lock:
-            coords = capture_home_coords(device, stop_check)
-        if coords:
-            home_x, home_z = coords
-            _save_home_coords(device, home_x, home_z)
-            dlog.info("Home coordinates set: X=%d Y=%d", home_x, home_z)
-        else:
-            dlog.warning("Failed to capture home coordinates — distance filter disabled")
-            home_x = home_z = 0
+    # Always capture home coordinates on start.
+    config.set_device_status(device, "Capturing Home Coordinates...")
+    with lock:
+        coords = capture_home_coords(device, stop_check)
+    if coords:
+        home_x, home_z = coords
+        _save_home_coords(device, home_x, home_z)
+        dlog.info("Home coordinates set: X=%d Y=%d", home_x, home_z)
+    else:
+        dlog.warning("Failed to capture home coordinates — using last saved or disabling filter")
+        home_x = config.get_device_config(device, "home_x")
+        home_z = config.get_device_config(device, "home_z")
 
     if stop_check():
         config.clear_device_status(device)
         return
 
     def _on_spotted(entity):
-        pending.put(entity)
+        owner = entity.get("field_3") or entity.get("owner") or {}
+        pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+        from protocol.game_state import lookup_player_power
+        power = lookup_player_power(pid)
+        pending.put((-power, time.monotonic(), entity))
 
     set_protocol_ally_monitoring(device, True)
     bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
@@ -516,7 +517,7 @@ def run_auto_reinforce_ally(device, stop_event):
     try:
         while not stop_check():
             try:
-                entity = pending.get(timeout=1.0)
+                _neg_power, _arrival, entity = pending.get(timeout=1.0)
             except _queue.Empty:
                 continue
 
@@ -528,14 +529,19 @@ def run_auto_reinforce_ally(device, stop_event):
             if eid is None:
                 continue
             now = time.monotonic()
-            if now - reinforced.get(eid, 0) < _ALLY_REINFORCE_COOLDOWN_S:
-                dlog.debug("Ally %s on cooldown, skipping", eid)
-                continue
-
+            last_t, last_x, last_z = reinforced.get(eid, (0, None, None))
             x = entity.get("X", 0)
             z = entity.get("Z", 0)
+            same_pos = (last_x == x and last_z == z)
+            if same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
+                dlog.debug("Ally %s on cooldown at same position, skipping", eid)
+                continue
+
             owner = entity.get("field_3") or entity.get("owner") or {}
             name = owner.get("name", "") if isinstance(owner, dict) else getattr(owner, "name", "")
+            pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+            from protocol.game_state import lookup_player_power
+            power = lookup_player_power(pid)
 
             # Distance filter — entity coords are raw (1000x display units).
             max_dist = config.get_device_config(device, "max_reinforce_distance")
@@ -544,14 +550,14 @@ def run_auto_reinforce_ally(device, stop_event):
                 if max_dist and dist > max_dist:
                     dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
                     continue
-                dlog.info("Ally city spotted: %s at (%s, %s) dist=%.1f — reinforcing", name or eid, x, z, dist)
+                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) dist=%.1f — reinforcing", name or eid, power, x, z, dist)
             else:
-                dlog.info("Ally city spotted: %s at (%s, %s) — reinforcing", name or eid, x, z)
+                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) — reinforcing", name or eid, power, x, z)
             config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
-                reinforced[eid] = time.monotonic()
+                reinforced[eid] = (time.monotonic(), x, z)
             config.set_device_status(device, "Watching for Allies...")
     except Exception as e:
         dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)

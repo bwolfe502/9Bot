@@ -89,6 +89,26 @@ CATEGORIES = (
 #  Shared player name cache (persisted to disk)
 # ------------------------------------------------------------------ #
 
+# In-memory power cache — populated from UnionNtf at login, session-scoped.
+_player_powers: Dict[str, int] = {}  # playerID (str) → power (might)
+_player_powers_lock = threading.Lock()
+
+
+def cache_player_power(player_id: Any, power: int) -> None:
+    """Cache a player ID → power mapping. Thread-safe, session-scoped."""
+    if not player_id or not power:
+        return
+    with _player_powers_lock:
+        _player_powers[str(player_id)] = int(power)
+
+
+def lookup_player_power(player_id: Any) -> int:
+    """Look up a cached player power by ID. Returns 0 if unknown."""
+    if not player_id:
+        return 0
+    with _player_powers_lock:
+        return _player_powers.get(str(player_id), 0)
+
 _PLAYER_NAMES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "player_names.json")
 _player_names_lock = threading.Lock()
 _player_names: Dict[str, str] = {}   # playerID (str) → display name
@@ -661,6 +681,7 @@ class GameState:
                     head = member.get("head")
                     if isinstance(head, dict):
                         name = head.get("name", "")
+                power = member.get("power", 0)
             else:
                 pid = getattr(member, "playerID", 0)
                 name = getattr(member, "name", "")
@@ -668,9 +689,17 @@ class GameState:
                     head = getattr(member, "head", None)
                     if head:
                         name = getattr(head, "name", "")
+                power = getattr(member, "power", 0)
             if pid and name:
                 cache_player_name(pid, name)
                 cached += 1
+            if pid and power:
+                cache_player_power(pid, power)
+                log.info("UnionNtf member: playerID=%s name=%s power=%s", pid, name, power)
+        powers_cached = sum(1 for m in (members or [])
+                           if (m.get("playerID", 0) if isinstance(m, dict) else getattr(m, "playerID", 0))
+                           and (m.get("power", 0) if isinstance(m, dict) else getattr(m, "power", 0)))
+        log.info("UnionNtf: cached %d player names, %d powers", cached, powers_cached)
         if cached:
             log.debug("Cached %d player names from UnionNtf", cached)
             # Retroactively fix Player#<id> senders in existing chat entries.
@@ -1009,8 +1038,10 @@ class GameState:
                         ent_dict["Z"] = z
                     owner = ent_dict.get("field_3") or ent_dict.get("owner") or {}
                     name = owner.get("name", "?") if isinstance(owner, dict) else "?"
-                    log.info("UnionEntitiesNtf ally city spotted id=%s name=%s x=%s z=%s",
-                             eid, name, ent_dict.get("X", 0), ent_dict.get("Z", 0))
+                    pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+                    power = lookup_player_power(pid)
+                    log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s",
+                             eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0))
                     new_city_ids.append(eid)
             self._touch("entities")
 

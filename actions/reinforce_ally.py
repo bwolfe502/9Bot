@@ -49,31 +49,31 @@ def _minimize_quest_dialog(device, stop_check=None) -> bool:
 
 
 def capture_home_coords(device, stop_check=None):
-    """Capture home castle coordinates by navigating away and back.
+    """Read home castle coordinates from the MAP screen coordinate banner.
 
-    Navigating away from MAP and returning re-centers the camera on the player's
-    home castle. OCRs the coordinate banner at the bottom of the MAP screen.
+    Reads the coordinate banner at the bottom of the MAP screen (region
+    520,1640 → 734,1681). The game must already be on the MAP screen centered
+    on the home castle before calling this.
 
-    Returns (x, z) as display-unit integers (matching what the game shows, e.g.
-    X:2276 Y:3394 → (2276, 3394)), or None on failure.
-
-    Only call this when auto reinforce first starts (home not yet captured) or
-    after a castle teleport that requires redefining home.
+    Returns (x, z) as display-unit integers (e.g. X:2276 Y:3394 → (2276, 3394)),
+    or None on failure.
     """
     log = get_logger("actions", device)
 
-    # Navigate away to reset camera, then back to MAP — home castle is now centered.
-    if not navigate(Screen.ALLIANCE, device):
-        log.warning("capture_home_coords: failed to navigate to ALLIANCE for camera reset")
-        return None
-    if stop_check and stop_check():
-        return None
-    if not navigate(Screen.MAP, device):
-        log.warning("capture_home_coords: failed to navigate back to MAP")
-        return None
+    # Ensure on MAP before the screen switch.
+    if check_screen(device) != Screen.MAP:
+        if not navigate(Screen.MAP, device):
+            log.warning("capture_home_coords: failed to reach MAP screen")
+            return None
+
+    # Quick screen switch to reset camera, centering on home castle.
+    adb_tap(device, 452, 1841)
+    _interruptible_sleep(0.5, stop_check)
+    adb_tap(device, 987, 1841)
+    _interruptible_sleep(0.5, stop_check)
 
     _minimize_quest_dialog(device, stop_check)
-    _interruptible_sleep(0.5, stop_check)
+    _interruptible_sleep(0.3, stop_check)
 
     screen = load_screenshot(device)
     if screen is None:
@@ -86,8 +86,8 @@ def capture_home_coords(device, stop_check=None):
         log.warning("capture_home_coords: no text found in coordinate region")
         return None
 
-    # Parse "X:2276 Y:3394" — accept any separator between X and Z values.
-    m = re.search(r'[Xx][:\s]*(\d+)[^\d]+[Yy][:\s]*(\d+)', coord_text)
+    # Parse "X:2276 Y:3394" — Y often misread as V/U by OCR, so match any letter.
+    m = re.search(r'[Xx][:\s]*(\d+)[^\d]+[A-Za-z][:\s]*(\d+)', coord_text)
     if not m:
         log.warning("capture_home_coords: could not parse coords from %r", coord_text)
         return None

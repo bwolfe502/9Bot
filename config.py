@@ -203,7 +203,7 @@ PROTOCOL_ACTIVE_DEVICES = set()  # {device_id} — devices with running protocol
 # Auto Reinforce Ally
 HOME_X = 0                       # Home castle X coordinate (display units, 0 = not set)
 HOME_Z = 0                       # Home castle Z/Y coordinate (display units, 0 = not set)
-MAX_REINFORCE_DISTANCE = 700     # Max distance to reinforce (display units, 0 = unlimited)
+MAX_REINFORCE_DISTANCE = 55      # Max distance to reinforce (display units, 0 = unlimited)
 
 # Emulator boot tracking
 EMULATOR_STARTING = {}  # {device_id: {"instance": str, "started_at": float}}
