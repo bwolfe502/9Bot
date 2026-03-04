@@ -353,7 +353,10 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
     # If no portal access and no ?token= param, redirect to portal login
     # Public devices bypass login entirely
     has_token = "token" in request.query
-    if not portal_access and not has_token:
+    # Allow static assets through without auth — they're referenced by
+    # authenticated pages but don't carry the ?token= parameter
+    is_static = sub_path.startswith("/static/")
+    if not portal_access and not has_token and not is_static:
         _is_public = False
         if _device_hash:
             try:
