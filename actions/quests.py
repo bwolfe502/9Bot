@@ -784,9 +784,21 @@ def check_quests(device, stop_check=None):
             log.debug("Quest dedup: %d raw -> %d unique types (kept max remaining per type)", original_count, len(quests))
 
         # Update tracking with latest counter values
+        current_types = set()
         for q in quests:
             if q["quest_type"] in (QuestType.TITAN, QuestType.EVIL_GUARD, QuestType.PVP, QuestType.GATHER, QuestType.TOWER, QuestType.FORTRESS):
                 _track_quest_progress(device, q["quest_type"], q["current"], q.get("target"))
+                current_types.add(q["quest_type"])
+
+        # Clear stale tracking for quest types no longer on screen (quest rotation)
+        for key in list(_quest_last_seen):
+            if key[0] == device and key[1] not in current_types:
+                log.debug("Clearing stale quest tracking for %s (no longer on screen)", key[1])
+                _quest_last_seen.pop(key, None)
+                _quest_target.pop(key, None)
+                _quest_rallies_pending.pop(key, None)
+                _quest_pending_since.pop(key, None)
+                _quest_rally_slots.pop(key, None)
 
         actionable = _get_actionable_quests(device, quests)
 
