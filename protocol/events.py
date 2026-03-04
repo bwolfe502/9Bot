@@ -315,7 +315,7 @@ def parse_chat_msgval(msgval: str) -> dict:
 
     Returns dict: ``{content: str, payload_type: int}``.
     """
-    result: Dict[str, Any] = {"content": msgval, "payload_type": 0}
+    result: Dict[str, Any] = {"content": msgval, "payload_type": 0, "source_language": ""}
     if not msgval:
         return result
 
@@ -332,6 +332,7 @@ def parse_chat_msgval(msgval: str) -> dict:
     # Text message — has "content" key.
     if "content" in parsed:
         result["content"] = parsed["content"]
+        result["source_language"] = parsed.get("sourceLanguage", "")
         return result
 
     # System notification (BizarreCave, alliance gifts, etc.)
@@ -508,6 +509,7 @@ def _extract_chat_payload(msg: object) -> dict:
         parsed = parse_chat_msgval(raw_msgval)
         result["content"] = parsed["content"]
         result["payload_type"] = parsed["payload_type"]
+        result["source_language"] = parsed.get("source_language", "")
 
         # Sender fallback: if playerInfo was empty, try meta JSON.
         if not result["sender"]:

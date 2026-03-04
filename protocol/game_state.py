@@ -456,6 +456,13 @@ class GameState:
                 cache_player_name(sender_id, sender)
             self._chat.append(msg)
             self._touch("chat")
+        # Request translation outside the lock (fire-and-forget).
+        if isinstance(msg, dict):
+            try:
+                import chat_translate
+                chat_translate.request_translation(msg)
+            except ImportError:
+                pass
 
     def _on_chat_history(self, msg: Any) -> None:
         """msg:ChatPullMsgAck — historical messages from chat pull.
@@ -479,6 +486,7 @@ class GameState:
         if not isinstance(msg, ChatPullMsgAck):
             return
         added = 0
+        new_entries = []
         with self._lock:
             for chat_one_msg in (msg.msgList or []):
                 # Dedup by historyId.
@@ -542,17 +550,26 @@ class GameState:
                     "channel_type": channel_type,
                     "timestamp": getattr(chat_one_msg, "timeStamp", 0),
                     "payload_type": parsed["payload_type"],
+                    "source_language": parsed.get("source_language", ""),
                     "sender_id": sender_id,
                     "union_name": union_name,
                     "history_id": hid,
                     "raw": chat_one_msg,
                 }
                 self._chat.append(entry)
+                new_entries.append(entry)
                 added += 1
             if added:
                 self._touch("chat")
         # Persist any newly learned names outside the lock.
         save_player_names_if_dirty()
+        # Request batch translation for new history messages (outside lock).
+        if new_entries:
+            try:
+                import chat_translate
+                chat_translate.request_batch_translation(new_entries)
+            except ImportError:
+                pass
 
     def _on_player_heads(self, msg: Any) -> None:
         """msg:GetPlayerHeadInfoAck — cache player names from head lookups.
