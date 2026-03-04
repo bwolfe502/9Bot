@@ -1066,6 +1066,8 @@ function startPollingFallback(img, deviceId) {
         return card ? card.getAttribute('data-device') : null;
     }
     function handleTap(img, clientX, clientY) {
+        var deviceId = getDeviceId(img);
+        if (!deviceId || !_manualControlDevices[deviceId]) return;
         var rect = img.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) return;
         var relX = clientX - rect.left;
@@ -1082,7 +1084,6 @@ function startPollingFallback(img, deviceId) {
         container.appendChild(dot);
         setTimeout(function() { dot.remove(); }, 400);
         // Send tap
-        var deviceId = getDeviceId(img);
         var url, body;
         if (IS_FRIEND_VIEW) {
             url = API_PREFIX + '/api/tap' + API_SUFFIX;

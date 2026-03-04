@@ -588,7 +588,11 @@ def start_apk_patch(device_id):
                     pass
             else:
                 prog["phase"] = "error"
-                prog["error"] = f"Process exited with code {proc.returncode}"
+                # Include last few log lines so the user can see what failed
+                tail = [ln for ln in prog["lines"][-5:] if ln.strip()]
+                detail = "\n".join(tail) if tail else "(no output)"
+                prog["error"] = (f"Process exited with code {proc.returncode}"
+                                 f"\n{detail}")
         except Exception as e:
             prog = _patch_progress.get(device_id)
             if prog:
