@@ -3,6 +3,11 @@
 Android game automation bot: ADB screenshots + OpenCV template matching + EasyOCR.
 Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter.
 
+> **Documentation rule**: This file is loaded every conversation. Only document things
+> Claude can't easily find by reading code: which file handles what, non-obvious
+> conventions/gotchas, cross-cutting patterns, and behavioral rules. Don't duplicate
+> function internals, enum values, or step-by-step logic that lives in the source.
+
 ## Module Map
 
 | File | Purpose | Key exports |
@@ -183,8 +188,10 @@ Device IDs are either `"127.0.0.1:<port>"` (TCP) or `"emulator-<port>"` (local A
 - **Preferred over blind taps**: `wait_for_image_and_tap` replaces `logged_tap` where button position
   varies (e.g. `gather.png` in gold mine popup, where depart y-position varies: 950, 1128, 1307)
 - **Depart Anyway fallback**: When troops are low health, the game shows `depart_anyway.png` instead
-  of `depart.png`. All depart flows (rallies, titans, evil guard) check for this after `depart.png`
-  fails. If `auto_heal` is on, heals first and retries. If off, taps Depart Anyway as last resort.
+  of `depart.png`. All depart flows (rallies, titans, evil guard, territory) check for this after
+  `depart.png` fails (threshold 0.65 for reliable cross-emulator matching). If `auto_heal` is on,
+  heals first and returns False for cycle retry (since `heal_all` navigates to MAP). If off, taps
+  Depart Anyway as last resort.
 
 ### OCR (vision.py)
 - Windows: EasyOCR (deep learning, ~500-2000ms/call on CPU)
@@ -245,13 +252,8 @@ screen. Returns 0-5.
 
 **Panel statuses** — Protocol fast path first (when `PROTOCOL_ENABLED`): `get_protocol_troop_snapshot()`
 builds a `DeviceTroopSnapshot` from `LineupsNtf`/`NewLineupStateNtf` data with `seconds_remaining`
-from `stateEndTs` (instant, ≤30s freshness). Falls through to icon template matching on `None` or error.
-LineupState enum (extracted from game binary via Frida IL2CPP API):
-0=ERR(home), 1=DEFENDER(home), 2=OUT_CITY→MARCHING, 3=CAMP→STATIONING, 4=RALLY→RALLYING,
-5=REINFORCE→DEFENDING, 6=GATHERING→GATHERING, 7=TROOP_FIGHT→BATTLING, 8=RALLY_FIGHT→BATTLING,
-9=RETURN→RETURNING, 10=BUILDING_BUILD→MARCHING, 11=BUILDING_OCCUPY→DEFENDING,
-12=BUILDING_DEFEND→DEFENDING, 13=MINE_EXPLORE→ADVENTURING, 14=PICKUP→MARCHING,
-15=SCORE_GATHERING→GATHERING. Unknown states default to MARCHING.
+(instant, ≤30s freshness). Falls through to icon template matching on `None` or error.
+LineupState enum (16 values extracted from game binary): see `protocol/game_state.py` for mapping.
 `DeviceTroopSnapshot.source` field: `"protocol"` or `"vision"` — shown on dashboard as indicator.
 
 **Healing** — `heal_all(device)`: finds heal.png, taps through heal dialogs in a loop until no more heal buttons.
@@ -273,48 +275,15 @@ LineupState enum (extracted from game binary via Frida IL2CPP API):
 
 ### Territory Pass Zone Model (config.py + settings.py + web/territory.html)
 
-The territory map has 8 mountain passes that gate access to different areas.  During territory
-war (BL), teams capture passes to unlock regions.  The pass zone model lets the bot skip
-unreachable squares during auto-occupy.
+8 mountain passes gate access to different map areas. The pass zone model lets the bot skip
+unreachable squares during auto-occupy. 3 zone types: mutual (4 frontlines between teams),
+home (4 corners), safe (4 corners). `config.recompute_pass_blocked()` computes
+`PASS_BLOCKED_SQUARES` based on pass ownership — mutual zones need at least one of their two
+passes owned, enemy home needs at least one of that team's passes owned, own home/safe always
+accessible, enemy safe always blocked. `scan_targets` skips blocked squares.
 
-**Zone types** (all defined as `[row, col]` lists in `settings.py` defaults):
-- **Mutual zones** (4 frontlines): border areas between adjacent teams, gated by a pass pair.
-  Blocked if BOTH passes unowned — owning either unlocks the zone.
-- **Home zones** (4 corners): team's home area around their safe zone.  Own team always
-  accessible.  Enemy home blocked if both that enemy's passes are unowned.
-- **Safe zones** (4 corners): always blocked for enemies, always open for own team.
-
-**8 passes and their pairings**:
-
-| Pass | Name | Gates mutual zone | Gates home zone |
-|------|------|-------------------|-----------------|
-| 1 | Fire North | fire_earth | red |
-| 2 | Fire East | fire_ice | red |
-| 3 | Earth South | fire_earth | yellow |
-| 4 | Earth East | earth_forest | yellow |
-| 5 | Forest West | earth_forest | green |
-| 6 | Forest South | forest_ice | green |
-| 7 | Ice West | fire_ice | blue |
-| 8 | Ice North | forest_ice | blue |
-
-**Blocking logic** (`config.recompute_pass_blocked()`):
-1. Mutual zone blocked if NEITHER of its two passes is owned (OR logic)
-2. Enemy home zone blocked if NEITHER of that team's two passes is owned
-3. Own home/safe always accessible regardless of pass ownership
-4. Enemy safe always blocked regardless of pass ownership
-5. `PASS_BLOCKED_SQUARES` = union of all blocked squares
-
-**`scan_targets`** skips `PASS_BLOCKED_SQUARES` alongside `THRONE_SQUARES` and
-`MANUAL_IGNORE_SQUARES`.
-
-**UI** (`/territory` page): Two-tab layout — "Passes" tab for zone painting + pass toggles,
-"Targets" tab for attack/ignore overrides.  Screenshot background overlay with 55% dim.
-Zones paintable by clicking grid cells.  Pass ownership toggles update in real-time and
-persist to `settings.json`.
-
-**Settings persistence**: `territory_passes`, `territory_mutual_zones`, `territory_safe_zones`,
-`territory_home_zones` in `settings.json`.  Zone coordinates are pre-populated as defaults in
-`settings.py` (map layout is fixed).  Only pass ownership changes during war.
+Pass pairings, zone coordinates, and blocking logic details: see `settings.py` defaults and
+`config.py:recompute_pass_blocked()`. UI: `/territory` page (Passes tab + Targets tab).
 
 ### Auto Occupy System (territory.py + runners.py)
 
@@ -359,7 +328,8 @@ target in `config.LAST_ATTACKED_SQUARE[device]`.
 - **Teleport fail**: 3 consecutive fails → tries different target. Counter resets on success.
 - **Menu fail**: `_tap_tower_and_detect_menu` returns None → saves failure screenshot, skips cycle
 - **Nav fail**: BACK key recovery, retry once, skip cycle on second failure
-- **Depart fail**: heal first if auto_heal on, then `depart_anyway.png` fallback
+- **Depart fail**: detects `depart_anyway.png` (0.65 threshold), heals + returns False for cycle
+  retry if auto_heal on (since `heal_all` navigates away from tower), taps Depart Anyway if off
 - **Exception**: caught, logged, failure screenshot saved, continues loop
 
 **Status messages**: "Checking Troops...", "Scanning Territory...", "Targeting (R,C)...",
@@ -380,50 +350,17 @@ only 4 corners for calibration.
 
 ### Quest Dispatch (actions/quests.py)
 **Quest classification**: `_classify_quest_text(text)` maps OCR quest names to `QuestType` using keyword
-matching. Priority order: "titan" → TITAN, "evil"/"guard" → EVIL_GUARD, "pvp"/"attack"/"enemy" → PVP,
-"gather" → GATHER, "occupy"/"fortress" → FORTRESS, "tower" → TOWER. Order matters — "Defeat Titans"
-matches TITAN (not PVP) because "titan" is checked first. "defeat" was intentionally removed from PVP
-keywords to prevent false positives from event quests (e.g. "Defeat Frost Giants").
+matching. Priority order: titan → TITAN, evil/guard → EVIL_GUARD, pvp/attack/enemy → PVP,
+gather → GATHER, occupy/fortress → FORTRESS, tower → TOWER.
 
 **Dispatch priority chain**: PVP attack → Tower quest → EG/Titan rallies → pending rally wait → gather gold.
-PVP and Tower run first because they're quick single-troop dispatches (no AP, no waiting).
-PVP dispatches a troop then continues to other quests while it marches (non-blocking).
-Gold gathering is blocked while titan/EG rallies are in-flight (pending). The bot waits for
-rally completion instead of deploying gather troops, preserving troop availability for retries.
+PVP and Tower run first (quick single-troop dispatches). Gold blocked while rallies are in-flight.
 
-**Marker error suppression**: `_marker_errors = {}` (`{device: set of error strings}`) permanently
-suppresses a quest type when a marker error is detected (duplicate markers, wrong tower type).
-Checked at the top of `_attack_pvp_tower()` and `_run_tower_quest()` — if an error exists for the
-device, the function skips silently (already warned once, don't spam). Cleared by
-`reset_quest_tracking()` (called on auto quest start). Error statuses (e.g. `"ERROR: Duplicate
-Enemy Markers!"`) remain visible until the user fixes markers and restarts auto quest.
-
-**Gold mining gates**: Two guards prevent premature gold mining:
-1. **PVP gate**: Skips gold if PVP quest available but not yet dispatched (not on cooldown).
-2. **Pending rally gate**: Blocks gold while titan/EG rallies are in-flight.
-
-**Stray troop recovery**: Runs at start of each `check_quests` cycle before quest OCR.
-Recalls stray STATIONING troops (stuck EG rally). Stray DEFENDING troops are handled by
-`_run_tower_quest` after quest OCR (needs to know if a tower quest is active).
-
-**EG troop gate**: `_eg_troops_available(device)` requires 2 troops not gathering or defending.
-Falls back to `troops_avail() >= 2` if no snapshot.
-
-**Tower/fortress quest**: `_navigate_to_tower()` uses Friend tab + `find_all_matches("friend_marker.png")`
-for marker counting. `occupy_tower()` detects wrong tower type (attack vs reinforce button) and
-sets `_marker_errors`. `recall_tower_troop()` uses verified multi-step recall with panel-status
-confirmation (2 approaches: panel icon → friend marker fallback). `_is_troop_defending_relaxed()`
-extends snapshot freshness to 120s (vs 30s default) since quest OCR takes 60+ seconds.
-**Fortress recall policy**: troop stays defending as long as fortress/tower quest rows are visible
-on screen (even if completed). Only recalls when quests disappear entirely (quest reset/new day).
-**Tower recall policy**: when no tower/fortress quest is on screen, any defending troop is recalled
-unconditionally — `tower_quest_enabled` only controls deployment, not recall.
-**Quest target overrides**: Titan ≥15, EG=3, Fortress=1800, PVP=500M, Gather=1M — OCR right-of-slash
-is unreliable so these are hardcoded caps.
-
-**PVP attack**: `_attack_pvp_tower()` uses `target()` (Enemy tab + marker counting) to navigate
-to enemy tower. Checks button type (attack=correct, reinforce=wrong). Single march completes 500M
-quest. 10-min cooldown (`_PVP_COOLDOWN_S`). Troop check runs **after** `target()` (needs MAP pixels).
+**Key behaviors**: `_marker_errors` dict suppresses quest types on marker errors (cleared on restart).
+`_is_troop_defending_relaxed()` extends snapshot freshness to 120s (quest OCR takes 60+s).
+Fortress/tower recall policy: keep defending while quest rows visible, recall when they disappear.
+`tower_quest_enabled` controls deployment only, not recall.
+Quest target overrides: Titan ≥15, EG=3, Fortress=1800, PVP=500M, Gather=1M (OCR right-of-slash unreliable).
 
 ### Titan Search Retry (actions/titans.py)
 `rally_titan` searches for the titan, which centers the map on it, then blind-taps (540, 900)
@@ -463,18 +400,10 @@ banner displays the LAN URL for mobile remote control.
 
 **Enable**: access `http://<your-ip>:8080` (started automatically by `run_web.py`).
 
-**Architecture**:
-- `create_app()` factory returns Flask app; started via werkzeug `make_server` in `run_web.py`
-- Imports shared task runners from `runners.py` and settings from `settings.py` — no duplication
-- `AUTO_RUNNERS` dict maps auto-mode keys → runner lambdas
-- `TASK_FUNCTIONS` dict maps one-shot action names → callable functions
-- Device list cached for 15s (`_DEVICE_CACHE_TTL`) to avoid spamming ADB on every poll
-- CSS cache busting: `style.css?v=N` in `base.html` — bump on every CSS change
-- Device ID validation: `/tasks/start` rejects device IDs not in `get_devices()` whitelist
-- XSS prevention: dashboard JS uses `textContent` / DOM creation (no `innerHTML` for dynamic data)
-- Relay auto-config: index route calls `get_relay_config()` to show remote URL when relay is active
-- Thread safety: `_task_start_lock` prevents TOCTOU race on `running_tasks` during concurrent task starts
-- Device ID validation: per-device settings routes (`/settings/device/<id>`) reject unknown device IDs
+**Architecture**: `create_app()` factory, werkzeug `make_server` in daemon thread. Uses shared
+`runners.py` and `settings.py`. `AUTO_RUNNERS` maps auto-modes → runners, `TASK_FUNCTIONS` maps
+one-shots → callables. Device list cached 15s. CSS cache busting via `style.css?v=N`.
+Thread safety: `_task_start_lock` prevents TOCTOU race. XSS: `textContent` only (no `innerHTML`).
 
 **Pages**: Dashboard (`/`), Settings (`/settings`), Guide (`/guide`), Debug (`/debug`), Logs (`/logs`), Territory Grid (`/territory`), Chat (`/chat`), Device View (`/d/<dhash>?token=...`)
 
@@ -524,62 +453,26 @@ signs all 3 splits, and installs. Signing uses pure Python (v1/JAR signing via `
 — no Java/SDK required. Keystore cached as PEM files. Only needed once per game update; subsequent
 reinstalls reuse the same keystore (no tutorial replay).
 
-**Hook Script** (`frida_hook.js`): Runs inside the game process via Frida Gadget. Dynamically
-resolves `TFW.NetMsgData.FromByte/MakeByte` addresses at runtime using IL2CPP's metadata API
-(`il2cpp_class_from_name` + `il2cpp_class_get_methods`). No hardcoded RVAs or LIEF delta — works
-across game versions and LIEF versions. Frida's `mod.findExportByName()` (instance method, not
-`Module.findExportByName` static — the static version doesn't exist in this Frida gadget version).
+**Hook Script** (`frida_hook.js`): Dynamically resolves `TFW.NetMsgData.FromByte/MakeByte` via
+IL2CPP runtime API. No hardcoded RVAs — works across game versions.
 
-**Data Pipeline**: Frida hooks → `send()` → Python `_on_frida_message()` → `decode_frame()` →
-`ProtobufDecoder.decode()` (schema from `proto_field_map.json`) → `MESSAGE_CLASSES[name].from_dict()`
-→ `MessageRouter.route()` → `EventBus.emit()` → `GameState` handlers. Wire-level msg_id resolved
-via `wire_registry.json` (BKDR hash lookup, 1000+ message types).
+**Data Pipeline**: Frida hooks → `decode_frame()` → `ProtobufDecoder` (schema: `proto_field_map.json`)
+→ `MESSAGE_CLASSES` → `MessageRouter` → `EventBus` → `GameState` handlers.
+Data files: `wire_registry.json`, `proto_field_map.json`, `registry.json`.
 
-**Data Files**: `wire_registry.json` (msg_id → class name), `proto_field_map.json` (per-message
-field schemas with names, types, wire types), `registry.json` (internal cspb-prefixed registry).
+**Lifecycle** (startup.py): Per-device model — each device gets EventBus + GameState +
+InterceptorThread. `start/stop_protocol_for_device(device)`. Active devices in
+`config.PROTOCOL_ACTIVE_DEVICES`. Port: base 27042, incrementing per device via `adb forward`.
 
-**Lifecycle** (startup.py): Per-device model — each device gets its own EventBus + GameState +
-InterceptorThread (daemon). `start_protocol_for_device(device)` creates the stack for one device,
-`stop_protocol_for_device(device)` tears it down. Active devices tracked in
-`config.PROTOCOL_ACTIVE_DEVICES` set. Called from `apply_settings()` and per-device settings routes.
-Import wrapped in try/except ImportError — if protocol package or frida not installed, silently skips.
-Port allocation: Frida Gadget listens on port 27042 inside each emulator. Each device gets a unique
-host port via `adb forward` (base 27042, incrementing per device). Set up by `_setup_frida_forward()`
-in startup.py.
+**Fast paths** (all try/except, fall through to vision on `None` or error):
+- AP: `read_ap()` → `get_protocol_ap(device)` (≤10s freshness) → OCR fallback
+- Troops: `troops_avail()` → `get_protocol_troops_home(device)` (≤30s) → pixel fallback
+- Panel: `read_panel_statuses()` → `get_protocol_troop_snapshot(device)` (≤30s) → template fallback
+- Rally: `join_rally()` → `get_protocol_rallies(device)` (≤30s) → early bail-out only (not UI skip)
 
-**AP fast path** (vision.py): `read_ap()` calls `get_protocol_ap()` first when the device is in
-`PROTOCOL_ACTIVE_DEVICES`. Returns
-`(current, max)` from `GameState.ap` if fresh (≤10s), else `None` → falls through to OCR.
-Entire block wrapped in try/except — any failure silently falls through.
-
-**Troop fast paths** (troops.py): `troops_avail()` calls `get_protocol_troops_home()` first when
-the device is in `PROTOCOL_ACTIVE_DEVICES` — returns home count from `GameState.lineups` if fresh (≤30s), else `None` → falls through
-to pixel counting. `read_panel_statuses()` calls `get_protocol_troop_snapshot()` — builds a full
-`DeviceTroopSnapshot` from lineup data with `seconds_remaining` timers, else `None` → falls through
-to icon template matching. Both wrapped in try/except, same zero-risk pattern as AP.
-
-**Rally fast path** (actions/rallies.py): `join_rally()` calls `get_protocol_rallies()` first when
-the device is in `PROTOCOL_ACTIVE_DEVICES` — returns list of `Rally` objects if fresh (≤30s), `[]` for confirmed zero rallies, else
-`None` → falls through to UI. When `[]` or all rallies are full/marching/blacklisted, bails out
-immediately (saves 20-30s of war screen navigation + scrolling). **NPC/player type filtering**:
-`_NPC_RALLY_TYPES` (titan, eg, groot) match `rally.npcCity`, `_PLAYER_RALLY_TYPES` (castle, pass,
-tower) match `rally.playerCity`. Derives `want_npc`/`want_player` from the requested `rally_types`
-so only relevant rallies are considered (e.g. castle rallies are ignored when requesting titan/eg).
-`_rally_matches_target()` helper performs the check. NPC `cfgID` values are logged at debug level
-for future fine-grained type mapping. Does NOT skip the UI join flow when joinable rallies exist —
-only provides early bail-out. Same try/except pattern as AP/troops.
-
-**Heartbeat keepalive** (game_state.py): `_on_heartbeat()` (every ~10s) touches "lineups" and
-"rallies" freshness categories when data exists, preventing stale-data fallback when no
-state-change messages arrive (e.g. troops sitting idle for minutes).
-
-**Chat mirroring** (dashboard.py): Devices without protocol can view chat messages from a
-protocol-active device (excludes PRIVATE channel for privacy). `chat_mirror` setting (default
-True). Mini chat feed on device cards + full chat modal with channel tabs.
-
-**Safety**: Zero-risk to existing users. Protocol off by default, one set-membership check when disabled.
-InterceptorThread auto-reconnects (10s interval) if gadget not running. Stale data returns
-None, triggering vision fallback. No existing code paths change when setting is off.
+**Heartbeat keepalive**: `_on_heartbeat()` (every ~10s) touches freshness to prevent stale fallback.
+**Chat mirroring**: protocol-active device shares chat to others (excludes PRIVATE). `chat_mirror` setting.
+**Safety**: Off by default. Stale data → None → vision fallback. Zero risk when disabled.
 
 ### Per-Device Access Control (startup.py + web/dashboard.py)
 Token-based shareable URLs: `https://1453.life/{bot_name}/d/{device_hash}?token={token}`
@@ -605,7 +498,7 @@ threads and clears all statuses. Dashboard JS `_stoppingModes` prevents toggle f
 ## Tests
 
 ```bash
-py -m pytest          # run all ~989 tests
+py -m pytest          # run all tests
 py -m pytest -x       # stop on first failure
 py -m pytest -k name  # filter by test name
 ```
