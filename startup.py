@@ -636,24 +636,37 @@ def initialize():
     sys.stdout = _Tee(sys.stdout, _log_file)
     sys.stderr = _Tee(sys.stderr, _log_file)
 
-    # License check (skipped for git clones / dev mode)
-    if not os.path.isdir(os.path.join(script_dir, ".git")):
+    # License check
+    cloud_mode = os.environ.get("CLOUD_MODE") == "1"
+    if cloud_mode:
+        # Cloud mode: validate from env var, no interactive prompt
+        from license import validate_license
+        validate_license()
+        log.info("Cloud mode active (instance: %s)",
+                 os.environ.get("NINEBOT_INSTANCE_ID", "unknown"))
+    elif not os.path.isdir(os.path.join(script_dir, ".git")):
         from license import validate_license
         validate_license()
     else:
         log.info("Git repo detected — skipping license check (developer mode).")
 
-    # Auto-update check
-    from updater import check_and_update
-    if check_and_update():
-        log.info("Update installed — restarting...")
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except OSError as e:
-            log.error("Failed to restart after update: %s", e)
+    # Auto-update check (skipped in cloud mode — managed by VM agent)
+    if not cloud_mode:
+        from updater import check_and_update
+        if check_and_update():
+            log.info("Update installed — restarting...")
+            try:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except OSError as e:
+                log.error("Failed to restart after update: %s", e)
+    else:
+        log.info("Cloud mode — auto-update disabled (managed by VM agent)")
 
     # Load and apply settings
     settings = load_settings()
+    if cloud_mode:
+        from server.cloud_config import apply_cloud_defaults
+        settings = apply_cloud_defaults(settings)
     apply_settings(settings)
 
     # Connect emulators

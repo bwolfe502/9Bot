@@ -106,7 +106,14 @@ def _compute_key_mac(key):
 
 
 def get_license_key():
-    """Return the saved license key, or None if not activated."""
+    """Return the saved license key, or None if not activated.
+
+    In cloud mode (``CLOUD_MODE=1``), returns the key from the
+    ``NINEBOT_LICENSE_KEY`` environment variable directly — no machine
+    binding or file storage.
+    """
+    if os.environ.get("CLOUD_MODE") == "1":
+        return os.environ.get("NINEBOT_LICENSE_KEY")
     return _load_saved_key()
 
 
@@ -175,7 +182,25 @@ def validate_license():
     Main license validation flow.
     Returns the username associated with the key if valid.
     Exits the program if invalid.
+
+    In cloud mode (``CLOUD_MODE=1``), reads the key from
+    ``NINEBOT_LICENSE_KEY`` and validates it without interactive prompts.
     """
+    # Cloud mode: non-interactive validation from env var
+    if os.environ.get("CLOUD_MODE") == "1":
+        key = os.environ.get("NINEBOT_LICENSE_KEY")
+        if not key:
+            print("ERROR: CLOUD_MODE=1 but NINEBOT_LICENSE_KEY not set.")
+            sys.exit(1)
+        print("Cloud mode — validating license...", end=" ", flush=True)
+        valid_keys = _fetch_valid_keys()
+        if key in valid_keys:
+            user = valid_keys[key]
+            print(f"OK. Cloud instance for {user}.")
+            return user
+        print("FAILED. License key is invalid or revoked.")
+        sys.exit(1)
+
     saved_key = _load_saved_key()
 
     if saved_key:
