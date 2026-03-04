@@ -54,7 +54,7 @@ fi
 # 5. Create venv and install aiohttp
 echo "[4/7] Creating Python virtual environment..."
 python3 -m venv "$APP_DIR/venv"
-"$APP_DIR/venv/bin/pip" install --quiet aiohttp
+"$APP_DIR/venv/bin/pip" install --quiet aiohttp bcrypt stripe
 
 # 6. Generate a random secret if none provided
 if [ -z "$RELAY_SECRET" ]; then
@@ -77,6 +77,11 @@ User=$SERVICE_USER
 WorkingDirectory=$APP_DIR
 Environment=RELAY_SECRET=$RELAY_SECRET
 Environment=RELAY_PORT=$RELAY_PORT
+Environment=STRIPE_API_KEY=${STRIPE_API_KEY:-}
+Environment=STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+Environment=STRIPE_PRICE_BASIC=${STRIPE_PRICE_BASIC:-}
+Environment=STRIPE_PRICE_PRO=${STRIPE_PRICE_PRO:-}
+Environment=STRIPE_PRICE_ENTERPRISE=${STRIPE_PRICE_ENTERPRISE:-}
 ExecStart=$APP_DIR/venv/bin/python relay_server.py
 Restart=always
 RestartSec=5
