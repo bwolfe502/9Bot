@@ -979,15 +979,25 @@ class GameState:
             self._touch("lineups")
 
     def _on_lineup_state(self, msg: Any) -> None:
-        """msg:NewLineupStateNtf — update lineup states."""
+        """msg:NewLineupStateNtf — update lineup states.
+
+        If a lineupID is unknown (e.g. interceptor restarted mid-session and
+        missed the initial LineupsNtf), create a stub Lineup so the troop
+        shows up in protocol snapshots.
+        """
         if not isinstance(msg, NewLineupStateNtf):
             return
         with self._lock:
             for info in msg.lineups:
-                # Update state on the stored Lineup if we have it.
                 lu = self._lineups.get(info.lineupID)
                 if lu is not None:
                     lu.state = info.state
+                else:
+                    # Create stub lineup from state notification — enough for
+                    # troop counting (id + state) even without full Lineup data.
+                    self._lineups[info.lineupID] = Lineup(
+                        id=info.lineupID, state=info.state,
+                    )
                 # ERR (0) or DEFENDER (1) = troop at home; remove state entry
                 # so Lineup.state (which we just updated) is the source of truth.
                 if info.state in (0, 1):
