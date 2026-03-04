@@ -1863,6 +1863,7 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 
 /* Shared style for device card action buttons */
 .live-view-toggle,
+.manual-control-toggle,
 .chat-view-toggle,
 .restart-game-btn {
     flex: 1;
@@ -1880,6 +1881,7 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 }
 
 .live-view-toggle:hover,
+.manual-control-toggle:hover,
 .chat-view-toggle:hover,
 .restart-game-btn:hover {
     color: #bbc;
@@ -1887,6 +1889,7 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 }
 
 .live-view-toggle:active,
+.manual-control-toggle:active,
 .chat-view-toggle:active,
 .restart-game-btn:active {
     transform: scale(0.97);
@@ -1896,6 +1899,22 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     color: #64d8ff;
     border-color: rgba(100,216,255,0.35);
     box-shadow: 0 0 8px rgba(100,216,255,0.15);
+}
+
+.manual-control-toggle.manual-control-on {
+    color: #ffab40;
+    border-color: rgba(255,171,64,0.4);
+    box-shadow: 0 0 10px rgba(255,171,64,0.2);
+    background: rgba(255,171,64,0.06);
+}
+
+.device-card.manual-mode {
+    border-left-color: #ffab40;
+}
+
+.device-card.manual-mode .auto-row .toggle {
+    opacity: 0.3;
+    pointer-events: none;
 }
 
 .restart-game-btn:disabled {
@@ -2054,6 +2073,7 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 
 .live-view-container {
     margin-top: 8px;
+    position: relative;
 }
 
 .live-view-img {
@@ -2061,6 +2081,26 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     border-radius: 8px;
     background: #111;
     min-height: 80px;
+    cursor: crosshair;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
+.tap-ripple {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    margin-left: -14px;
+    margin-top: -14px;
+    border-radius: 50%;
+    background: rgba(0, 200, 255, 0.5);
+    pointer-events: none;
+    animation: tap-fade 0.4s ease-out forwards;
+}
+@keyframes tap-fade {
+    0%   { transform: scale(0.5); opacity: 1; }
+    100% { transform: scale(1.5); opacity: 0; }
 }
 
 /* Settings device tabs */

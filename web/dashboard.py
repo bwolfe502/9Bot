@@ -1347,6 +1347,48 @@ def create_app():
                          as_attachment=as_attachment,
                          download_name=f"screenshot_{device.replace(':', '_')}.png")
 
+    _last_tap_time = {}  # device → monotonic timestamp for rate limiting
+
+    @app.route("/api/tap", methods=["POST"])
+    def api_tap():
+        """Forward a screen tap to a device via ADB."""
+        data = request.get_json(silent=True) or {}
+        device = data.get("device", "")
+        if not device:
+            return jsonify(ok=False, error="Missing device"), 400
+        known = set(_cached_devices()[0])
+        if device not in known:
+            return jsonify(ok=False, error="Unknown device"), 404
+        try:
+            x = int(data.get("x", -1))
+            y = int(data.get("y", -1))
+        except (ValueError, TypeError):
+            return jsonify(ok=False, error="Invalid coordinates"), 400
+        if not (0 <= x <= 1080 and 0 <= y <= 1920):
+            return jsonify(ok=False, error="Coordinates out of range"), 400
+        now = time.monotonic()
+        if now - _last_tap_time.get(device, 0) < 0.1:
+            return jsonify(ok=False, error="Too fast"), 429
+        _last_tap_time[device] = now
+        adb_tap(device, x, y)
+        return jsonify(ok=True)
+
+    @app.route("/api/stop-device", methods=["POST"])
+    def api_stop_device():
+        """Stop all running tasks for a single device."""
+        data = request.get_json(silent=True) or {}
+        device = data.get("device", "")
+        if not device:
+            return jsonify(ok=False, error="Missing device"), 400
+        stopped = []
+        for key in list(running_tasks.keys()):
+            if key.startswith(device + "_"):
+                stop_task(key)
+                stopped.append(key)
+        config.MITHRIL_ENABLED_DEVICES.discard(device)
+        config.MITHRIL_DEPLOY_TIME.pop(device, None)
+        return jsonify(ok=True, stopped=stopped)
+
     @app.route("/api/stream")
     def api_stream():
         """MJPEG stream from a device. Query params: device, fps (1-10), quality (10-95)."""
@@ -1928,6 +1970,26 @@ def create_app():
         return send_file(io.BytesIO(buf.tobytes()), mimetype="image/png",
                          as_attachment=as_attachment,
                          download_name=f"screenshot_{device.replace(':', '_')}.png")
+
+    @app.route("/d/<dhash>/api/tap", methods=["POST"])
+    @require_device_token
+    @require_full_access
+    def device_tap(dhash, device=None, token=None, readonly=False):
+        """Forward a screen tap to this device via ADB (full access only)."""
+        data = request.get_json(silent=True) or {}
+        try:
+            x = int(data.get("x", -1))
+            y = int(data.get("y", -1))
+        except (ValueError, TypeError):
+            return jsonify(ok=False, error="Invalid coordinates"), 400
+        if not (0 <= x <= 1080 and 0 <= y <= 1920):
+            return jsonify(ok=False, error="Coordinates out of range"), 400
+        now = time.monotonic()
+        if now - _last_tap_time.get(device, 0) < 0.1:
+            return jsonify(ok=False, error="Too fast"), 429
+        _last_tap_time[device] = now
+        adb_tap(device, x, y)
+        return jsonify(ok=True)
 
     @app.route("/d/<dhash>/api/stream")
     @require_device_token
