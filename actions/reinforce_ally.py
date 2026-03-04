@@ -203,9 +203,29 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
     if stop_check and stop_check():
         return False
 
-    # Tap center of screen to open the castle detail panel.
-    logged_tap(device, 540, 960, "ally_castle_select")
-    _interruptible_sleep(1, stop_check)
+    # Tap a 3x3 grid across the castle area to find and open the castle detail panel.
+    # Castle may not be perfectly centered after navigate_to_coord.
+    # Start from center and spiral outward.
+    _grid_points = [
+        (551, 966),  # center first
+        (476, 906), (551, 906), (626, 906),  # top row
+        (626, 966),                           # middle right
+        (626, 1025), (551, 1025), (476, 1025), # bottom row
+        (476, 966),                           # middle left
+    ]
+    panel_opened = False
+    for gx, gy in _grid_points:
+        adb_tap(device, gx, gy)
+        time.sleep(0.15)
+        screen = load_screenshot(device)
+        if screen is not None and find_image(screen, "detail_button.png", threshold=0.7) is not None:
+            log.debug("Castle panel opened at grid tap (%d, %d)", gx, gy)
+            panel_opened = True
+            break
+    if not panel_opened:
+        log.warning("Castle panel did not open after grid tap for %s", label)
+
+    _interruptible_sleep(0.3, stop_check)
 
     # The ally castle panel always shows the yellow REINFORCE button at a fixed position.
     logged_tap(device, 529, 1043, "ally_reinforce_button")

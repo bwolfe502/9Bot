@@ -765,11 +765,12 @@ def shutdown():
     except Exception as e:
         print(f"Failed to save mithril timers: {e}")
 
-    # Save player name cache
+    # Save player name and power caches
     try:
-        from protocol.game_state import save_player_names_if_dirty
+        from protocol.game_state import save_player_names_if_dirty, save_player_powers_if_dirty
         save_player_names_if_dirty()
-        log.info("Player name cache saved")
+        save_player_powers_if_dirty()
+        log.info("Player name/power cache saved")
     except Exception:
         pass
 

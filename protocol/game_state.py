@@ -89,17 +89,50 @@ CATEGORIES = (
 #  Shared player name cache (persisted to disk)
 # ------------------------------------------------------------------ #
 
-# In-memory power cache — populated from UnionNtf at login, session-scoped.
+# In-memory power cache — populated from UnionNtf at login, persisted to disk.
+_PLAYER_POWERS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "player_powers.json")
 _player_powers: Dict[str, int] = {}  # playerID (str) → power (might)
 _player_powers_lock = threading.Lock()
+_player_powers_dirty = False
+_player_powers_loaded = False
+
+
+def _load_player_powers() -> None:
+    """Load cached player powers from disk (called once)."""
+    global _player_powers, _player_powers_loaded
+    _player_powers_loaded = True
+    try:
+        with open(_PLAYER_POWERS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _player_powers = {k: int(v) for k, v in data.items()}
+            log.debug("Loaded %d cached player powers", len(_player_powers))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+
+def _save_player_powers() -> None:
+    """Persist player powers to disk."""
+    global _player_powers_dirty
+    _player_powers_dirty = False
+    try:
+        os.makedirs(os.path.dirname(_PLAYER_POWERS_FILE), exist_ok=True)
+        with open(_PLAYER_POWERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_player_powers, f)
+    except OSError:
+        log.debug("Failed to save player powers cache", exc_info=True)
 
 
 def cache_player_power(player_id: Any, power: int) -> None:
-    """Cache a player ID → power mapping. Thread-safe, session-scoped."""
+    """Cache a player ID → power mapping. Thread-safe, persisted to disk."""
+    global _player_powers_dirty
     if not player_id or not power:
         return
     with _player_powers_lock:
+        if not _player_powers_loaded:
+            _load_player_powers()
         _player_powers[str(player_id)] = int(power)
+        _player_powers_dirty = True
 
 
 def lookup_player_power(player_id: Any) -> int:
@@ -107,7 +140,16 @@ def lookup_player_power(player_id: Any) -> int:
     if not player_id:
         return 0
     with _player_powers_lock:
+        if not _player_powers_loaded:
+            _load_player_powers()
         return _player_powers.get(str(player_id), 0)
+
+
+def save_player_powers_if_dirty() -> None:
+    """Save the power cache to disk if there are unsaved changes."""
+    with _player_powers_lock:
+        if _player_powers_dirty:
+            _save_player_powers()
 
 _PLAYER_NAMES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "player_names.json")
 _player_names_lock = threading.Lock()
@@ -650,6 +692,7 @@ class GameState:
                 if name:
                     entry["sender"] = name
         save_player_names_if_dirty()
+        save_player_powers_if_dirty()
 
     def _on_union_members(self, msg: Any) -> None:
         """msg:UnionNtf — cache player names from the alliance member list and own union ID.
@@ -1040,6 +1083,7 @@ class GameState:
                     name = owner.get("name", "?") if isinstance(owner, dict) else "?"
                     pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
                     power = lookup_player_power(pid)
+                    ent_dict["_power"] = power  # pre-computed for priority queue
                     log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s",
                              eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0))
                     new_city_ids.append(eid)

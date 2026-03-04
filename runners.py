@@ -25,6 +25,7 @@ Key exports:
 
 import ctypes
 import math
+import os
 import threading
 import time
 import random
@@ -425,6 +426,34 @@ def run_auto_reinforce(device, stop_event, interval, variation):
 _ALLY_REINFORCE_COOLDOWN_S = 1800  # 30 minutes per entity ID + position
 
 
+_REINFORCE_STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "reinforce_stats.json")
+
+
+def _log_reinforce_stat(device, name, power, dist, success):
+    """Append a reinforce attempt record to data/reinforce_stats.json."""
+    import json as _json
+    record = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "device": device,
+        "name": name,
+        "power": power,
+        "dist": round(dist, 1) if dist is not None else None,
+        "success": success,
+    }
+    try:
+        os.makedirs(os.path.dirname(_REINFORCE_STATS_FILE), exist_ok=True)
+        try:
+            with open(_REINFORCE_STATS_FILE, "r") as f:
+                stats = _json.load(f)
+        except (FileNotFoundError, _json.JSONDecodeError):
+            stats = []
+        stats.append(record)
+        with open(_REINFORCE_STATS_FILE, "w") as f:
+            _json.dump(stats, f, indent=2)
+    except Exception as e:
+        get_logger("runner", device).debug("Failed to save reinforce stat: %s", e)
+
+
 def _save_home_coords(device, x, z):
     """Persist captured home coords to settings as device overrides."""
     from settings import load_settings, save_settings
@@ -503,10 +532,7 @@ def run_auto_reinforce_ally(device, stop_event):
         return
 
     def _on_spotted(entity):
-        owner = entity.get("field_3") or entity.get("owner") or {}
-        pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
-        from protocol.game_state import lookup_player_power
-        power = lookup_player_power(pid)
+        power = entity.get("_power", 0)
         pending.put((-power, time.monotonic(), entity))
 
     set_protocol_ally_monitoring(device, True)
@@ -558,6 +584,7 @@ def run_auto_reinforce_ally(device, stop_event):
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
                 reinforced[eid] = (time.monotonic(), x, z)
+            _log_reinforce_stat(device, name, power, dist if (home_x and home_z and x and z) else None, success)
             config.set_device_status(device, "Watching for Allies...")
     except Exception as e:
         dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)
