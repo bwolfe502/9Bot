@@ -1550,12 +1550,21 @@ def create_app():
         return None
 
     def require_device_token(f):
-        """Decorator: validate token query param and inject device/token/readonly."""
+        """Decorator: validate token query param or X-Portal-Access header
+        and inject device/token/readonly."""
         @functools.wraps(f)
         def wrapper(dhash, *args, **kwargs):
             device = _resolve_device(dhash)
             if device is None:
                 abort(404)
+            # Check portal header first (injected by relay proxy)
+            portal_access = request.headers.get("X-Portal-Access")
+            if portal_access in ("full", "readonly"):
+                kwargs["device"] = device
+                kwargs["token"] = ""
+                kwargs["readonly"] = (portal_access == "readonly")
+                return f(dhash, *args, **kwargs)
+            # Fall back to legacy token auth
             token = request.args.get("token", "")
             from startup import validate_device_token
             access = validate_device_token(device, token)

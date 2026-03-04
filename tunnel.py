@@ -213,6 +213,28 @@ async def _handle_request(ws, msg: dict, executor: ThreadPoolExecutor) -> None:
         _log.debug("Failed to handle request %s: %s", msg.get("id", "?"), e)
 
 
+async def _send_device_list(ws) -> None:
+    """Send the current device list to the relay for portal registration."""
+    try:
+        from devices import get_emulator_instances
+        from startup import device_hash
+        instances = get_emulator_instances()
+        devices = []
+        for device_id, display_name in instances.items():
+            devices.append({
+                "hash": device_hash(device_id),
+                "name": display_name or device_id,
+            })
+        if devices:
+            await ws.send(json.dumps({
+                "type": "device_list",
+                "devices": devices,
+            }))
+            _log.info("Sent device_list to relay: %d device(s)", len(devices))
+    except Exception as e:
+        _log.debug("Could not send device_list: %s", e)
+
+
 async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
     global _status
     try:
@@ -246,6 +268,9 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
                     _status = "connected"
                 _log.info("Tunnel connected to relay (bot=%s)", bot_name)
                 connected_at = asyncio.get_event_loop().time()
+
+                # Report device list to relay for portal registration
+                await _send_device_list(ws)
 
                 # Explicit recv loop for better error diagnostics
                 while not _stop_event.is_set():
