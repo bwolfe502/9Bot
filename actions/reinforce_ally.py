@@ -11,7 +11,7 @@ import config
 from config import Screen
 from botlog import get_logger, timed_action
 from vision import (
-    tap_image, load_screenshot, find_image,
+    tap_image, wait_for_image_and_tap, load_screenshot, find_image,
     adb_tap, adb_keyevent, logged_tap, save_failure_screenshot,
 )
 from navigation import navigate, check_screen
@@ -162,18 +162,21 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
     if stop_check and stop_check():
         return False
 
-    if tap_image("depart.png", device):
+    # Wait for depart button — may take 2-3s to appear after reinforce tap.
+    if wait_for_image_and_tap("depart.png", device, timeout=5, threshold=0.75):
         log.info("Ally reinforce departed for %s", label)
         navigate(Screen.MAP, device)
         return True
 
     # Fallback: depart_anyway.png (troops at low health).
-    if tap_image("depart_anyway.png", device, threshold=0.65):
+    da_screen = load_screenshot(device)
+    if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.65) is not None:
+        log.warning("Low health troops — 'Depart Anyway' visible for %s", label)
         if config.get_device_config(device, "auto_heal"):
-            log.info("Depart anyway detected — healing first for %s", label)
+            log.info("Healing troops before retry for %s", label)
             heal_all(device)
             return False  # retry on next cycle (heal_all navigates to MAP)
-        log.info("Ally reinforce departed (depart_anyway) for %s", label)
+        log.info("Auto heal off — tapping Depart Anyway for %s", label)
         tap_image("depart_anyway.png", device, threshold=0.65)
         navigate(Screen.MAP, device)
         return True
