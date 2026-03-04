@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT    NOT NULL,
     email         TEXT,
     is_admin      INTEGER NOT NULL DEFAULT 0,
+    is_approved   INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
     last_login    TEXT
 );
@@ -136,6 +137,10 @@ def init_db() -> None:
         c.execute("ALTER TABLE devices ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0")
     if "is_public" not in dev_cols:
         c.execute("ALTER TABLE devices ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0")
+    # Migration: add is_approved to users if missing (approve all existing users)
+    if "is_approved" not in cols:
+        c.execute("ALTER TABLE users ADD COLUMN is_approved INTEGER NOT NULL DEFAULT 0")
+        c.execute("UPDATE users SET is_approved = 1")
     c.commit()
 
 
@@ -184,7 +189,33 @@ def update_user_password(user_id: int, password_hash: str) -> None:
 
 def list_users() -> list[dict]:
     rows = _conn().execute(
-        "SELECT id, username, email, is_admin, created_at, last_login FROM users ORDER BY id"
+        "SELECT id, username, email, is_admin, is_approved, created_at, last_login "
+        "FROM users ORDER BY id"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def approve_user(user_id: int) -> bool:
+    """Approve a pending user.  Returns True if updated."""
+    c = _conn()
+    cur = c.execute("UPDATE users SET is_approved = 1 WHERE id = ? AND is_approved = 0", (user_id,))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def reject_user(user_id: int) -> bool:
+    """Reject (delete) a pending user.  Returns True if deleted."""
+    c = _conn()
+    cur = c.execute("DELETE FROM users WHERE id = ? AND is_approved = 0", (user_id,))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def list_pending_users() -> list[dict]:
+    """List users awaiting approval."""
+    rows = _conn().execute(
+        "SELECT id, username, email, created_at FROM users "
+        "WHERE is_approved = 0 AND is_admin = 0 ORDER BY created_at"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -286,7 +317,7 @@ def validate_session(token: str) -> dict | None:
     """Return user dict if session is valid, else None.  Deletes expired sessions."""
     c = _conn()
     row = c.execute(
-        "SELECT s.user_id, s.expires_at, u.username, u.is_admin "
+        "SELECT s.user_id, s.expires_at, u.username, u.is_admin, u.is_approved "
         "FROM sessions s JOIN users u ON s.user_id = u.id "
         "WHERE s.token = ?",
         (token,),
@@ -304,6 +335,7 @@ def validate_session(token: str) -> dict | None:
         "user_id": row["user_id"],
         "username": row["username"],
         "is_admin": bool(row["is_admin"]),
+        "is_approved": bool(row["is_approved"]),
     }
 
 
@@ -673,6 +705,14 @@ def use_invite_code(code: str, user_id: int) -> bool:
     c.execute("UPDATE invite_codes SET used_by = ? WHERE code = ?", (user_id, code))
     c.commit()
     return True
+
+
+def delete_unused_invite_codes() -> int:
+    """Delete all unused invite codes.  Returns count deleted."""
+    c = _conn()
+    cur = c.execute("DELETE FROM invite_codes WHERE used_by IS NULL")
+    c.commit()
+    return cur.rowcount
 
 
 def list_invite_codes(created_by: int | None = None) -> list[dict]:

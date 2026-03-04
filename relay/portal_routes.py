@@ -76,8 +76,11 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_post("/portal/api/invite-codes", api_create_invite)
     app.router.add_get("/portal/api/invite-codes", api_list_invites)
     app.router.add_get("/portal/api/admin/users", api_admin_users)
-    app.router.add_delete("/portal/api/admin/users/{user_id}", api_admin_delete_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/delete", api_admin_delete_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/approve", api_admin_approve_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/reject", api_admin_reject_user)
     app.router.add_put("/portal/api/admin/bots/{bot_name}/owner", api_admin_set_owner)
+    app.router.add_post("/portal/api/admin/clear-invites", api_admin_clear_invites)
     app.router.add_post("/portal/api/admin/reset-password", api_admin_reset_password)
     app.router.add_post("/portal/api/admin/grant-subscription", api_admin_grant_subscription)
     app.router.add_post("/portal/api/admin/revoke-subscription", api_admin_revoke_subscription)
@@ -117,11 +120,13 @@ async def _get_user(request: web.Request) -> dict | None:
 
 
 async def _require_user(request: web.Request) -> dict:
-    """Like _get_user but redirects to login if not authenticated."""
+    """Like _get_user but redirects to login if not authenticated or unapproved."""
     user = await _get_user(request)
     if not user:
         next_url = str(request.url.relative())
         raise web.HTTPFound(f"/portal/login?next={next_url}")
+    if not user.get("is_approved") and not user.get("is_admin"):
+        raise web.HTTPFound("/portal/login?error=Your+account+is+pending+admin+approval")
     return user
 
 
@@ -530,7 +535,7 @@ async def page_login(request: web.Request) -> web.Response:
             <button type="submit" class="btn btn-primary">Login</button>
         </form>
         <p class="muted" style="margin-top:12px">
-            Don't have an account? <a href="/portal/register">Register with invite code</a>
+            Don't have an account? <a href="/portal/register">Sign up</a>
         </p>
     </div>
     """
@@ -543,26 +548,19 @@ async def page_register(request: web.Request) -> web.Response:
         raise web.HTTPFound("/portal/")
 
     error = request.query.get("error", "")
+    success = request.query.get("success", "")
     error_html = f'<div class="alert alert-error">{_html_escape(error)}</div>' if error else ""
-
-    invite_prefill = _html_escape(request.query.get("invite", ""))
+    success_html = f'<div class="alert alert-success">{_html_escape(success)}</div>' if success else ""
 
     body = f"""
-    {error_html}
+    {error_html}{success_html}
     <div class="card">
-        <h2>Register</h2>
+        <h2>Create Account</h2>
         <form method="post" action="/portal/api/register">
-            <div class="form-group">
-                <label>Invite Code</label>
-                <input type="text" name="invite_code" required maxlength="20"
-                       autocomplete="off" value="{invite_prefill}"
-                       {"autofocus" if not invite_prefill else ""}>
-            </div>
             <div class="form-group">
                 <label>Email</label>
                 <input type="email" name="email" required maxlength="200"
-                       autocomplete="email" placeholder="you@example.com"
-                       {"autofocus" if invite_prefill else ""}>
+                       autocomplete="email" placeholder="you@example.com" autofocus>
             </div>
             <div class="form-group">
                 <label>Username</label>
@@ -575,14 +573,14 @@ async def page_register(request: web.Request) -> web.Response:
                 <input type="password" name="password" required minlength="6"
                        autocomplete="new-password">
             </div>
-            <button type="submit" class="btn btn-primary">Register</button>
+            <button type="submit" class="btn btn-primary">Sign Up</button>
         </form>
         <p class="muted" style="margin-top:12px">
             Already have an account? <a href="/portal/login">Login</a>
         </p>
     </div>
     """
-    return web.Response(text=_page("Register", body), content_type="text/html")
+    return web.Response(text=_page("Sign Up", body), content_type="text/html")
 
 
 async def page_dashboard(request: web.Request) -> web.Response:
@@ -1009,6 +1007,7 @@ async def page_admin(request: web.Request) -> web.Response:
     users = await asyncio.to_thread(db.list_users)
     bots = await asyncio.to_thread(db.list_bots)
     invites = await asyncio.to_thread(db.list_invite_codes)
+    pending = await asyncio.to_thread(db.list_pending_users)
 
     # Users table
     user_rows = ""
@@ -1113,7 +1112,37 @@ async def page_admin(request: web.Request) -> web.Response:
         if not u["is_admin"]:
             user_options += f'<option value="{u["id"]}">{_html_escape(u["username"])}</option>'
 
+    # Pending users section
+    pending_html = ""
+    if pending:
+        pending_rows = ""
+        for p in pending:
+            email = _html_escape(p.get("email") or "—")
+            pending_rows += (
+                f'<tr>'
+                f'<td>{_html_escape(p["username"])}</td>'
+                f'<td class="muted" style="font-size:11px">{email}</td>'
+                f'<td class="muted">{p["created_at"]}</td>'
+                f'<td style="white-space:nowrap">'
+                f'<button class="btn btn-primary btn-sm" style="margin-right:4px" '
+                f'onclick="approveUser({p["id"]},\'{_html_escape(p["username"])}\')">Approve</button>'
+                f'<button class="btn btn-danger btn-sm" '
+                f'onclick="rejectUser({p["id"]},\'{_html_escape(p["username"])}\')">Reject</button>'
+                f'</td></tr>'
+            )
+        pending_html = (
+            f'<div class="card" style="border-color:rgba(255,183,77,0.3)">'
+            f'<h2>Pending Approval ({len(pending)})</h2>'
+            f'<table>'
+            f'<tr><th>Username</th><th>Email</th><th>Signed Up</th><th></th></tr>'
+            f'{pending_rows}'
+            f'</table>'
+            f'</div>'
+        )
+
     body = f"""
+    {pending_html}
+
     <div class="card">
         <h2>Users ({len(users)})</h2>
         <table>
@@ -1156,9 +1185,12 @@ async def page_admin(request: web.Request) -> web.Response:
 
     <div class="card">
         <h2>Invite Codes</h2>
-        <button class="btn btn-primary btn-sm" onclick="genInvite()" style="margin-bottom:12px">
-            Generate Invite Code
-        </button>
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+            <button class="btn btn-primary btn-sm" onclick="genInvite()">
+                Generate Invite Code
+            </button>
+            {'<button class="btn btn-danger btn-sm" onclick="clearInvites()">Clear Unused (' + str(len(unused_invites)) + ')</button>' if unused_invites else ''}
+        </div>
         <div id="inviteResult"></div>
         {invite_rows if invite_rows else '<p class="muted">No unused invite codes.</p>'}
         <p class="muted" style="margin-top:8px">{len(used_invites)} used code(s)</p>
@@ -1169,13 +1201,45 @@ async def page_admin(request: web.Request) -> web.Response:
 
     async function deleteUser(id, name) {{
         if (!confirm("Delete user " + name + "? This revokes all their access.")) return;
-        const resp = await fetch("/portal/api/admin/users/" + id, {{
-            method: "DELETE",
+        const resp = await fetch("/portal/api/admin/users/" + id + "/delete", {{
+            method: "POST",
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{csrf_token: csrf}})
         }});
         if (resp.ok) location.reload();
         else alert("Failed");
+    }}
+
+    async function approveUser(id, name) {{
+        const resp = await fetch("/portal/api/admin/users/" + id + "/approve", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to approve user");
+    }}
+
+    async function rejectUser(id, name) {{
+        if (!confirm("Reject and delete " + name + "'s signup request?")) return;
+        const resp = await fetch("/portal/api/admin/users/" + id + "/reject", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to reject user");
+    }}
+
+    async function clearInvites() {{
+        if (!confirm("Delete all unused invite codes?")) return;
+        const resp = await fetch("/portal/api/admin/clear-invites", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to clear invites");
     }}
 
     async function resetPassword(id, name) {{
@@ -1217,11 +1281,11 @@ async def page_admin(request: web.Request) -> web.Response:
     }}
 
     function copyInviteEmail(code) {{
-        const url = location.origin + "/portal/register?invite=" + code;
+        const url = location.origin + "/portal/register";
         const body = "Hi,\\n\\nYou've been invited to 9Bot — automated Kingdom Guard running 24/7 on cloud servers.\\n\\n"
-            + "Click the link below to create your account:\\n" + url + "\\n\\n"
+            + "Create your account here:\\n" + url + "\\n\\n"
             + "What to expect after signing up:\\n"
-            + "1. Choose a subscription plan\\n"
+            + "1. Your account will be approved by an admin\\n"
             + "2. Send us your game account details\\n"
             + "3. We set up your dedicated server (usually within 24 hours)\\n"
             + "4. Control everything from your phone dashboard\\n\\n"
@@ -1659,6 +1723,10 @@ async def api_login(request: web.Request) -> web.Response:
         auth.record_failed_login(ip)
         raise web.HTTPFound(f"/portal/login?error=Invalid+credentials&next={next_url}")
 
+    # Block unapproved users (admins always approved)
+    if not user.get("is_approved") and not user.get("is_admin"):
+        raise web.HTTPFound("/portal/login?error=Your+account+is+pending+admin+approval")
+
     auth.clear_rate_limit(ip)
     is_first_login = not user.get("last_login")
     await asyncio.to_thread(db.update_user_login, user["id"])
@@ -1683,12 +1751,11 @@ async def api_logout(request: web.Request) -> web.Response:
 
 async def api_register(request: web.Request) -> web.Response:
     data = await request.post()
-    invite_code = (data.get("invite_code") or "").strip()
     username = (data.get("username") or "").strip()
     email = (data.get("email") or "").strip()
     password = data.get("password") or ""
 
-    if not invite_code or not username or not password or not email:
+    if not username or not password or not email:
         raise web.HTTPFound("/portal/register?error=All+fields+required")
 
     if len(username) > 50 or not all(c.isalnum() or c in "-_" for c in username):
@@ -1697,29 +1764,25 @@ async def api_register(request: web.Request) -> web.Response:
     if len(email) > 200 or "@" not in email:
         raise web.HTTPFound("/portal/register?error=Invalid+email+address")
 
+    # Check email uniqueness
+    existing = await asyncio.to_thread(db.get_user_by_email, email)
+    if existing:
+        raise web.HTTPFound("/portal/register?error=Email+already+registered")
+
     if len(password) < 6:
         raise web.HTTPFound("/portal/register?error=Password+must+be+at+least+6+characters")
 
     pw_hash = await asyncio.to_thread(auth.hash_password, password)
 
     try:
-        user_id = await asyncio.to_thread(db.create_user, username, pw_hash, email=email)
+        await asyncio.to_thread(db.create_user, username, pw_hash, email=email)
     except Exception:
         raise web.HTTPFound("/portal/register?error=Username+already+taken")
 
-    used = await asyncio.to_thread(db.use_invite_code, invite_code, user_id)
-    if not used:
-        # Roll back user creation
-        await asyncio.to_thread(db.delete_user, user_id)
-        raise web.HTTPFound("/portal/register?error=Invalid+or+used+invite+code")
-
-    # Auto-login — redirect new users to the guide
-    await asyncio.to_thread(db.update_user_login, user_id)
-    token = await asyncio.to_thread(db.create_session, user_id)
-
-    resp = web.HTTPFound("/portal/guide")
-    auth.set_session_cookie(resp, token)
-    return resp
+    # Don't auto-login — account needs admin approval
+    raise web.HTTPFound(
+        "/portal/register?success=Account+created!+An+admin+will+review+and+approve+your+account."
+    )
 
 
 async def api_bots(request: web.Request) -> web.Response:
@@ -1874,6 +1937,35 @@ async def api_admin_delete_user(request: web.Request) -> web.Response:
     # Also kill their sessions
     await asyncio.to_thread(db.delete_user_sessions, user_id)
     return web.json_response({"status": "ok"})
+
+
+async def api_admin_approve_user(request: web.Request) -> web.Response:
+    await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    approved = await asyncio.to_thread(db.approve_user, user_id)
+    if not approved:
+        return web.json_response({"error": "User not found or already approved"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_reject_user(request: web.Request) -> web.Response:
+    await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    rejected = await asyncio.to_thread(db.reject_user, user_id)
+    if not rejected:
+        return web.json_response({"error": "User not found or already approved"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_clear_invites(request: web.Request) -> web.Response:
+    await _require_admin(request)
+    await _check_csrf(request)
+    count = await asyncio.to_thread(db.delete_unused_invite_codes)
+    return web.json_response({"status": "ok", "deleted": count})
 
 
 async def api_admin_set_owner(request: web.Request) -> web.Response:
