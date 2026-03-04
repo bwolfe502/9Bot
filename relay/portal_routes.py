@@ -1562,18 +1562,18 @@ async def page_guide(request: web.Request) -> web.Response:
             <div class="guide-card">
                 <div class="guide-card-head">
                     <div class="guide-card-icon">&#127917;</div>
-                    <div class="guide-card-title">Send Game Details</div>
+                    <div class="guide-card-title">Send Login Code</div>
                     <span class="guide-card-tag guide-tag-action">Action</span>
                 </div>
                 <p>
-                    Message us your <strong>Kingdom Guard login</strong> &mdash; the
-                    account you want automated. We use it once to log into the game
-                    on your dedicated server.
+                    Log into Kingdom Guard on your phone. The game sends a
+                    <strong>one-time code</strong> to your email. Send us that
+                    code &mdash; we use it once to log in on your dedicated server.
                 </p>
                 <div class="guide-callout">
                     <span class="guide-callout-icon">&#128274;</span>
-                    <span>Credentials are only used on your private emulator instance.
-                    Never stored separately or shared.</span>
+                    <span>The code expires after one use. We never have access to
+                    your email or password &mdash; just the single login code.</span>
                 </div>
             </div>
         </div>
