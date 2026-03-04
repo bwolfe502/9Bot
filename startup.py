@@ -472,6 +472,110 @@ def apply_settings(settings):
     _reconcile_protocol()
 
 
+# ---------------------------------------------------------------------------
+# APK patching subprocess management
+# ---------------------------------------------------------------------------
+
+_patch_progress = {}   # {device_id: {phase, step, total, lines, error}}
+_patch_threads = {}    # {device_id: Thread}
+_patch_lock = threading.Lock()
+_ANSI_RE = None  # lazy-compiled regex
+
+
+def _strip_ansi(text):
+    """Remove ANSI escape codes from text."""
+    global _ANSI_RE
+    if _ANSI_RE is None:
+        import re
+        _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+    return _ANSI_RE.sub("", text)
+
+
+def start_apk_patch(device_id):
+    """Spawn a background thread to patch the APK for *device_id*.
+
+    Runs ``python -m protocol.patch_apk --device <id> --install`` as a
+    subprocess, streaming output line-by-line into ``_patch_progress``.
+    On success, auto-enables protocol for the device.
+    """
+    import re
+    step_re = re.compile(r"\[(\d+)/(\d+)\]")
+
+    with _patch_lock:
+        t = _patch_threads.get(device_id)
+        if t is not None and t.is_alive():
+            return False  # already running
+        _patch_progress[device_id] = {
+            "phase": "running", "step": 0, "total": 0,
+            "lines": [], "error": None,
+        }
+
+    def _run():
+        prog = _patch_progress[device_id]
+        try:
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "protocol.patch_apk",
+                 "--device", device_id, "--install"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=env,
+            )
+            for raw_line in proc.stdout:
+                line = _strip_ansi(raw_line.rstrip("\n"))
+                if not line:
+                    continue
+                lines = prog["lines"]
+                lines.append(line)
+                # Rolling cap: keep last 200 lines
+                if len(lines) > 200:
+                    del lines[:len(lines) - 200]
+                m = step_re.search(line)
+                if m:
+                    prog["step"] = int(m.group(1))
+                    prog["total"] = int(m.group(2))
+            proc.wait()
+            if proc.returncode == 0:
+                prog["phase"] = "done"
+                # Auto-enable protocol for this device
+                try:
+                    settings = load_settings()
+                    ds = settings.setdefault("device_settings", {})
+                    dev_s = ds.setdefault(device_id, {})
+                    dev_s["protocol_enabled"] = True
+                    from startup import apply_settings as _apply
+                    _apply(settings)
+                    save_settings(settings)
+                except Exception:
+                    pass
+            else:
+                prog["phase"] = "error"
+                prog["error"] = f"Process exited with code {proc.returncode}"
+        except Exception as e:
+            prog = _patch_progress.get(device_id)
+            if prog:
+                prog["phase"] = "error"
+                prog["error"] = str(e)
+
+    t = threading.Thread(target=_run, daemon=True, name=f"patch-{device_id}")
+    with _patch_lock:
+        _patch_threads[device_id] = t
+    t.start()
+    return True
+
+
+def get_patch_progress(device_id):
+    """Return current patch progress dict for *device_id*."""
+    return dict(_patch_progress.get(device_id, {"phase": "idle"}))
+
+
+def is_patching(device_id):
+    """Return True if a patch thread is alive for *device_id*."""
+    with _patch_lock:
+        t = _patch_threads.get(device_id)
+    return t is not None and t.is_alive()
+
+
 def _reconcile_protocol():
     """Start/stop per-device interceptors to match current settings."""
     from botlog import get_logger

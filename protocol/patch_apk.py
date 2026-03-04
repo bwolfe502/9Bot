@@ -75,6 +75,10 @@ INFO = cyan("[*]")
 
 PACKAGE = "com.tap4fun.odin.kingdomguard"
 
+# Persistent signing key directory — survives cleanup of apk-pulled/ and patched/
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SIGNING_KEY_DIR = os.path.join(_PROJECT_ROOT, "signing-keys")
+
 GADGET_CONFIG = {
     "interaction": {
         "type": "listen",
@@ -445,7 +449,7 @@ def _sign_splits_python(splits: dict[str, str], patched_arm64: str,
     print(f"\n{INFO} Signing APK splits (pure Python v1) ...")
 
     os.makedirs(output_dir, exist_ok=True)
-    private_key, certificate = _generate_debug_key(output_dir)
+    private_key, certificate = _generate_debug_key(SIGNING_KEY_DIR)
 
     _CANONICAL = {
         "base": "base.apk",
@@ -911,7 +915,7 @@ def sign_splits(splits: dict[str, str], patched_arm64: str,
 
     os.makedirs(output_dir, exist_ok=True)
     env = _make_env(tools)
-    keystore = os.path.join(output_dir, "debug.keystore")
+    keystore = os.path.join(SIGNING_KEY_DIR, "debug.keystore")
     zipalign = tools["zipalign"]
     apksigner = tools["apksigner"]
 

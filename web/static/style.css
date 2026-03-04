@@ -2867,6 +2867,120 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     min-height: 0;
 }
 
+/* APK Patch modal */
+.patch-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+.patch-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.patch-modal {
+    background: #1a1a30;
+    border: 1px solid rgba(100,216,255,0.15);
+    border-radius: 16px;
+    padding: 20px;
+    max-width: 480px;
+    width: 92%;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+}
+
+.patch-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 12px;
+}
+
+.patch-desc {
+    font-size: 12px;
+    color: #889;
+    line-height: 1.5;
+    margin-bottom: 16px;
+}
+
+.patch-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.patch-btn {
+    flex: 1;
+    min-width: 100px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    -webkit-tap-highlight-color: transparent;
+    background: #141428;
+    border: 1px solid rgba(255,255,255,0.08);
+    color: #889;
+}
+
+.patch-btn:active {
+    background: #1e3a5f;
+    color: #dde;
+}
+
+.patch-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.patch-btn-primary {
+    background: rgba(100,216,255,0.12);
+    border-color: rgba(100,216,255,0.25);
+    color: #64d8ff;
+}
+
+.patch-btn-primary:active {
+    background: rgba(100,216,255,0.22);
+}
+
+.patch-step {
+    font-size: 12px;
+    font-weight: 600;
+    color: #64d8ff;
+    margin-bottom: 8px;
+}
+
+.patch-log {
+    background: #0c0c18;
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: "SF Mono", "Cascadia Code", "Consolas", monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #aab;
+    overflow-y: auto;
+    max-height: 50vh;
+    min-height: 200px;
+    margin-bottom: 12px;
+}
+
+.patch-log-line {
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
 /* Safe area for notched iPhones */
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
     main {

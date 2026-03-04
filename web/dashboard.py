@@ -1096,6 +1096,29 @@ def create_app():
             })
         return jsonify({"devices": devices_status})
 
+    @app.route("/api/patch-apk", methods=["POST"])
+    def api_patch_apk():
+        """Start APK patching for a device."""
+        device_id = request.form.get("device_id")
+        if not device_id:
+            return jsonify({"error": "device_id required"}), 400
+        from startup import start_apk_patch, is_patching
+        if is_patching(device_id):
+            return jsonify({"error": "Already patching"}), 409
+        ok = start_apk_patch(device_id)
+        if not ok:
+            return jsonify({"error": "Already patching"}), 409
+        return jsonify({"ok": True})
+
+    @app.route("/api/patch-progress")
+    def api_patch_progress():
+        """Return current APK patch progress for a device."""
+        device_id = request.args.get("device_id")
+        if not device_id:
+            return jsonify({"error": "device_id required"}), 400
+        from startup import get_patch_progress
+        return jsonify(get_patch_progress(device_id))
+
     @app.route("/chat")
     def chat_page():
         """Chat viewer page — shows live game chat from protocol-enabled devices."""
