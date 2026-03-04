@@ -465,6 +465,7 @@ def run_auto_reinforce_ally(device, stop_event):
     set_protocol_ally_monitoring(device, True)
     bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
     dlog.info("Ally monitoring enabled")
+    config.set_device_status(device, "Watching for Allies...")
 
     try:
         while not stop_check():
@@ -495,6 +496,7 @@ def run_auto_reinforce_ally(device, stop_event):
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
                 reinforced[eid] = time.monotonic()
+            config.set_device_status(device, "Watching for Allies...")
     except Exception as e:
         dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)
     finally:
