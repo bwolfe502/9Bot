@@ -252,9 +252,13 @@ class TestTunnelStatus:
 
 
 class TestStartTunnel:
+    @patch("tunnel.asyncio.set_event_loop")
     @patch("tunnel.asyncio.new_event_loop")
-    def test_start_creates_thread(self, mock_loop):
-        mock_loop.return_value = MagicMock()
+    def test_start_creates_thread(self, mock_new_loop, _mock_set):
+        mock_loop = MagicMock()
+        # Block run_until_complete until stop_event is set (simulates real tunnel)
+        mock_loop.run_until_complete.side_effect = lambda _: tunnel._stop_event.wait()
+        mock_new_loop.return_value = mock_loop
         start_tunnel("ws://localhost/ws/tunnel", "secret", "bot1")
         assert tunnel._thread is not None
         assert tunnel._thread.is_alive()
@@ -262,13 +266,20 @@ class TestStartTunnel:
         tunnel._stop_event.set()
         tunnel._thread.join(timeout=2)
 
+    @patch("tunnel.asyncio.set_event_loop")
     @patch("tunnel.asyncio.new_event_loop")
-    def test_start_twice_ignores_second(self, mock_loop):
-        mock_loop.return_value = MagicMock()
+    def test_start_twice_replaces_thread(self, mock_new_loop, _mock_set):
+        mock_loop = MagicMock()
+        mock_loop.run_until_complete.side_effect = lambda _: tunnel._stop_event.wait()
+        mock_new_loop.return_value = mock_loop
         start_tunnel("ws://localhost/ws/tunnel", "secret", "bot1")
         first_thread = tunnel._thread
+        assert first_thread.is_alive()
+        # Second call stops old thread and starts a new one
         start_tunnel("ws://localhost/ws/tunnel", "secret", "bot1")
-        assert tunnel._thread is first_thread
+        assert not first_thread.is_alive()
+        assert tunnel._thread is not first_thread
+        assert tunnel._thread.is_alive()
         tunnel._stop_event.set()
         tunnel._thread.join(timeout=2)
 
