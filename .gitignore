@@ -28,6 +28,9 @@ stats/
 # License key
 .license_key
 
+# Environment variables (API keys, secrets)
+.env
+
 # User settings
 settings.json
 
