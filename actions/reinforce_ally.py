@@ -3,8 +3,10 @@
 Key exports:
     navigate_to_coord     — jump map camera to world coordinates via game search UI
     reinforce_ally_castle — full reinforce flow for an ally castle at given coordinates
+    capture_home_coords   — navigate away/back to center camera on home castle, OCR coordinates
 """
 
+import re
 import time
 
 import config
@@ -12,7 +14,7 @@ from config import Screen
 from botlog import get_logger, timed_action
 from vision import (
     tap_image, wait_for_image_and_tap, load_screenshot, find_image,
-    adb_tap, adb_keyevent, logged_tap, save_failure_screenshot,
+    adb_tap, adb_keyevent, logged_tap, save_failure_screenshot, read_text,
 )
 from navigation import navigate, check_screen
 from troops import troops_avail, heal_all
@@ -44,6 +46,56 @@ def _minimize_quest_dialog(device, stop_check=None) -> bool:
         return True
     log.warning("quest_minimize.png found but tap failed")
     return False
+
+
+def capture_home_coords(device, stop_check=None):
+    """Capture home castle coordinates by navigating away and back.
+
+    Navigating away from MAP and returning re-centers the camera on the player's
+    home castle. OCRs the coordinate banner at the bottom of the MAP screen.
+
+    Returns (x, z) as display-unit integers (matching what the game shows, e.g.
+    X:2276 Y:3394 → (2276, 3394)), or None on failure.
+
+    Only call this when auto reinforce first starts (home not yet captured) or
+    after a castle teleport that requires redefining home.
+    """
+    log = get_logger("actions", device)
+
+    # Navigate away to reset camera, then back to MAP — home castle is now centered.
+    if not navigate(Screen.ALLIANCE, device):
+        log.warning("capture_home_coords: failed to navigate to ALLIANCE for camera reset")
+        return None
+    if stop_check and stop_check():
+        return None
+    if not navigate(Screen.MAP, device):
+        log.warning("capture_home_coords: failed to navigate back to MAP")
+        return None
+
+    _minimize_quest_dialog(device, stop_check)
+    _interruptible_sleep(0.5, stop_check)
+
+    screen = load_screenshot(device)
+    if screen is None:
+        log.warning("capture_home_coords: screenshot failed")
+        return None
+
+    # Coordinate banner region: (x1, y1, x2, y2) — "X:2276 Y:3394" style text.
+    coord_text = read_text(screen, (520, 1640, 734, 1681))
+    if not coord_text:
+        log.warning("capture_home_coords: no text found in coordinate region")
+        return None
+
+    # Parse "X:2276 Y:3394" — accept any separator between X and Z values.
+    m = re.search(r'[Xx][:\s]*(\d+)[^\d]+[Yy][:\s]*(\d+)', coord_text)
+    if not m:
+        log.warning("capture_home_coords: could not parse coords from %r", coord_text)
+        return None
+
+    x = int(m.group(1))
+    z = int(m.group(2))
+    log.info("Home castle coordinates captured: X=%d Y=%d", x, z)
+    return x, z
 
 
 def navigate_to_coord(device, x: int, z: int, stop_check=None) -> bool:

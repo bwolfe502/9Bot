@@ -869,6 +869,21 @@ def create_app():
             _save_settings(settings)
         return jsonify(ok=True)
 
+    @app.route("/api/device/<device_id>/capture-home", methods=["POST"])
+    def api_capture_home(device_id):
+        """Navigate away/back to center camera on home castle and OCR coordinates."""
+        from actions import capture_home_coords
+        from runners import _save_home_coords
+        detected = _cached_devices()[0]
+        if device_id not in detected:
+            abort(404)
+        coords = capture_home_coords(device_id)
+        if not coords:
+            return jsonify(ok=False, error="Could not read coordinates — ensure game is on MAP screen"), 500
+        x, z = coords
+        _save_home_coords(device_id, x, z)
+        return jsonify(ok=True, home_x=x, home_z=z)
+
     @app.route("/settings/device/<device_id>")
     def device_settings_page(device_id):
         """Per-device settings page with override toggles."""

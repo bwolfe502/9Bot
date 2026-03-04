@@ -24,6 +24,7 @@ Key exports:
 """
 
 import ctypes
+import math
 import threading
 import time
 import random
@@ -39,7 +40,7 @@ from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      check_quests, rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop,
-                     reinforce_ally_castle)
+                     reinforce_ally_castle, capture_home_coords)
 from territory import auto_occupy_loop
 
 
@@ -424,6 +425,26 @@ def run_auto_reinforce(device, stop_event, interval, variation):
 _ALLY_REINFORCE_COOLDOWN_S = 1800  # 30 minutes per entity ID
 
 
+def _save_home_coords(device, x, z):
+    """Persist captured home coords to settings as device overrides."""
+    from settings import load_settings, save_settings
+    from config import validate_settings, set_device_overrides
+    from settings import DEFAULTS
+    settings = load_settings()
+    ds = settings.setdefault("device_settings", {})
+    dev = ds.setdefault(device, {})
+    dev["home_x"] = x
+    dev["home_z"] = z
+    settings["device_settings"] = ds
+    settings, _ = validate_settings(settings, DEFAULTS)
+    save_settings(settings)
+    # Update in-memory device config immediately.
+    existing = config._DEVICE_CONFIG.get(device, {})
+    existing["home_x"] = x
+    existing["home_z"] = z
+    set_device_overrides(device, existing)
+
+
 def run_auto_reinforce_ally(device, stop_event):
     """Reinforce ally PLAYER_CITY castles the moment they appear in the viewport.
 
@@ -434,6 +455,11 @@ def run_auto_reinforce_ally(device, stop_event):
     Re-reinforcement is suppressed for _ALLY_REINFORCE_COOLDOWN_S per entity ID.
     When an entity leaves the viewport (UnionDelEntitiesNtf removes it from
     GameState), it can be re-queued and reinforced again on next appearance.
+
+    Home coordinates are captured once at startup (if not already set) by
+    navigating away and back — centering the camera on the home castle — then
+    OCR-reading the coordinate banner. Re-capture via the dashboard after a
+    castle teleport.
 
     Requires protocol to be enabled on this device.
     """
@@ -459,12 +485,32 @@ def run_auto_reinforce_ally(device, stop_event):
         config.set_device_status(device, "Error: Enable protocol first")
         return
 
+    # Capture home coordinates on first start if not already stored.
+    home_x = config.get_device_config(device, "home_x")
+    home_z = config.get_device_config(device, "home_z")
+    if not home_x or not home_z:
+        dlog.info("Home coordinates not set — capturing now")
+        config.set_device_status(device, "Capturing Home Coordinates...")
+        with lock:
+            coords = capture_home_coords(device, stop_check)
+        if coords:
+            home_x, home_z = coords
+            _save_home_coords(device, home_x, home_z)
+            dlog.info("Home coordinates set: X=%d Y=%d", home_x, home_z)
+        else:
+            dlog.warning("Failed to capture home coordinates — distance filter disabled")
+            home_x = home_z = 0
+
+    if stop_check():
+        config.clear_device_status(device)
+        return
+
     def _on_spotted(entity):
         pending.put(entity)
 
     set_protocol_ally_monitoring(device, True)
     bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
-    dlog.info("Ally monitoring enabled")
+    dlog.info("Ally monitoring enabled (home X=%d Y=%d)", home_x, home_z)
     config.set_device_status(device, "Watching for Allies...")
 
     try:
@@ -490,7 +536,17 @@ def run_auto_reinforce_ally(device, stop_event):
             z = entity.get("Z", 0)
             owner = entity.get("field_3") or entity.get("owner") or {}
             name = owner.get("name", "") if isinstance(owner, dict) else getattr(owner, "name", "")
-            dlog.info("Ally city spotted: %s at (%s, %s) — reinforcing", name or eid, x, z)
+
+            # Distance filter — entity coords are raw (1000x display units).
+            max_dist = config.get_device_config(device, "max_reinforce_distance")
+            if home_x and home_z and x and z:
+                dist = math.sqrt((x / 1000 - home_x) ** 2 + (z / 1000 - home_z) ** 2)
+                if max_dist and dist > max_dist:
+                    dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
+                    continue
+                dlog.info("Ally city spotted: %s at (%s, %s) dist=%.1f — reinforcing", name or eid, x, z, dist)
+            else:
+                dlog.info("Ally city spotted: %s at (%s, %s) — reinforcing", name or eid, x, z)
             config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
