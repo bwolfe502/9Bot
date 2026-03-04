@@ -41,6 +41,51 @@ try:
 except ImportError:
     _HAVE_CRYPTOGRAPHY = False
 
+
+# ---------------------------------------------------------------------------
+# Auto-install missing dependencies
+# ---------------------------------------------------------------------------
+
+_REQUIRED_PACKAGES = [
+    ("lief", "lief"),
+    ("cryptography", "cryptography"),
+]
+
+
+def _ensure_dependencies() -> None:
+    """Auto-install lief and cryptography if missing. Prints progress."""
+    global _HAVE_CRYPTOGRAPHY
+    missing = []
+    for module_name, pip_name in _REQUIRED_PACKAGES:
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append((module_name, pip_name))
+
+    if not missing:
+        return
+
+    print(f"\n[*] Installing missing dependencies: {', '.join(m for _, m in missing)}")
+    for i, (module_name, pip_name) in enumerate(missing, 1):
+        print(f"  [{i}/{len(missing)}] Installing {pip_name} ...")
+        try:
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", pip_name, "-q"],
+                timeout=300,
+            )
+            print(f"  [OK] {pip_name} installed")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            _abort(f"Failed to install {pip_name}: {exc}\n"
+                   f"  Fix: pip install {pip_name}")
+
+    # Refresh the cryptography flag after install
+    try:
+        import cryptography as _cryptography  # noqa: F811, F401
+        _HAVE_CRYPTOGRAPHY = True
+    except ImportError:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # ANSI helpers (disabled on Windows unless modern terminal detected)
 # ---------------------------------------------------------------------------
@@ -1178,6 +1223,8 @@ def main(argv: list[str] | None = None) -> None:
     if not args.device and not args.input:
         parser.error("either positional input or --device is required")
 
+    _ensure_dependencies()
+
     print(bold("APK Patcher — Kingdom Guard Protocol Interception"))
     print(bold("=" * 52))
 
@@ -1204,12 +1251,9 @@ def main(argv: list[str] | None = None) -> None:
     _step(cur_step, total_steps, "Discover build tools")
     tools = discover_tools()
 
-    # Check LIEF early
-    try:
-        import lief  # type: ignore[import-untyped]  # noqa: F401
-        print(f"  {OK} lief: {lief.__version__}")
-    except ImportError:
-        _abort("LIEF not installed.\n  Fix: pip install lief")
+    # Verify LIEF (should be installed by _ensure_dependencies)
+    import lief  # type: ignore[import-untyped]  # noqa: F811
+    print(f"  {OK} lief: {lief.__version__}")
 
     # Step: Download Frida Gadget
     cur_step += 1
