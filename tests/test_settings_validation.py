@@ -22,7 +22,7 @@ DEFAULTS = {
     "pass_mode": "Rally Joiner",
     "my_team": "yellow",
     "enemy_team": "green",
-    "enemy_teams": [],
+    "enemy_teams": ["yellow"],
     "mode": "bl",
     "verbose_logging": False,
     "eg_rally_own": True,

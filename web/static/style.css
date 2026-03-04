@@ -1114,6 +1114,52 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
 .settings-card {
     padding: 0;
     overflow: hidden;
+    border-top: 2px solid rgba(100,216,255,0.25);
+}
+/* Section divider — fieldset legend style */
+.settings-section-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 16px 0;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+.settings-section-divider::before,
+.settings-section-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: rgba(255,255,255,0.06);
+}
+.settings-section-divider-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #556;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    white-space: nowrap;
+}
+.settings-section-chevron {
+    font-size: 10px;
+    color: #556;
+    transition: transform 0.3s ease;
+    display: inline-block;
+}
+.settings-section-chevron.collapsed {
+    transform: rotate(-90deg);
+}
+/* Collapsible sub-sections */
+.settings-collapse {
+    max-height: 500px;
+    overflow: hidden;
+    transition: max-height 0.3s ease, opacity 0.3s ease;
+    opacity: 1;
+}
+.settings-collapse.collapsed {
+    max-height: 0;
+    opacity: 0;
 }
 .settings-card-header {
     font-size: 12px;
@@ -1252,11 +1298,18 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     display: block;
     text-align: center;
     margin-top: 12px;
-    background: rgba(255,255,255,0.03);
-    color: #889;
-    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(100,216,255,0.06);
+    color: #64d8ff;
+    border: 1px solid rgba(100,216,255,0.25);
     text-decoration: none;
     border-radius: 10px;
+    transition: background 0.15s ease;
+}
+.btn-territory:hover {
+    background: rgba(100,216,255,0.12);
+}
+.btn-territory:active {
+    background: rgba(100,216,255,0.18);
 }
 .btn-reset-overrides {
     background: rgba(239,83,80,0.06);
@@ -1600,6 +1653,65 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     background: rgba(51, 51, 85, 0.5);
 }
 
+/* Pass toggles panel (territory page — Passes tab) */
+.pass-group {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+}
+.pass-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+}
+.pass-group-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #ccd;
+}
+.pass-status {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 8px;
+    border-radius: 4px;
+}
+.pass-status-open {
+    color: #4caf50;
+    background: rgba(76,175,80,0.1);
+}
+.pass-status-blocked {
+    color: #ef5350;
+    background: rgba(239,83,80,0.1);
+}
+.pass-status-partial {
+    color: #ffb74d;
+    background: rgba(255,183,77,0.1);
+}
+.pass-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-top: 1px solid rgba(255,255,255,0.04);
+}
+.pass-team-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+.pass-toggle-name {
+    font-size: 13px;
+    color: #aab;
+}
+
 /* Footer debug link */
 .page-footer {
     text-align: center;
@@ -1633,6 +1745,31 @@ h3 { font-size: 15px; margin-bottom: 12px; color: #64d8ff; }
     margin-top: 10px;
     padding-top: 10px;
     border-top: 1px solid rgba(255,255,255,0.04);
+}
+
+/* Collapsible events section (per-device card) */
+.device-events-section {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.04);
+}
+.events-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    padding: 4px 0;
+    -webkit-tap-highlight-color: transparent;
+}
+.events-label {
+    font-size: 9px;
+    font-weight: 700;
+    color: #556;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.events-body {
+    padding: 4px 0;
 }
 
 /* Collapsible controls header */

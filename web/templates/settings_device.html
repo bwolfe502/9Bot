@@ -80,45 +80,51 @@
 </div>
 {% endmacro %}
 
-    <!-- Quest Behavior -->
+    <!-- Auto Quest -->
     <div class="card settings-card">
-        <div class="settings-card-header">Quest Behavior</div>
+        <div class="settings-card-header">Auto Quest</div>
         {{ toggle_row('auto_heal', 'Auto Heal') }}
         {{ toggle_row('eg_rally_own', 'Rally Own Evil Guard') }}
         {{ toggle_row('titan_rally_own', 'Rally Own Titans') }}
         {{ toggle_row('tower_quest_enabled', 'Tower Quest', 'Mark tower with target marker first') }}
+
+        <!-- Gathering sub-section -->
+        <div class="settings-section-divider" onclick="toggleCollapse('gather')">
+            <span class="settings-section-divider-label">Gathering</span>
+            <span class="settings-section-chevron" id="chevron-gather">&#9662;</span>
+        </div>
+        <div class="settings-collapse" id="collapse-gather">
+            {{ toggle_row('gather_enabled', 'Gather Gold') }}
+            {{ select_row('gather_mine_level', 'Mine Level', [(4, '4'), (5, '5'), (6, '6')]) }}
+            {{ select_row('gather_max_troops', 'Max Gather Troops', [(1, '1'), (2, '2'), (3, '3'), (4, '4'), (5, '5')]) }}
+        </div>
+
+        <!-- AP Restoration sub-section -->
+        <div class="settings-section-divider" onclick="toggleCollapse('ap')">
+            <span class="settings-section-divider-label">AP Restoration</span>
+            <span class="settings-section-chevron" id="chevron-ap">&#9662;</span>
+        </div>
+        <div class="settings-collapse" id="collapse-ap">
+            {{ toggle_row('auto_restore_ap', 'Auto Restore AP') }}
+            {{ toggle_row('ap_use_free', 'Use Free Restores') }}
+            {{ toggle_row('ap_use_potions', 'Use Potions') }}
+            {{ toggle_row('ap_allow_large_potions', 'Allow Large Potions') }}
+            {{ toggle_row('ap_use_gems', 'Use Gems') }}
+            {{ number_row('ap_gem_limit', 'Gem Limit', 0, 3500) }}
+        </div>
     </div>
 
-    <!-- Gathering -->
+    <!-- Auto Occupy -->
     <div class="card settings-card">
-        <div class="settings-card-header">Gathering</div>
-        {{ toggle_row('gather_enabled', 'Gather Gold') }}
-        {{ select_row('gather_mine_level', 'Mine Level', [(4, '4'), (5, '5'), (6, '6')]) }}
-        {{ select_row('gather_max_troops', 'Max Gather Troops', [(1, '1'), (2, '2'), (3, '3'), (4, '4'), (5, '5')]) }}
-    </div>
-
-    <!-- AP Restoration -->
-    <div class="card settings-card">
-        <div class="settings-card-header">AP Restoration</div>
-        {{ toggle_row('auto_restore_ap', 'Auto Restore AP') }}
-        {{ toggle_row('ap_use_free', 'Use Free Restores') }}
-        {{ toggle_row('ap_use_potions', 'Use Potions') }}
-        {{ toggle_row('ap_allow_large_potions', 'Allow Large Potions') }}
-        {{ toggle_row('ap_use_gems', 'Use Gems') }}
-        {{ number_row('ap_gem_limit', 'Gem Limit', 0, 3500) }}
-    </div>
-
-    <!-- Troops & Timing -->
-    <div class="card settings-card">
-        <div class="settings-card-header">Troops & Timing</div>
-        {{ number_row('min_troops', 'Min Troops', 0, 5) }}
-        {{ number_row('mithril_interval', 'Mithril Interval', 1, unit='min') }}
-    </div>
-
-    <!-- Team -->
-    <div class="card settings-card">
-        <div class="settings-card-header">Team</div>
+        <div class="settings-card-header">Auto Occupy</div>
         {{ select_row('my_team', 'My Team', [('yellow', 'Yellow'), ('red', 'Red'), ('blue', 'Blue'), ('green', 'Green')]) }}
+        {{ number_row('min_troops', 'Min Troops', 0, 5) }}
+    </div>
+
+    <!-- Timing -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Timing</div>
+        {{ number_row('mithril_interval', 'Mithril', 1, unit='min') }}
     </div>
 
     <!-- Shared User Permissions (owner only) -->
@@ -288,6 +294,15 @@ function togglePermissions(enabled) {
     detail.style.display = enabled ? '' : 'none';
     var inputs = detail.querySelectorAll('.perm-item input');
     inputs.forEach(function(el) { el.disabled = !enabled; });
+}
+
+// Collapsible sections
+function toggleCollapse(sectionId) {
+    var el = document.getElementById('collapse-' + sectionId);
+    var chevron = document.getElementById('chevron-' + sectionId);
+    if (!el) return;
+    el.classList.toggle('collapsed');
+    if (chevron) chevron.classList.toggle('collapsed');
 }
 </script>
 {% endblock %}
