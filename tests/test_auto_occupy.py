@@ -229,26 +229,41 @@ class TestDoDepart:
         assert result is True
 
     @patch("territory.save_failure_screenshot")
+    @patch("territory.find_image", return_value=(400, 900))
+    @patch("territory.load_screenshot", return_value=MagicMock())
     @patch("territory.wait_for_image_and_tap", return_value=False)
-    @patch("territory.tap_image", return_value=True)
+    @patch("territory.tap_image")
     @patch("territory.time.sleep")
     @patch("territory.heal_all")
     def test_depart_anyway_fallback(self, mock_heal, mock_sleep, mock_tap,
-                                     mock_wait, mock_save, mock_device):
-        """depart.png fails, depart_anyway.png found → returns True."""
+                                     mock_wait, mock_load, mock_find,
+                                     mock_save, mock_device):
+        """depart.png fails, depart_anyway.png found → taps it (auto_heal off)."""
         config.AUTO_HEAL_ENABLED = False
-        # wait_for_image_and_tap: first 2 calls fail (depart), third succeeds (depart_anyway)
-        call_count = [0]
-        def wait_side(name, dev, timeout=5):
-            call_count[0] += 1
-            if "depart_anyway" in name:
-                return True
-            return False
-        mock_wait.side_effect = wait_side
+        # tap_image: True for attack_button, True for depart_anyway
+        mock_tap.return_value = True
 
         log = MagicMock()
         result = _do_depart(mock_device, log, "attack")
         assert result is True
+
+    @patch("territory.save_failure_screenshot")
+    @patch("territory.find_image", return_value=(400, 900))
+    @patch("territory.load_screenshot", return_value=MagicMock())
+    @patch("territory.wait_for_image_and_tap", return_value=False)
+    @patch("territory.tap_image", return_value=True)
+    @patch("territory.time.sleep")
+    @patch("territory.heal_all")
+    def test_depart_anyway_with_heal(self, mock_heal, mock_sleep, mock_tap,
+                                      mock_wait, mock_load, mock_find,
+                                      mock_save, mock_device):
+        """depart.png fails, depart_anyway found, auto_heal on → heals and returns False."""
+        config.AUTO_HEAL_ENABLED = True
+
+        log = MagicMock()
+        result = _do_depart(mock_device, log, "attack")
+        assert result is False
+        mock_heal.assert_called_once()
 
     @patch("territory.save_failure_screenshot")
     @patch("territory.wait_for_image_and_tap", return_value=False)

@@ -412,7 +412,7 @@ def rally_eg(device, stop_check=None):
                            2, "eg_depart_retry_wait")
         # Check for Depart Anyway (low health troops)
         da_screen = load_screenshot(device)
-        if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.75) is not None:
+        if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.65) is not None:
             log.warning("P%d: low health troops — 'Depart Anyway' visible", priest_num)
             if config.get_device_config(device, "auto_heal"):
                 log.info("P%d: healing troops before retry", priest_num)

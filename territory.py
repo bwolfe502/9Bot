@@ -661,17 +661,17 @@ def _do_depart(device, log, action_type):
         return True
 
     # Depart Anyway fallback (low health troops)
-    if config.get_device_config(device, "auto_heal"):
-        log.info("Depart not found — healing first, then retrying")
-        heal_all(device)
-        time.sleep(1)
-        if wait_for_image_and_tap("depart.png", device, timeout=3):
-            log.info("Depart tapped after heal")
-            return True
-
-    if wait_for_image_and_tap("depart_anyway.png", device, timeout=3):
-        log.warning("Used Depart Anyway fallback")
-        return True
+    s = load_screenshot(device)
+    if s is not None and find_image(s, "depart_anyway.png", threshold=0.65) is not None:
+        log.warning("Low health troops — 'Depart Anyway' visible")
+        if config.get_device_config(device, "auto_heal"):
+            log.info("Healing troops before retry — returning False for cycle retry")
+            heal_all(device)
+            return False  # caller will retry the full cycle from MAP
+        else:
+            log.info("Auto heal off — tapping Depart Anyway")
+            if tap_image("depart_anyway.png", device, threshold=0.65):
+                return True
 
     log.warning("Depart failed — neither depart.png nor depart_anyway.png found")
     save_failure_screenshot(device, "occupy_depart_fail")
