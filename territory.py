@@ -679,7 +679,7 @@ def _do_depart(device, log, action_type):
 
 
 @timed_action("auto_occupy")
-def auto_occupy_loop(device, stop_check):
+def auto_occupy_loop(device, stop_check, skip_troop_gate=False):
     """Auto occupy loop — per-device, cooperative stop via stop_check callback.
 
     Cycle:
@@ -721,9 +721,12 @@ def auto_occupy_loop(device, stop_check):
             if config.get_device_config(device, "auto_heal"):
                 heal_all(device)
 
-            if not all_troops_home(device):
+            avail = troops_avail(device)
+            total = config.DEVICE_TOTAL_TROOPS.get(device, 5)
+            log.info("Troops: %d/%d home", avail, total)
+
+            if not skip_troop_gate and not all_troops_home(device):
                 config.set_device_status(device, "Waiting for Troops...")
-                log.debug("Troops not home, waiting 10s...")
                 if _interruptible_sleep(10, stop_check):
                     break
                 continue
@@ -842,30 +845,69 @@ def auto_occupy_loop(device, stop_check):
             if stop_check():
                 break
 
-            # --- Step 5: Depart ---
-            config.set_device_status(device, "Deploying...")
-            troops = troops_avail(device)
+            # --- Step 5: Multi-attack loop then reinforce ---
             min_troops = config.get_device_config(device, "min_troops")
+            attack_count = 0
 
-            if troops <= min_troops:
-                log.warning("Not enough troops (have %d, need >%d) — closing menu",
-                            troops, min_troops)
-                adb_keyevent(device, 4)  # BACK to close menu
-                time.sleep(1)
-                if _interruptible_sleep(10, stop_check):
+            # Attack loop: keep attacking until tower flips to reinforce
+            while actual_action == "attack" and not stop_check():
+                troops = troops_avail(device)
+                if troops <= min_troops:
+                    log.warning("Not enough troops to attack (have %d, need >%d) — stopping attacks",
+                                troops, min_troops)
+                    adb_keyevent(device, 4)  # BACK to close menu
+                    time.sleep(1)
                     break
-                continue
 
-            if not _do_depart(device, log, actual_action):
-                log.warning("Depart failed — skipping cycle")
-                adb_keyevent(device, 4)  # Try to close any open menu
-                time.sleep(1)
-                if _interruptible_sleep(5, stop_check):
+                attack_count += 1
+                config.set_device_status(
+                    device,
+                    f"Attacking Tower ({attack_count})..."
+                )
+
+                if not _do_depart(device, log, "attack"):
+                    log.warning("Attack depart failed — stopping attacks")
+                    adb_keyevent(device, 4)
+                    time.sleep(1)
                     break
-                continue
 
-            log.info("Cycle complete — deployed to (%d, %d) via %s",
-                     target_row, target_col, actual_action)
+                log.info("Attack %d deployed to (%d, %d)",
+                         attack_count, target_row, target_col)
+                time.sleep(1)
+
+                if stop_check():
+                    break
+
+                # Re-tap tower to check if it flipped to reinforce
+                menu_type = _tap_tower_and_detect_menu(device, log, timeout=8)
+                if menu_type is None:
+                    log.info("Tower menu didn't reopen after attack %d — done", attack_count)
+                    break
+                if menu_type == "reinforce":
+                    log.info("Tower flipped to reinforce after %d attack(s)", attack_count)
+                    actual_action = "reinforce"
+                    break
+                # Still "attack" — loop continues
+
+            if stop_check():
+                break
+
+            # Reinforce: capture the tower (spend even the last troop)
+            if actual_action == "reinforce":
+                troops = troops_avail(device)
+                if troops <= 0:
+                    log.warning("No troops left to reinforce — skipping")
+                    adb_keyevent(device, 4)
+                    time.sleep(1)
+                else:
+                    config.set_device_status(device, "Reinforcing Tower...")
+                    if _do_depart(device, log, "reinforce"):
+                        log.info("Cycle complete — reinforced (%d, %d) after %d attack(s)",
+                                 target_row, target_col, attack_count)
+                    else:
+                        log.warning("Reinforce depart failed")
+                        adb_keyevent(device, 4)
+                        time.sleep(1)
 
             # --- Wait before next cycle ---
             config.set_device_status(device, "Waiting for Troops...")
