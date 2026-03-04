@@ -380,6 +380,54 @@ def open_territory_manager(device):
 # TERRITORY ATTACK SYSTEM
 # ============================================================
 
+def _build_target_lists(grid, image, device, my_team, enemy_teams, blocked):
+    """Build prioritized target lists from a classified grid.
+
+    Args:
+        grid: dict mapping (row, col) → team string or "throne"/"blocked"/None
+        image: screenshot (np.ndarray) used for flag detection on enemy squares
+        device: ADB device ID (for flag detection logging)
+        my_team: own team color string
+        enemy_teams: list/set of enemy team color strings
+        blocked: set of (row, col) squares that are pass-blocked
+
+    Returns:
+        (unflagged_enemies, flagged_enemies, friendly_reinforce) — each a list of (row, col)
+    """
+    unflagged_enemies = []
+    flagged_enemies = []
+    friendly_reinforce = []
+
+    for row in range(GRID_HEIGHT):
+        for col in range(GRID_WIDTH):
+            if (row, col) in THRONE_SQUARES:
+                continue
+            if (row, col) in config.MANUAL_IGNORE_SQUARES:
+                continue
+
+            team = grid.get((row, col))
+
+            if team in enemy_teams:
+                adj = False
+                for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
+                    if grid.get((nr, nc)) == my_team:
+                        adj = True
+                        break
+                if adj:
+                    if _has_flag(image, row, col):
+                        flagged_enemies.append((row, col))
+                    else:
+                        unflagged_enemies.append((row, col))
+
+            elif team == my_team:
+                for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
+                    if grid.get((nr, nc)) in enemy_teams:
+                        friendly_reinforce.append((row, col))
+                        break
+
+    return unflagged_enemies, flagged_enemies, friendly_reinforce
+
+
 def scan_targets(device):
     """Scan the territory grid and return prioritized target lists.
 
@@ -400,94 +448,76 @@ def scan_targets(device):
 
     my_team = config.get_device_config(device, "my_team")
     enemy_teams = config.get_device_enemy_teams(device)
+    blocked = config.PASS_BLOCKED_SQUARES
     log.debug("Scanning grid — my_team=%s, enemies=%s", my_team, enemy_teams)
 
-    # --- First pass: classify every square ---
-    grid = {}
-    blocked = config.PASS_BLOCKED_SQUARES
-    zone_expected = config.ZONE_EXPECTED_TEAMS
-    zone_overrides = 0
-    for row in range(GRID_HEIGHT):
-        for col in range(GRID_WIDTH):
-            if (row, col) in THRONE_SQUARES:
-                grid[(row, col)] = "throne"
+    # --- Protocol fast path: skip 576-square vision scan when fresh data available ---
+    try:
+        import startup
+        proto_grid = startup.get_protocol_territory_grid(device)
+    except Exception:
+        proto_grid = None
+
+    if proto_grid is not None:
+        log.info("scan_targets: using protocol grid (%d owned squares)", len(proto_grid))
+        # Fill in throne and blocked squares so _build_target_lists can skip them
+        grid = dict(proto_grid)
+        for sq in THRONE_SQUARES:
+            grid[sq] = "throne"
+        for sq in blocked:
+            grid.setdefault(sq, "blocked")
+        unflagged_enemies, flagged_enemies, friendly_reinforce = _build_target_lists(
+            grid, image, device, my_team, enemy_teams, blocked)
+    else:
+        # --- Vision path: classify every square from screenshot ---
+        zone_expected = config.ZONE_EXPECTED_TEAMS
+        zone_overrides = 0
+        grid = {}
+        for row in range(GRID_HEIGHT):
+            for col in range(GRID_WIDTH):
+                if (row, col) in THRONE_SQUARES:
+                    grid[(row, col)] = "throne"
+                    continue
+                if (row, col) in blocked:
+                    grid[(row, col)] = "blocked"
+                    continue
+                border_color = _get_border_color(image, row, col)
+                candidates = zone_expected.get((row, col))
+                team = _classify_square_team(border_color, device=device,
+                                             candidate_teams=candidates)
+                if candidates:
+                    team_raw = _classify_square_team(border_color, device=device)
+                    if team_raw != team:
+                        zone_overrides += 1
+                grid[(row, col)] = team
+        if zone_overrides:
+            log.info("Zone hints overrode %d square classifications", zone_overrides)
+
+        # --- Neighbor voting: fix isolated misclassified squares ---
+        all_teams_set = set(ALL_TEAMS)
+        fixes = 0
+        for (row, col), team in list(grid.items()):
+            if team not in all_teams_set:
                 continue
-            if (row, col) in blocked:
-                grid[(row, col)] = "blocked"
+            neighbors = [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]
+            neighbor_teams = [grid.get((nr, nc)) for nr, nc in neighbors
+                             if grid.get((nr, nc)) in all_teams_set]
+            if not neighbor_teams:
                 continue
-            border_color = _get_border_color(image, row, col)
-            candidates = zone_expected.get((row, col))
-            team = _classify_square_team(border_color, device=device,
-                                         candidate_teams=candidates)
-            # Track when zone filtering changed the result
-            if candidates:
-                team_raw = _classify_square_team(border_color, device=device)
-                if team_raw != team:
-                    zone_overrides += 1
-            grid[(row, col)] = team
-    if zone_overrides:
-        log.info("Zone hints overrode %d square classifications", zone_overrides)
+            if team not in neighbor_teams:
+                counts = Counter(neighbor_teams)
+                majority_team, majority_count = counts.most_common(1)[0]
+                if majority_count >= 2:
+                    grid[(row, col)] = majority_team
+                    fixes += 1
+        if fixes:
+            log.debug("Neighbor voting fixed %d squares", fixes)
 
-    # --- Second pass: neighbor voting for isolated squares ---
-    # If a square's team has zero neighbors of the same team but the majority
-    # of neighbors are a different team, reclassify to the majority team.
-    all_teams_set = set(ALL_TEAMS)
-    fixes = 0
-    for (row, col), team in list(grid.items()):
-        if team not in all_teams_set:
-            continue
-        neighbors = [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]
-        neighbor_teams = [grid.get((nr, nc)) for nr, nc in neighbors
-                         if grid.get((nr, nc)) in all_teams_set]
-        if not neighbor_teams:
-            continue
-        if team not in neighbor_teams:
-            # This square's team has no adjacent match — likely misclassified
-            counts = Counter(neighbor_teams)
-            majority_team, majority_count = counts.most_common(1)[0]
-            if majority_count >= 2:
-                grid[(row, col)] = majority_team
-                fixes += 1
-    if fixes:
-        log.debug("Neighbor voting fixed %d squares", fixes)
-
-    # --- Build target lists from corrected grid ---
-    unflagged_enemies = []
-    flagged_enemies = []
-    friendly_reinforce = []
-
-    for row in range(GRID_HEIGHT):
-        for col in range(GRID_WIDTH):
-            if (row, col) in THRONE_SQUARES:
-                continue
-            if (row, col) in config.MANUAL_IGNORE_SQUARES:
-                continue
-
-            team = grid[(row, col)]
-
-            if team in enemy_teams:
-                # Check adjacency using corrected grid
-                adj = False
-                for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
-                    if grid.get((nr, nc)) == my_team:
-                        adj = True
-                        break
-                if adj:
-                    if _has_flag(image, row, col):
-                        flagged_enemies.append((row, col))
-                    else:
-                        unflagged_enemies.append((row, col))
-
-            elif team == my_team:
-                # Check if adjacent to enemy territory (frontline — worth reinforcing)
-                for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
-                    if grid.get((nr, nc)) in enemy_teams:
-                        friendly_reinforce.append((row, col))
-                        break
+        unflagged_enemies, flagged_enemies, friendly_reinforce = _build_target_lists(
+            grid, image, device, my_team, enemy_teams, blocked)
 
     # Manual attack overrides replace auto-detected targets entirely
     if config.MANUAL_ATTACK_SQUARES:
-        # Still filter out pass-blocked squares from manual overrides
         unflagged_enemies = [s for s in config.MANUAL_ATTACK_SQUARES
                              if s not in blocked]
         flagged_enemies = []

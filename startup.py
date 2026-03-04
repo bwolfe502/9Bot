@@ -386,6 +386,35 @@ def get_protocol_ally_cities(device=None):
         return None
 
 
+_FACTION_TO_TEAM = {1: "red", 2: "blue", 3: "green", 4: "yellow"}
+
+
+def get_protocol_territory_grid(device=None):
+    """Return territory grid as {(row, col): team_str} from protocol, or None.
+
+    Returns None when protocol is off, data not yet received, or data is stale.
+    team_str values: "red", "blue", "green", "yellow".
+    Unowned squares are absent from the dict.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("territory", max_age_s=30.0):
+            return None
+        raw_grid = state.territory_grid
+        if not raw_grid:
+            return None
+        result = {}
+        for (row, col), faction_id in raw_grid.items():
+            team = _FACTION_TO_TEAM.get(faction_id)
+            if team:
+                result[(row, col)] = team
+        return result
+    except Exception:
+        return None
+
+
 def get_protocol_troop_snapshot(device):
     """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
     state = _get_device_state(device)
