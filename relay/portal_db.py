@@ -220,6 +220,16 @@ def list_pending_users() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def set_user_admin(user_id: int, is_admin: bool) -> bool:
+    """Toggle admin status for a user.  Returns True if updated."""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE users SET is_admin = ? WHERE id = ?", (int(is_admin), user_id)
+    )
+    c.commit()
+    return cur.rowcount > 0
+
+
 def delete_user(user_id: int) -> bool:
     c = _conn()
     cur = c.execute("DELETE FROM users WHERE id = ?", (user_id,))

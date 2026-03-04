@@ -72,13 +72,14 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_put("/portal/api/bots/{bot_name}", api_update_bot)
     app.router.add_get("/portal/api/grants/{bot_name}", api_grants_for_bot)
     app.router.add_post("/portal/api/grants", api_create_grant)
-    app.router.add_delete("/portal/api/grants/{grant_id}", api_delete_grant)
+    app.router.add_post("/portal/api/grants/{grant_id}/revoke", api_delete_grant)
     app.router.add_post("/portal/api/invite-codes", api_create_invite)
     app.router.add_get("/portal/api/invite-codes", api_list_invites)
     app.router.add_get("/portal/api/admin/users", api_admin_users)
     app.router.add_post("/portal/api/admin/users/{user_id}/delete", api_admin_delete_user)
     app.router.add_post("/portal/api/admin/users/{user_id}/approve", api_admin_approve_user)
     app.router.add_post("/portal/api/admin/users/{user_id}/reject", api_admin_reject_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/toggle-admin", api_admin_toggle_admin)
     app.router.add_put("/portal/api/admin/bots/{bot_name}/owner", api_admin_set_owner)
     app.router.add_post("/portal/api/admin/clear-invites", api_admin_clear_invites)
     app.router.add_post("/portal/api/admin/reset-password", api_admin_reset_password)
@@ -941,8 +942,8 @@ async def page_bot_detail(request: web.Request) -> web.Response:
 
     async function revokeGrant(id) {{
         if (!confirm("Revoke this access?")) return;
-        const resp = await fetch("/portal/api/grants/" + id, {{
-            method: "DELETE",
+        const resp = await fetch("/portal/api/grants/" + id + "/revoke", {{
+            method: "POST",
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{csrf_token: csrf}})
         }});
@@ -1015,6 +1016,17 @@ async def page_admin(request: web.Request) -> web.Response:
         admin_badge = '<span class="badge badge-admin">admin</span> ' if u["is_admin"] else ""
         last = u.get("last_login") or "never"
         email = _html_escape(u.get("email") or "—")
+        admin_btn = ""
+        if not u["is_admin"]:
+            admin_btn = (
+                f'<button class="btn btn-outline btn-sm" style="margin-right:4px" '
+                f'onclick="toggleAdmin({u["id"]},\'{_html_escape(u["username"])}\')">Make Admin</button>'
+            )
+        elif u["id"] != user["user_id"]:
+            admin_btn = (
+                f'<button class="btn btn-outline btn-sm" style="margin-right:4px" '
+                f'onclick="toggleAdmin({u["id"]},\'{_html_escape(u["username"])}\')">Revoke Admin</button>'
+            )
         user_rows += (
             f'<tr>'
             f'<td>{u["id"]}</td>'
@@ -1023,6 +1035,7 @@ async def page_admin(request: web.Request) -> web.Response:
             f'<td class="muted">{u["created_at"]}</td>'
             f'<td class="muted">{last}</td>'
             f'<td style="white-space:nowrap">'
+            f'{admin_btn}'
             f'<button class="btn btn-outline btn-sm" style="margin-right:4px" '
             f'onclick="resetPassword({u["id"]},\'{_html_escape(u["username"])}\')">Reset PW</button>'
             f'<button class="btn btn-danger btn-sm" '
@@ -1240,6 +1253,17 @@ async def page_admin(request: web.Request) -> web.Response:
         }});
         if (resp.ok) location.reload();
         else alert("Failed to clear invites");
+    }}
+
+    async function toggleAdmin(id, name) {{
+        if (!confirm("Toggle admin status for " + name + "?")) return;
+        const resp = await fetch("/portal/api/admin/users/" + id + "/toggle-admin", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to toggle admin");
     }}
 
     async function resetPassword(id, name) {{
@@ -1956,6 +1980,23 @@ async def api_admin_reject_user(request: web.Request) -> web.Response:
     if not rejected:
         return web.json_response({"error": "User not found or already approved"}, status=404)
     return web.json_response({"status": "ok"})
+
+
+async def api_admin_toggle_admin(request: web.Request) -> web.Response:
+    admin = await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    if user_id == admin["user_id"]:
+        return web.json_response({"error": "Cannot change your own admin status"}, status=400)
+
+    user = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    new_admin = not user["is_admin"]
+    await asyncio.to_thread(db.set_user_admin, user_id, new_admin)
+    return web.json_response({"status": "ok", "is_admin": new_admin})
 
 
 async def api_admin_clear_invites(request: web.Request) -> web.Response:
