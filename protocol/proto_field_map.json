@@ -53993,7 +53993,8 @@
       "3": {
         "name": "field_3",
         "proto_type": "message",
-        "wire_type": "length_delimited"
+        "wire_type": "length_delimited",
+        "csharp_type": "OwnerInfo"
       },
       "4": {
         "name": "field_4",

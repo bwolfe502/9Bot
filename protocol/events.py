@@ -42,6 +42,7 @@ __all__ = [
     "EVT_BUFF_CHANGED",
     "EVT_TROOPS_CHANGED",
     "EVT_BROADCAST",
+    "EVT_ALLY_CITY_SPOTTED",
     # Classes
     "EventBus",
     "MessageRouter",
@@ -76,6 +77,7 @@ EVT_CITY_BURNING: str = "game:city_burning"
 EVT_BUFF_CHANGED: str = "game:buff_changed"
 EVT_TROOPS_CHANGED: str = "game:troops_changed"
 EVT_BROADCAST: str = "game:broadcast"
+EVT_ALLY_CITY_SPOTTED: str = "game:ally_city_spotted"
 
 
 # ------------------------------------------------------------------ #

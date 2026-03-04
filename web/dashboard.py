@@ -97,9 +97,10 @@ TASK_FUNCTIONS = {
 # Home Server: Events, Farming, Combat
 AUTO_MODES_BL = [
     {"group": "Combat", "modes": [
-        {"key": "auto_pass",      "label": "Pass Battle"},
-        {"key": "auto_occupy",    "label": "Occupy Towers"},
-        {"key": "auto_reinforce", "label": "Reinforce Throne"},
+        {"key": "auto_pass",           "label": "Pass Battle"},
+        {"key": "auto_occupy",         "label": "Occupy Towers"},
+        {"key": "auto_reinforce",      "label": "Reinforce Throne"},
+        {"key": "auto_reinforce_ally", "label": "Reinforce Ally"},
     ]},
     {"group": "Farming", "modes": [
         {"key": "auto_quest",     "label": "Auto Quest"},
@@ -117,7 +118,8 @@ AUTO_MODES_HS = [
         {"key": "auto_mithril",   "label": "Mine Mithril"},
     ]},
     {"group": "Combat", "modes": [
-        {"key": "auto_reinforce", "label": "Reinforce Throne"},
+        {"key": "auto_reinforce",      "label": "Reinforce Throne"},
+        {"key": "auto_reinforce_ally", "label": "Reinforce Ally"},
     ]},
 ]
 
@@ -135,6 +137,7 @@ ONESHOT_DEBUG = ["Check Screen", "Check Troops", "Diagnose Grid",
 
 from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
                      run_auto_pass, run_auto_occupy, run_auto_reinforce,
+                     run_auto_reinforce_ally,
                      run_auto_mithril, run_auto_gold, run_auto_esb,
                      run_debug_occupy,
                      run_once, run_repeat,
@@ -152,8 +155,9 @@ AUTO_RUNNERS = {
     "auto_groot":     lambda dev, se, s: run_auto_groot(dev, se, s.get("groot_interval", 30), s.get("variation", 0)),
     "auto_pass":      lambda dev, se, s: run_auto_pass(dev, se, s.get("pass_mode", "Rally Joiner"), s.get("pass_interval", 30), s.get("variation", 0)),
     "auto_occupy":    lambda dev, se, s: run_auto_occupy(dev, se),
-    "auto_reinforce": lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
-    "auto_mithril":   lambda dev, se, s: run_auto_mithril(dev, se),
+    "auto_reinforce":      lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
+    "auto_reinforce_ally": lambda dev, se, s: run_auto_reinforce_ally(dev, se),
+    "auto_mithril":        lambda dev, se, s: run_auto_mithril(dev, se),
     "auto_gold":      lambda dev, se, s: run_auto_gold(dev, se),
     "auto_esb":       lambda dev, se, s: run_auto_esb(dev, se, 5, s.get("variation", 0)),
     "debug_occupy":   lambda dev, se, s: run_debug_occupy(dev, se),
@@ -350,6 +354,15 @@ def create_app():
     app.secret_key = os.urandom(24)
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # no static file caching during dev
     app.config["TEMPLATES_AUTO_RELOAD"] = True
+
+    @app.after_request
+    def _no_cache(response):
+        """Prevent browser from caching dynamic HTML pages."""
+        if "text/html" in response.content_type:
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
 
     # --- Page routes ---
 
