@@ -82,14 +82,20 @@ h1 { font-size: 1.6em; margin-bottom: 0.3em; }
 
 
 def _landing_page() -> str:
-    return (
-        f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>9Bot Relay</title><style>{_STYLE}</style>"
-        f"</head><body><h1>9Bot Relay</h1>"
-        f'<p class="muted">Use your 9Bot dashboard to find your remote URL.</p>'
-        f"</body></html>"
-    )
+    site_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site")
+    index = os.path.join(site_dir, "index.html")
+    try:
+        with open(index, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return (
+            f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>9Bot</title><style>{_STYLE}</style>"
+            f"</head><body><h1>9Bot</h1>"
+            f'<p class="muted">Landing page not found.</p>'
+            f"</body></html>"
+        )
 
 
 def _offline_page(bot_name: str) -> str:
@@ -305,17 +311,32 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
     # Falls through to legacy token auth (backward compat) if no portal session
     portal_access = None
     portal_user = None
+    # Extract device_hash from URL if present (e.g. /bot/d/<hash>/...)
+    _device_hash = None
+    _sub_parts = sub_path.strip("/").split("/")
+    if len(_sub_parts) >= 2 and _sub_parts[0] == "d":
+        _device_hash = _sub_parts[1]
     try:
         from portal_routes import check_portal_access, _get_user
-        result = await check_portal_access(request, bot_name)
+        result = await check_portal_access(request, bot_name, _device_hash)
         if result:
             portal_access, portal_user = result
 
         # Subscription gating: if user is logged in but has no active sub,
         # redirect to pricing.  Admins and legacy token users bypass.
+        # Shared/community devices also bypass subscription check.
         if portal_access:
+            _is_shared_device = False
+            if _device_hash:
+                try:
+                    import portal_db
+                    _is_shared_device = await asyncio.to_thread(
+                        portal_db.is_device_shared, bot_name, _device_hash,
+                    )
+                except Exception:
+                    pass
             user = await _get_user(request)
-            if user and not user["is_admin"]:
+            if user and not user["is_admin"] and not _is_shared_device:
                 try:
                     import stripe_billing
                     if stripe_billing.is_configured():
@@ -330,9 +351,23 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
         pass
 
     # If no portal access and no ?token= param, redirect to portal login
+    # Public devices bypass login entirely
     has_token = "token" in request.query
     if not portal_access and not has_token:
-        raise web.HTTPFound(f"/portal/login?next={path}")
+        _is_public = False
+        if _device_hash:
+            try:
+                import portal_db
+                _is_public = await asyncio.to_thread(
+                    portal_db.is_device_public, bot_name, _device_hash,
+                )
+            except Exception:
+                pass
+        if _is_public:
+            portal_access = "full"
+            portal_user = "public"
+        else:
+            raise web.HTTPFound(f"/portal/login?next={path}")
 
     ws = _bots.get(bot_name)
     if ws is None or ws.closed:
@@ -415,6 +450,18 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
             html = html.replace('location.href="/', f'location.href="{p}/')
             html = html.replace("window.location='/", f"window.location='{p}/")
             html = html.replace('window.location="/', f'window.location="{p}/')
+            # Inject "Back to Portal" button for portal-authenticated users
+            if portal_access and "</body>" in html:
+                portal_btn = (
+                    '<a href="/portal/" style="position:fixed;top:10px;right:10px;'
+                    'z-index:9999;padding:6px 14px;background:#14142a;color:#64d8ff;'
+                    'border:1px solid rgba(100,216,255,0.25);border-radius:8px;'
+                    'font-size:12px;font-weight:600;text-decoration:none;'
+                    'font-family:-apple-system,system-ui,sans-serif;'
+                    'box-shadow:0 2px 8px rgba(0,0,0,0.3)"'
+                    '>&larr; Portal</a>'
+                )
+                html = html.replace("</body>", f"{portal_btn}</body>", 1)
             resp_body = html.encode("utf-8")
         except Exception:
             pass  # if decode fails, send original body

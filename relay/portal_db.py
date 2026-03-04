@@ -42,9 +42,18 @@ CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     username      TEXT    NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT    NOT NULL,
+    email         TEXT,
     is_admin      INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
     last_login    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    token      TEXT    PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TEXT    NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS bots (
@@ -110,6 +119,23 @@ def init_db() -> None:
     cols = {row[1] for row in c.execute("PRAGMA table_info(users)").fetchall()}
     if "stripe_customer_id" not in cols:
         c.execute("ALTER TABLE users ADD COLUMN stripe_customer_id TEXT")
+    if "email" not in cols:
+        c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+    # Migration: create password_reset_tokens if missing (schema above handles new DBs)
+    c.execute(
+        "CREATE TABLE IF NOT EXISTS password_reset_tokens ("
+        "token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+        "expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0, "
+        "created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+    )
+    # Migration: add label + is_shared to devices if missing
+    dev_cols = {row[1] for row in c.execute("PRAGMA table_info(devices)").fetchall()}
+    if "label" not in dev_cols:
+        c.execute("ALTER TABLE devices ADD COLUMN label TEXT")
+    if "is_shared" not in dev_cols:
+        c.execute("ALTER TABLE devices ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0")
+    if "is_public" not in dev_cols:
+        c.execute("ALTER TABLE devices ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0")
     c.commit()
 
 
@@ -117,12 +143,15 @@ def init_db() -> None:
 # Users
 # ------------------------------------------------------------------
 
-def create_user(username: str, password_hash: str, is_admin: bool = False) -> int:
+def create_user(
+    username: str, password_hash: str, is_admin: bool = False,
+    email: str | None = None,
+) -> int:
     """Insert a new user.  Returns the user ID."""
     c = _conn()
     cur = c.execute(
-        "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-        (username, password_hash, int(is_admin)),
+        "INSERT INTO users (username, password_hash, is_admin, email) VALUES (?, ?, ?, ?)",
+        (username, password_hash, int(is_admin), email or None),
     )
     c.commit()
     return cur.lastrowid
@@ -155,7 +184,7 @@ def update_user_password(user_id: int, password_hash: str) -> None:
 
 def list_users() -> list[dict]:
     rows = _conn().execute(
-        "SELECT id, username, is_admin, created_at, last_login FROM users ORDER BY id"
+        "SELECT id, username, email, is_admin, created_at, last_login FROM users ORDER BY id"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -163,6 +192,72 @@ def list_users() -> list[dict]:
 def delete_user(user_id: int) -> bool:
     c = _conn()
     cur = c.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    c.commit()
+    return cur.rowcount > 0
+
+
+def update_user_email(user_id: int, email: str | None) -> None:
+    c = _conn()
+    c.execute("UPDATE users SET email = ? WHERE id = ?", (email or None, user_id))
+    c.commit()
+
+
+def get_user_by_email(email: str) -> dict | None:
+    """Look up user by email (case-insensitive).  Returns dict or None."""
+    row = _conn().execute(
+        "SELECT * FROM users WHERE email = ? COLLATE NOCASE", (email,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+# ------------------------------------------------------------------
+# Password Reset Tokens
+# ------------------------------------------------------------------
+
+RESET_TOKEN_LIFETIME_HOURS = 24
+
+
+def create_password_reset_token(user_id: int) -> str:
+    """Create a password reset token valid for RESET_TOKEN_LIFETIME_HOURS.  Returns token."""
+    token = secrets.token_urlsafe(32)
+    expires = (
+        datetime.now(timezone.utc) + timedelta(hours=RESET_TOKEN_LIFETIME_HOURS)
+    ).isoformat()
+    c = _conn()
+    c.execute(
+        "INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)",
+        (token, user_id, expires),
+    )
+    c.commit()
+    return token
+
+
+def validate_password_reset_token(token: str) -> dict | None:
+    """Return user dict if token is valid and unused, else None."""
+    c = _conn()
+    row = c.execute(
+        "SELECT t.user_id, t.expires_at, t.used FROM password_reset_tokens t "
+        "WHERE t.token = ?",
+        (token,),
+    ).fetchone()
+    if not row or row["used"]:
+        return None
+    expires = datetime.fromisoformat(row["expires_at"])
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < datetime.now(timezone.utc):
+        return None
+    user = get_user_by_id(row["user_id"])
+    return user
+
+
+def use_password_reset_token(token: str) -> bool:
+    """Mark a reset token as used.  Returns True if updated."""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE password_reset_tokens SET used = 1 WHERE token = ? AND used = 0",
+        (token,),
+    )
     c.commit()
     return cur.rowcount > 0
 
@@ -319,6 +414,117 @@ def delete_stale_devices(bot_name: str, keep_hashes: set[str]) -> int:
     )
     c.commit()
     return cur.rowcount
+
+
+def set_device_label(bot_name: str, device_hash: str, label: str) -> bool:
+    """Set the admin display name for a device.  Returns True if updated."""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE devices SET label = ? WHERE bot_name = ? AND device_hash = ?",
+        (label or None, bot_name, device_hash),
+    )
+    c.commit()
+    return cur.rowcount > 0
+
+
+def set_device_shared(bot_name: str, device_hash: str, is_shared: bool) -> bool:
+    """Toggle the community/shared flag on a device.  Returns True if updated."""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE devices SET is_shared = ? WHERE bot_name = ? AND device_hash = ?",
+        (int(is_shared), bot_name, device_hash),
+    )
+    c.commit()
+    return cur.rowcount > 0
+
+
+def list_shared_devices() -> list[dict]:
+    """Return all devices marked as community/shared, with bot online info."""
+    rows = _conn().execute(
+        "SELECT d.*, b.last_seen FROM devices d "
+        "JOIN bots b ON d.bot_name = b.bot_name "
+        "WHERE d.is_shared = 1 "
+        "ORDER BY d.label, d.device_name, d.device_hash"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_user_devices(user_id: int) -> list[dict]:
+    """Get all devices a user has grants for (via specific or wildcard grants).
+
+    Returns devices with labels and bot info.  Does NOT include shared devices.
+    """
+    c = _conn()
+    # Devices from bots the user owns
+    owned = c.execute(
+        "SELECT d.*, b.last_seen FROM devices d "
+        "JOIN bots b ON d.bot_name = b.bot_name "
+        "WHERE b.owner_id = ? "
+        "ORDER BY d.label, d.device_name",
+        (user_id,),
+    ).fetchall()
+
+    # Devices via specific grants
+    granted_specific = c.execute(
+        "SELECT d.*, b.last_seen, g.access_level FROM devices d "
+        "JOIN bots b ON d.bot_name = b.bot_name "
+        "JOIN grants g ON g.bot_name = d.bot_name AND g.device_hash = d.device_hash "
+        "WHERE g.user_id = ? AND (b.owner_id IS NULL OR b.owner_id != ?) "
+        "ORDER BY d.label, d.device_name",
+        (user_id, user_id),
+    ).fetchall()
+
+    # Devices via wildcard grants (device_hash IS NULL = all devices on that bot)
+    granted_wildcard = c.execute(
+        "SELECT d.*, b.last_seen, g.access_level FROM devices d "
+        "JOIN bots b ON d.bot_name = b.bot_name "
+        "JOIN grants g ON g.bot_name = d.bot_name AND g.device_hash IS NULL "
+        "WHERE g.user_id = ? AND (b.owner_id IS NULL OR b.owner_id != ?) "
+        "ORDER BY d.label, d.device_name",
+        (user_id, user_id),
+    ).fetchall()
+
+    # Merge, dedup by (bot_name, device_hash)
+    seen = set()
+    result = []
+    for row in list(owned) + list(granted_specific) + list(granted_wildcard):
+        d = dict(row)
+        key = (d["bot_name"], d["device_hash"])
+        if key not in seen:
+            seen.add(key)
+            if "access_level" not in d:
+                d["access_level"] = "full"  # owner gets full
+            result.append(d)
+    return result
+
+
+def set_device_public(bot_name: str, device_hash: str, is_public: bool) -> bool:
+    """Toggle the public (no login required) flag on a device."""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE devices SET is_public = ? WHERE bot_name = ? AND device_hash = ?",
+        (int(is_public), bot_name, device_hash),
+    )
+    c.commit()
+    return cur.rowcount > 0
+
+
+def is_device_shared(bot_name: str, device_hash: str) -> bool:
+    """Check if a specific device is marked as community/shared."""
+    row = _conn().execute(
+        "SELECT is_shared FROM devices WHERE bot_name = ? AND device_hash = ?",
+        (bot_name, device_hash),
+    ).fetchone()
+    return bool(row and row["is_shared"])
+
+
+def is_device_public(bot_name: str, device_hash: str) -> bool:
+    """Check if a specific device is marked as public (no login required)."""
+    row = _conn().execute(
+        "SELECT is_public FROM devices WHERE bot_name = ? AND device_hash = ?",
+        (bot_name, device_hash),
+    ).fetchone()
+    return bool(row and row["is_public"])
 
 
 # ------------------------------------------------------------------
@@ -559,6 +765,60 @@ def count_user_device_grants(user_id: int) -> int:
         (user_id,),
     ).fetchone()[0]
     return owned + granted
+
+
+def grant_admin_subscription(
+    user_id: int, plan: str, device_limit: int, duration_days: int | None = None,
+) -> int:
+    """Grant a free admin subscription.  duration_days=None means permanent (2099)."""
+    if duration_days:
+        period_end = (
+            datetime.now(timezone.utc) + timedelta(days=duration_days)
+        ).isoformat()
+    else:
+        period_end = "2099-12-31T23:59:59+00:00"
+    return upsert_subscription(
+        user_id=user_id,
+        stripe_customer_id="admin_grant",
+        stripe_subscription_id=None,
+        plan=plan,
+        status="active",
+        device_limit=device_limit,
+        current_period_end=period_end,
+    )
+
+
+def revoke_admin_subscription(user_id: int) -> bool:
+    """Cancel an admin-granted subscription.  Returns True if updated."""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE subscriptions SET status = 'canceled', updated_at = datetime('now') "
+        "WHERE user_id = ? AND stripe_customer_id = 'admin_grant'",
+        (user_id,),
+    )
+    c.commit()
+    return cur.rowcount > 0
+
+
+def expire_admin_subscriptions() -> int:
+    """Mark expired admin-granted subs as canceled.  Returns count expired."""
+    c = _conn()
+    cur = c.execute(
+        "UPDATE subscriptions SET status = 'canceled', updated_at = datetime('now') "
+        "WHERE stripe_customer_id = 'admin_grant' AND status = 'active' "
+        "AND current_period_end < datetime('now')"
+    )
+    c.commit()
+    return cur.rowcount
+
+
+def list_subscriptions() -> list[dict]:
+    """List all subscriptions with username.  For admin panel."""
+    rows = _conn().execute(
+        "SELECT s.*, u.username FROM subscriptions s "
+        "JOIN users u ON s.user_id = u.id ORDER BY s.user_id"
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ------------------------------------------------------------------

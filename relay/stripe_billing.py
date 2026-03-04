@@ -8,9 +8,7 @@ in async handlers.
 Environment variables:
     STRIPE_API_KEY             — Stripe secret key (sk_test_... or sk_live_...)
     STRIPE_WEBHOOK_SECRET      — Webhook signing secret (whsec_...)
-    STRIPE_PRICE_BASIC         — Price ID for Basic plan
-    STRIPE_PRICE_PRO           — Price ID for Pro plan
-    STRIPE_PRICE_ENTERPRISE    — Price ID for Enterprise plan
+    STRIPE_PRICE_STANDARD      — Price ID for Standard plan ($20/mo)
 """
 
 import logging
@@ -31,23 +29,11 @@ stripe.api_key = os.environ.get("STRIPE_API_KEY", "")
 WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 
 PLANS = {
-    "basic": {
-        "price_id": os.environ.get("STRIPE_PRICE_BASIC", ""),
-        "device_limit": 2,
-        "label": "Basic",
-        "price": 10,
-    },
-    "pro": {
-        "price_id": os.environ.get("STRIPE_PRICE_PRO", ""),
-        "device_limit": 6,
-        "label": "Pro",
-        "price": 25,
-    },
-    "enterprise": {
-        "price_id": os.environ.get("STRIPE_PRICE_ENTERPRISE", ""),
-        "device_limit": 999,
-        "label": "Enterprise",
-        "price": 50,
+    "standard": {
+        "price_id": os.environ.get("STRIPE_PRICE_STANDARD", ""),
+        "device_limit": 1,
+        "label": "Standard",
+        "price": 20,
     },
 }
 
@@ -82,9 +68,6 @@ def create_checkout_session(user_id: int, plan: str, success_url: str, cancel_ur
     customer_kwargs = {}
     if customer_id:
         customer_kwargs["customer"] = customer_id
-    else:
-        customer_kwargs["customer_creation"] = "always"
-        customer_kwargs["customer_email"] = None  # Stripe will ask for email
 
     session = stripe.checkout.Session.create(
         mode="subscription",

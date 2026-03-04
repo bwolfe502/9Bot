@@ -58,9 +58,11 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_get("/portal/", page_dashboard)
     app.router.add_get("/portal/login", page_login)
     app.router.add_get("/portal/register", page_register)
+    app.router.add_get("/portal/community", page_community)
     app.router.add_get("/portal/bot/{bot_name}", page_bot_detail)
     app.router.add_get("/portal/admin", page_admin)
     app.router.add_get("/portal/account", page_account)
+    app.router.add_get("/portal/guide", page_guide)
 
     # API
     app.router.add_post("/portal/api/login", api_login)
@@ -76,7 +78,14 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_get("/portal/api/admin/users", api_admin_users)
     app.router.add_delete("/portal/api/admin/users/{user_id}", api_admin_delete_user)
     app.router.add_put("/portal/api/admin/bots/{bot_name}/owner", api_admin_set_owner)
+    app.router.add_post("/portal/api/admin/reset-password", api_admin_reset_password)
+    app.router.add_post("/portal/api/admin/grant-subscription", api_admin_grant_subscription)
+    app.router.add_post("/portal/api/admin/revoke-subscription", api_admin_revoke_subscription)
     app.router.add_post("/portal/api/account/password", api_change_password)
+    app.router.add_post("/portal/api/account/email", api_change_email)
+    app.router.add_put("/portal/api/devices/{bot_name}/{device_hash}/label", api_set_device_label)
+    app.router.add_put("/portal/api/devices/{bot_name}/{device_hash}/shared", api_set_device_shared)
+    app.router.add_put("/portal/api/devices/{bot_name}/{device_hash}/public", api_set_device_public)
 
     # Billing
     app.router.add_get("/portal/pricing", page_pricing)
@@ -315,6 +324,70 @@ code { font-family: "SF Mono", "Consolas", monospace; font-size: 0.9em; }
     margin-bottom: 4px; font-size: 13px;
 }
 
+/* Device cards (bot detail page) */
+.dev-card {
+    background: #141428; border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.04);
+    padding: 14px 16px; margin-bottom: 8px;
+    transition: border-color 0.15s ease;
+}
+.dev-card:hover { border-color: rgba(100,216,255,0.1); }
+.dev-card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+}
+.dev-card-name { font-weight: 600; font-size: 14px; }
+.dev-card-hash { font-size: 10px; color: #445; font-family: "SF Mono","Consolas",monospace; margin-top: 2px; }
+.dev-card-label {
+    width: 140px; padding: 5px 10px; border-radius: 7px;
+    border: 1px solid rgba(255,255,255,0.08); background: #0e0e1e;
+    color: #e0e0f0; font-size: 12px; outline: none;
+    transition: border-color 0.15s ease;
+}
+.dev-card-label:focus { border-color: rgba(100,216,255,0.35); }
+.dev-card-label::placeholder { color: #334; }
+.dev-card-controls {
+    display: flex; align-items: center; gap: 14px;
+    padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.03);
+}
+
+/* Toggle switch */
+.toggle {
+    display: flex; align-items: center; gap: 7px;
+    cursor: pointer; user-select: none; font-size: 12px;
+    color: #667; transition: color 0.15s;
+}
+.toggle:hover { color: #99a; }
+.toggle input { display: none; }
+.toggle-track {
+    position: relative; width: 32px; height: 18px;
+    background: #222240; border-radius: 9px;
+    border: 1px solid rgba(255,255,255,0.06);
+    transition: all 0.2s ease; flex-shrink: 0;
+}
+.toggle-track::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #445; transition: all 0.2s ease;
+}
+.toggle input:checked + .toggle-track {
+    background: rgba(100,216,255,0.15);
+    border-color: rgba(100,216,255,0.3);
+}
+.toggle input:checked + .toggle-track::after {
+    left: 16px; background: #64d8ff;
+    box-shadow: 0 0 6px rgba(100,216,255,0.5);
+}
+.toggle.toggle-warn input:checked + .toggle-track {
+    background: rgba(239,83,80,0.12);
+    border-color: rgba(239,83,80,0.3);
+}
+.toggle.toggle-warn input:checked + .toggle-track::after {
+    background: #ef5350;
+    box-shadow: 0 0 6px rgba(239,83,80,0.5);
+}
+.toggle-label { letter-spacing: 0.3px; }
+
 /* Grant rows */
 .grant-row {
     display: flex; align-items: center; justify-content: space-between;
@@ -383,7 +456,9 @@ def _page(title: str, body: str, user: dict | None = None, csrf: str = "") -> st
     if user:
         links = [
             '<a href="/portal/">Dashboard</a>',
+            '<a href="/portal/community">Community</a>',
             '<a href="/portal/billing">Billing</a>',
+            '<a href="/portal/guide">Guide</a>',
             '<a href="/portal/account">Account</a>',
         ]
         if user.get("is_admin"):
@@ -470,6 +545,8 @@ async def page_register(request: web.Request) -> web.Response:
     error = request.query.get("error", "")
     error_html = f'<div class="alert alert-error">{_html_escape(error)}</div>' if error else ""
 
+    invite_prefill = _html_escape(request.query.get("invite", ""))
+
     body = f"""
     {error_html}
     <div class="card">
@@ -478,7 +555,14 @@ async def page_register(request: web.Request) -> web.Response:
             <div class="form-group">
                 <label>Invite Code</label>
                 <input type="text" name="invite_code" required maxlength="20"
-                       autocomplete="off" autofocus>
+                       autocomplete="off" value="{invite_prefill}"
+                       {"autofocus" if not invite_prefill else ""}>
+            </div>
+            <div class="form-group">
+                <label>Email</label>
+                <input type="email" name="email" required maxlength="200"
+                       autocomplete="email" placeholder="you@example.com"
+                       {"autofocus" if invite_prefill else ""}>
             </div>
             <div class="form-group">
                 <label>Username</label>
@@ -505,6 +589,110 @@ async def page_dashboard(request: web.Request) -> web.Response:
     user = await _require_user(request)
     csrf = _get_csrf(request)
 
+    # Admin sees the legacy full view (bots, grants, management)
+    if user["is_admin"]:
+        return await _page_dashboard_admin(request, user, csrf)
+
+    # Customer view: device-focused cards
+    devices = await asyncio.to_thread(db.get_user_devices, user["user_id"])
+    shared_devices = await asyncio.to_thread(db.list_shared_devices)
+
+    # Device cards
+    dev_html = ""
+    for d in devices:
+        bot_name = d["bot_name"]
+        online = bot_name in _active_bots and not _active_bots[bot_name].closed
+        dot = "dot-online" if online else "dot-offline"
+        status = "Online" if online else "Offline"
+        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
+        open_url = f"/{bot_name}/d/{d['device_hash']}"
+
+        dev_html += (
+            f'<div class="bot-row">'
+            f'<div class="bot-info">'
+            f'<div class="bot-name"><span class="dot {dot}"></span>{label}</div>'
+            f'<div class="bot-meta">{status}</div>'
+            f'</div>'
+            f'<a href="{open_url}" class="btn btn-primary btn-sm">Open</a>'
+            f'</div>'
+        )
+
+    if not dev_html:
+        dev_html = (
+            '<p class="muted" style="padding:8px 0">No devices yet. '
+            'Ask an admin to grant you access, or browse '
+            '<a href="/portal/community">community accounts</a>.</p>'
+        )
+
+    devices_card = f'<div class="card"><h2>My Devices</h2>{dev_html}</div>'
+
+    # Community teaser
+    online_shared = sum(
+        1 for d in shared_devices
+        if d["bot_name"] in _active_bots and not _active_bots[d["bot_name"]].closed
+    )
+    community_text = f"{online_shared} online" if online_shared else "Browse shared accounts"
+    community_card = (
+        f'<div class="card" style="display:flex;align-items:center;justify-content:space-between">'
+        f'<div>'
+        f'<strong>Community Accounts</strong>'
+        f'<div class="muted" style="margin-top:2px">{community_text}</div>'
+        f'</div>'
+        f'<a href="/portal/community" class="btn btn-outline btn-sm">Browse &rarr;</a>'
+        f'</div>'
+    )
+
+    # Subscription status
+    sub_html = ""
+    billing = _get_stripe_billing()
+    if billing:
+        sub = await asyncio.to_thread(billing.get_subscription, user["user_id"])
+        badge = _sub_badge(sub)
+        device_count = len(devices)
+        if sub and sub.get("status") in ("active", "past_due"):
+            plan_name = sub.get("plan", "none").title()
+            limit = sub.get("device_limit", 0)
+            limit_text = "Unlimited" if limit >= 999 else str(limit)
+            sub_html = (
+                f'<div class="card" style="display:flex;align-items:center;justify-content:space-between">'
+                f'<div><strong>Subscription:</strong> {plan_name} &middot; '
+                f'{device_count}/{limit_text} devices</div>'
+                f'<a href="/portal/billing" class="btn btn-outline btn-sm">Manage</a>'
+                f'</div>'
+            )
+        else:
+            sub_html = (
+                f'<div class="card" style="display:flex;align-items:center;justify-content:space-between">'
+                f'<div><strong>Subscription</strong> {badge}</div>'
+                f'<a href="/portal/pricing" class="btn btn-primary btn-sm">Subscribe</a>'
+                f'</div>'
+            )
+
+    # Getting Started card for active subscribers with no devices yet
+    getting_started = ""
+    if not devices and billing:
+        sub = sub if "sub" in dir() else await asyncio.to_thread(billing.get_subscription, user["user_id"])
+        if sub and sub.get("status") in ("active", "past_due"):
+            getting_started = (
+                '<div class="card" style="border-color:rgba(100,216,255,0.2);'
+                'background:linear-gradient(135deg,#181830,#1a1a3a)">'
+                '<h2 style="margin-bottom:8px">&#127881; Getting Started</h2>'
+                '<p style="font-size:13px;color:#aab;line-height:1.6;margin-bottom:12px">'
+                'Your subscription is active! Follow the setup guide to get your '
+                'bot running — send us your game details and we\'ll have your '
+                'server ready within 24 hours.</p>'
+                '<a href="/portal/guide" class="btn btn-primary btn-sm">View Setup Guide</a>'
+                '</div>'
+            )
+
+    body = f"{getting_started}{devices_card}{community_card}{sub_html}"
+    return web.Response(text=_page("Dashboard", body, user, csrf), content_type="text/html")
+
+
+async def _page_dashboard_admin(
+    request: web.Request, user: dict, csrf: str,
+) -> web.Response:
+    """Admin dashboard — shows bots, grants, full management (legacy view)."""
     data = await asyncio.to_thread(db.get_user_bots, user["user_id"])
 
     def _bot_card(bot: dict, is_owned: bool = False) -> str:
@@ -513,12 +701,10 @@ async def page_dashboard(request: web.Request) -> web.Response:
         online = name in _active_bots and not _active_bots[name].closed
         dot = "dot-online" if online else "dot-offline"
         status = "Online" if online else "Offline"
-        devices = asyncio.get_event_loop().run_in_executor(None, db.list_devices, name)
-        # We can't await here, so we use sync call
         dev_count = bot.get("device_count", 0)
 
         manage = ""
-        if is_owned:
+        if is_owned or user["is_admin"]:
             manage = f'<a href="/portal/bot/{name}" class="btn btn-outline btn-sm">Manage</a>'
         access = bot.get("access_level", "full" if is_owned else "")
         badge = ""
@@ -541,7 +727,7 @@ async def page_dashboard(request: web.Request) -> web.Response:
     owned_html = ""
     if data["owned"]:
         cards = "".join(_bot_card(b, is_owned=True) for b in data["owned"])
-        owned_html = f'<div class="card"><h2>My Bots</h2>{cards}</div>'
+        owned_html = f'<div class="card"><h2>My Servers</h2>{cards}</div>'
 
     shared_html = ""
     if data["shared"]:
@@ -549,32 +735,51 @@ async def page_dashboard(request: web.Request) -> web.Response:
         shared_html = f'<div class="card"><h2>Shared With Me</h2>{cards}</div>'
 
     if not data["owned"] and not data["shared"]:
-        owned_html = '<div class="card"><p class="muted">No bots available. Ask a bot owner to share access with you.</p></div>'
+        owned_html = (
+            '<div class="card"><p class="muted">'
+            'No servers available.</p></div>'
+        )
 
-    # Subscription status banner
-    sub_html = ""
-    if not user["is_admin"]:
-        billing = _get_stripe_billing()
-        if billing:
-            sub = await asyncio.to_thread(billing.get_subscription, user["user_id"])
-            badge = _sub_badge(sub)
-            if not sub or sub.get("status") not in ("active", "past_due"):
-                sub_html = (
-                    f'<div class="card" style="display:flex;align-items:center;justify-content:space-between">'
-                    f'<div><strong>Subscription</strong> {badge}</div>'
-                    f'<a href="/portal/pricing" class="btn btn-primary btn-sm">Subscribe</a>'
-                    f'</div>'
-                )
-            else:
-                sub_html = (
-                    f'<div class="card" style="display:flex;align-items:center;justify-content:space-between">'
-                    f'<div><strong>Subscription</strong> {badge}</div>'
-                    f'<a href="/portal/billing" class="btn btn-outline btn-sm">Manage</a>'
-                    f'</div>'
-                )
-
-    body = f"{sub_html}{owned_html}{shared_html}"
+    body = f"{owned_html}{shared_html}"
     return web.Response(text=_page("Dashboard", body, user, csrf), content_type="text/html")
+
+
+async def page_community(request: web.Request) -> web.Response:
+    user = await _require_user(request)
+    csrf = _get_csrf(request)
+
+    shared = await asyncio.to_thread(db.list_shared_devices)
+
+    dev_html = ""
+    for d in shared:
+        bot_name = d["bot_name"]
+        online = bot_name in _active_bots and not _active_bots[bot_name].closed
+        dot = "dot-online" if online else "dot-offline"
+        status = "Online" if online else "Offline"
+        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
+        open_url = f"/{bot_name}/d/{d['device_hash']}"
+
+        dev_html += (
+            f'<div class="bot-row">'
+            f'<div class="bot-info">'
+            f'<div class="bot-name"><span class="dot {dot}"></span>{label}</div>'
+            f'<div class="bot-meta">{status}</div>'
+            f'</div>'
+            f'<a href="{open_url}" class="btn btn-primary btn-sm">Open</a>'
+            f'</div>'
+        )
+
+    if not dev_html:
+        dev_html = '<p class="muted" style="padding:8px 0">No community accounts available yet.</p>'
+
+    body = (
+        f'<div class="card">'
+        f'<h2>Community Accounts</h2>'
+        f'<p class="muted" style="margin-bottom:12px">Available to all members</p>'
+        f'{dev_html}'
+        f'</div>'
+    )
+    return web.Response(text=_page("Community", body, user, csrf), content_type="text/html")
 
 
 async def page_bot_detail(request: web.Request) -> web.Response:
@@ -584,12 +789,12 @@ async def page_bot_detail(request: web.Request) -> web.Response:
 
     bot = await asyncio.to_thread(db.get_bot, bot_name)
     if not bot:
-        raise web.HTTPNotFound(text="Bot not found")
+        raise web.HTTPNotFound(text="Server not found")
 
     # Only owner or admin can manage
     is_owner = bot.get("owner_id") == user["user_id"]
     if not is_owner and not user["is_admin"]:
-        raise web.HTTPForbidden(text="Only the bot owner can manage this bot")
+        raise web.HTTPForbidden(text="Only the server owner can manage this server")
 
     devices = await asyncio.to_thread(db.list_devices, bot_name)
     grants = await asyncio.to_thread(db.list_grants_for_bot, bot_name)
@@ -599,18 +804,45 @@ async def page_bot_detail(request: web.Request) -> web.Response:
     status = "Online" if online else "Offline"
     label = _html_escape(bot.get("label") or bot_name)
 
-    # Devices list
+    # Devices list with label + shared + public controls
     dev_rows = ""
     for d in devices:
         dname = _html_escape(d.get("device_name") or d["device_hash"])
+        dlabel = _html_escape(d.get("label") or "")
+        dh = d["device_hash"]
+        is_shared = d.get("is_shared", 0)
+        is_public = d.get("is_public", 0)
+        shared_checked = "checked" if is_shared else ""
+        public_checked = "checked" if is_public else ""
         dev_rows += (
-            f'<div class="device-row">'
-            f'<span>{dname}</span>'
-            f'<span class="muted">{d["device_hash"]}</span>'
+            f'<div class="dev-card">'
+            f'<div class="dev-card-header">'
+            f'<div>'
+            f'<div class="dev-card-name">{dname}</div>'
+            f'<div class="dev-card-hash">{dh}</div>'
+            f'</div>'
+            f'<input type="text" class="dev-card-label" placeholder="Display label" '
+            f'value="{dlabel}" onchange="setDeviceLabel(\'{dh}\',this.value)">'
+            f'</div>'
+            f'<div class="dev-card-controls">'
+            f'<label class="toggle" title="Visible to all logged-in members">'
+            f'<input type="checkbox" {shared_checked} '
+            f'onchange="setDeviceShared(\'{dh}\',this.checked)">'
+            f'<span class="toggle-track"></span>'
+            f'<span class="toggle-label">Community</span>'
+            f'</label>'
+            f'<label class="toggle toggle-warn" '
+            f'title="No login required — anyone with the link can access">'
+            f'<input type="checkbox" {public_checked} '
+            f'onchange="setDevicePublic(\'{dh}\',this.checked)">'
+            f'<span class="toggle-track"></span>'
+            f'<span class="toggle-label">Public</span>'
+            f'</label>'
+            f'</div>'
             f'</div>'
         )
     if not devices:
-        dev_rows = '<p class="muted">No devices reported yet. The bot will report devices when it connects.</p>'
+        dev_rows = '<p class="muted">No devices reported yet. The server will report devices when it connects.</p>'
 
     # Grants list
     grant_rows = ""
@@ -676,7 +908,7 @@ async def page_bot_detail(request: web.Request) -> web.Response:
     </div>
 
     <div class="card">
-        <h3>Bot Settings</h3>
+        <h3>Server Settings</h3>
         <form onsubmit="return updateLabel(event)">
             <div class="form-group">
                 <label>Display Name</label>
@@ -734,9 +966,40 @@ async def page_bot_detail(request: web.Request) -> web.Response:
         else alert("Failed to update");
         return false;
     }}
+
+    async function setDeviceLabel(deviceHash, label) {{
+        const resp = await fetch("/portal/api/devices/" + botName + "/" + deviceHash + "/label", {{
+            method: "PUT",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, label: label}})
+        }});
+        if (!resp.ok) alert("Failed to set label");
+    }}
+
+    async function setDeviceShared(deviceHash, shared) {{
+        const resp = await fetch("/portal/api/devices/" + botName + "/" + deviceHash + "/shared", {{
+            method: "PUT",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, is_shared: shared}})
+        }});
+        if (!resp.ok) alert("Failed to update shared status");
+    }}
+
+    async function setDevicePublic(deviceHash, isPublic) {{
+        if (isPublic && !confirm("Make this device public? Anyone with the link can access it without logging in.")) {{
+            event.target.checked = false;
+            return;
+        }}
+        const resp = await fetch("/portal/api/devices/" + botName + "/" + deviceHash + "/public", {{
+            method: "PUT",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, is_public: isPublic}})
+        }});
+        if (!resp.ok) alert("Failed to update public status");
+    }}
     </script>
     """
-    return web.Response(text=_page(f"Bot: {label}", body, user, csrf), content_type="text/html")
+    return web.Response(text=_page(f"Server: {label}", body, user, csrf), content_type="text/html")
 
 
 async def page_admin(request: web.Request) -> web.Response:
@@ -752,14 +1015,20 @@ async def page_admin(request: web.Request) -> web.Response:
     for u in users:
         admin_badge = '<span class="badge badge-admin">admin</span> ' if u["is_admin"] else ""
         last = u.get("last_login") or "never"
+        email = _html_escape(u.get("email") or "—")
         user_rows += (
             f'<tr>'
             f'<td>{u["id"]}</td>'
             f'<td>{admin_badge}{_html_escape(u["username"])}</td>'
+            f'<td class="muted" style="font-size:11px">{email}</td>'
             f'<td class="muted">{u["created_at"]}</td>'
             f'<td class="muted">{last}</td>'
-            f'<td><button class="btn btn-danger btn-sm" onclick="deleteUser({u["id"]},\'{_html_escape(u["username"])}\')">Delete</button></td>'
-            f'</tr>'
+            f'<td style="white-space:nowrap">'
+            f'<button class="btn btn-outline btn-sm" style="margin-right:4px" '
+            f'onclick="resetPassword({u["id"]},\'{_html_escape(u["username"])}\')">Reset PW</button>'
+            f'<button class="btn btn-danger btn-sm" '
+            f'onclick="deleteUser({u["id"]},\'{_html_escape(u["username"])}\')">Delete</button>'
+            f'</td></tr>'
         )
 
     # Bots table
@@ -780,7 +1049,8 @@ async def page_admin(request: web.Request) -> web.Response:
 
         bot_rows += (
             f'<tr>'
-            f'<td><span class="dot {dot}"></span>{_html_escape(b.get("label") or b["bot_name"])}</td>'
+            f'<td><span class="dot {dot}"></span>'
+            f'<a href="/portal/bot/{b["bot_name"]}">{_html_escape(b.get("label") or b["bot_name"])}</a></td>'
             f'<td class="muted">{b["bot_name"]}</td>'
             f'<td>{owner_select}</td>'
             f'<td class="muted">{last}</td>'
@@ -801,19 +1071,85 @@ async def page_admin(request: web.Request) -> web.Response:
             f'</div>'
         )
 
+    # Subscriptions section
+    subs = await asyncio.to_thread(db.list_subscriptions)
+    sub_rows = ""
+    for s in subs:
+        uname = _html_escape(s.get("username", "?"))
+        is_admin_grant = s.get("stripe_customer_id") == "admin_grant"
+        src_label = "Admin" if is_admin_grant else "Stripe"
+        status_color = "#4caf50" if s["status"] == "active" else (
+            "#ffb74d" if s["status"] == "past_due" else "#ef5350"
+        )
+        period = s.get("current_period_end", "—")
+        if period and period != "—":
+            try:
+                from datetime import datetime as dt
+                pe = dt.fromisoformat(period)
+                period = pe.strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        revoke_btn = ""
+        if is_admin_grant and s["status"] in ("active", "past_due"):
+            revoke_btn = (
+                f'<button class="btn btn-danger btn-sm" '
+                f'onclick="revokeSub({s["user_id"]})">Revoke</button>'
+            )
+        sub_rows += (
+            f'<tr>'
+            f'<td>{_html_escape(uname)}</td>'
+            f'<td>{s["plan"]}</td>'
+            f'<td style="color:{status_color}">{s["status"]}</td>'
+            f'<td class="muted">{src_label}</td>'
+            f'<td class="muted">{s["device_limit"]}</td>'
+            f'<td class="muted">{period}</td>'
+            f'<td>{revoke_btn}</td>'
+            f'</tr>'
+        )
+
+    # User options for grant form
+    user_options = ""
+    for u in users:
+        if not u["is_admin"]:
+            user_options += f'<option value="{u["id"]}">{_html_escape(u["username"])}</option>'
+
     body = f"""
     <div class="card">
         <h2>Users ({len(users)})</h2>
         <table>
-            <tr><th>ID</th><th>Username</th><th>Created</th><th>Last Login</th><th></th></tr>
+            <tr><th>ID</th><th>Username</th><th>Email</th><th>Created</th><th>Last Login</th><th></th></tr>
             {user_rows}
         </table>
     </div>
 
     <div class="card">
-        <h2>Bots ({len(bots)})</h2>
+        <h2>Subscriptions</h2>
+        <div style="margin-bottom:16px;padding:14px;background:#141428;border-radius:10px;border:1px solid rgba(255,255,255,0.04)">
+            <strong style="font-size:13px;display:block;margin-bottom:10px">Grant Free Subscription</strong>
+            <form id="grantSubForm" onsubmit="return grantSub(event)" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
+                <div class="form-group" style="margin:0;flex:1;min-width:120px">
+                    <label>User</label>
+                    <select name="user_id" required>{user_options}</select>
+                </div>
+                <div class="form-group" style="margin:0">
+                    <label>Duration</label>
+                    <select name="duration">
+                        <option value="7">1 Week</option>
+                        <option value="30" selected>1 Month</option>
+                        <option value="90">3 Months</option>
+                        <option value="">Permanent</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn btn-primary btn-sm">Grant</button>
+            </form>
+        </div>
+        {f'<table><tr><th>User</th><th>Plan</th><th>Status</th><th>Source</th><th>Devices</th><th>Expires</th><th></th></tr>{sub_rows}</table>' if sub_rows else '<p class="muted">No subscriptions.</p>'}
+    </div>
+
+    <div class="card">
+        <h2>Servers ({len(bots)})</h2>
         <table>
-            <tr><th>Bot</th><th>ID</th><th>Owner</th><th>Last Seen</th></tr>
+            <tr><th>Server</th><th>ID</th><th>Owner</th><th>Last Seen</th></tr>
             {bot_rows}
         </table>
     </div>
@@ -842,6 +1178,19 @@ async def page_admin(request: web.Request) -> web.Response:
         else alert("Failed");
     }}
 
+    async function resetPassword(id, name) {{
+        const pw = prompt("Set new password for " + name + ":");
+        if (!pw) return;
+        if (pw.length < 6) {{ alert("Password must be at least 6 characters"); return; }}
+        const resp = await fetch("/portal/api/admin/reset-password", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, user_id: id, new_password: pw}})
+        }});
+        if (resp.ok) alert("Password reset for " + name);
+        else alert("Failed to reset password");
+    }}
+
     async function setOwner(botName, userId) {{
         const resp = await fetch("/portal/api/admin/bots/" + botName + "/owner", {{
             method: "PUT",
@@ -861,8 +1210,57 @@ async def page_admin(request: web.Request) -> web.Response:
             const data = await resp.json();
             document.getElementById("inviteResult").innerHTML =
                 '<div class="alert alert-success">Invite code: <code><strong>' +
-                data.code + '</strong></code></div>';
+                data.code + '</strong></code>'
+                + ' <button class="btn btn-outline btn-sm" onclick="copyInviteEmail(\'' + data.code + '\')">Copy Email</button>'
+                + '</div>';
         }} else alert("Failed");
+    }}
+
+    function copyInviteEmail(code) {{
+        const url = location.origin + "/portal/register?invite=" + code;
+        const body = "Hi,\\n\\nYou've been invited to 9Bot — automated Kingdom Guard running 24/7 on cloud servers.\\n\\n"
+            + "Click the link below to create your account:\\n" + url + "\\n\\n"
+            + "What to expect after signing up:\\n"
+            + "1. Choose a subscription plan\\n"
+            + "2. Send us your game account details\\n"
+            + "3. We set up your dedicated server (usually within 24 hours)\\n"
+            + "4. Control everything from your phone dashboard\\n\\n"
+            + "See you in the game!\\n— 9Bot Team";
+        navigator.clipboard.writeText(body).then(
+            () => alert("Invite email copied to clipboard!"),
+            () => alert("Failed to copy — check browser permissions")
+        );
+    }}
+
+    async function grantSub(e) {{
+        e.preventDefault();
+        const f = e.target;
+        const resp = await fetch("/portal/api/admin/grant-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                user_id: parseInt(f.user_id.value),
+                duration_days: f.duration.value ? parseInt(f.duration.value) : null,
+            }})
+        }});
+        if (resp.ok) location.reload();
+        else {{
+            const err = await resp.json();
+            alert(err.error || "Failed");
+        }}
+        return false;
+    }}
+
+    async function revokeSub(userId) {{
+        if (!confirm("Revoke this admin-granted subscription?")) return;
+        const resp = await fetch("/portal/api/admin/revoke-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, user_id: userId}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to revoke");
     }}
     </script>
     """
@@ -876,6 +1274,10 @@ async def page_account(request: web.Request) -> web.Response:
     msg = request.query.get("msg", "")
     msg_html = f'<div class="alert alert-success">{_html_escape(msg)}</div>' if msg else ""
 
+    # Fetch full user record for email
+    full_user = await asyncio.to_thread(db.get_user_by_id, user["user_id"])
+    current_email = _html_escape(full_user.get("email") or "") if full_user else ""
+
     body = f"""
     {msg_html}
     <div class="card">
@@ -883,6 +1285,19 @@ async def page_account(request: web.Request) -> web.Response:
         <p style="margin-bottom:16px">Logged in as <strong>{_html_escape(user["username"])}</strong>
         {"<span class='badge badge-admin'>admin</span>" if user["is_admin"] else ""}</p>
 
+        <h3>Email</h3>
+        <form method="post" action="/portal/api/account/email">
+            <input type="hidden" name="csrf_token" value="{csrf}">
+            <div class="form-group">
+                <label>Email Address</label>
+                <input type="email" name="email" value="{current_email}" maxlength="200"
+                       autocomplete="email" placeholder="you@example.com">
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm">Update Email</button>
+        </form>
+    </div>
+
+    <div class="card">
         <h3>Change Password</h3>
         <form method="post" action="/portal/api/account/password">
             <input type="hidden" name="csrf_token" value="{csrf}">
@@ -901,6 +1316,325 @@ async def page_account(request: web.Request) -> web.Response:
     </div>
     """
     return web.Response(text=_page("Account", body, user, csrf), content_type="text/html")
+
+
+async def page_guide(request: web.Request) -> web.Response:
+    user = await _require_user(request)
+    csrf = _get_csrf(request)
+
+    body = """
+    <style>
+    /* ── Guide: override container for full-bleed hero ── */
+    .guide-hero {
+        text-align: center;
+        padding: 40px 20px 32px;
+        position: relative;
+        overflow: hidden;
+    }
+    .guide-hero::before {
+        content: '';
+        position: absolute;
+        width: 600px; height: 600px;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -60%);
+        background: radial-gradient(ellipse at center,
+            rgba(100,216,255,0.07) 0%, rgba(100,216,255,0.02) 40%, transparent 70%);
+        pointer-events: none;
+    }
+    .guide-hero-check {
+        display: inline-flex;
+        align-items: center; justify-content: center;
+        width: 56px; height: 56px;
+        border-radius: 50%;
+        background: rgba(76,175,80,0.1);
+        border: 2px solid rgba(76,175,80,0.3);
+        margin-bottom: 16px;
+        animation: guide-pop 0.5s cubic-bezier(0.34,1.56,0.64,1) both;
+    }
+    .guide-hero-check svg {
+        width: 28px; height: 28px;
+        stroke: #4caf50;
+        stroke-width: 2.5;
+        fill: none;
+        stroke-linecap: round; stroke-linejoin: round;
+    }
+    .guide-hero h2 {
+        font-size: 22px; font-weight: 700; color: #e0e0f0;
+        margin-bottom: 6px;
+        animation: guide-fade 0.5s ease 0.15s both;
+    }
+    .guide-hero p {
+        font-size: 14px; color: #667;
+        animation: guide-fade 0.5s ease 0.25s both;
+    }
+
+    /* ── Timeline ── */
+    .guide-timeline {
+        position: relative;
+        padding: 0 0 0 36px;
+        margin: 8px 0 24px;
+    }
+    /* Vertical line */
+    .guide-timeline::before {
+        content: '';
+        position: absolute;
+        left: 15px; top: 0; bottom: 0;
+        width: 2px;
+        background: linear-gradient(180deg,
+            rgba(100,216,255,0.3) 0%,
+            rgba(100,216,255,0.08) 100%);
+        border-radius: 1px;
+    }
+
+    .guide-step {
+        position: relative;
+        padding: 0 0 28px;
+        opacity: 0;
+        transform: translateY(12px);
+        animation: guide-fade 0.45s ease both;
+    }
+    .guide-step:nth-child(1) { animation-delay: 0.3s; }
+    .guide-step:nth-child(2) { animation-delay: 0.45s; }
+    .guide-step:nth-child(3) { animation-delay: 0.6s; }
+    .guide-step:nth-child(4) { animation-delay: 0.75s; }
+    .guide-step:nth-child(5) { animation-delay: 0.9s; }
+    .guide-step:last-child { padding-bottom: 0; }
+
+    /* Node dot */
+    .guide-node {
+        position: absolute;
+        left: -29px; top: 2px;
+        width: 20px; height: 20px;
+        border-radius: 50%;
+        background: #0c0c18;
+        border: 2px solid rgba(100,216,255,0.35);
+        display: flex; align-items: center; justify-content: center;
+    }
+    .guide-node-inner {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: #64d8ff;
+        box-shadow: 0 0 8px rgba(100,216,255,0.5);
+    }
+    .guide-step:first-child .guide-node {
+        border-color: #4caf50;
+    }
+    .guide-step:first-child .guide-node-inner {
+        background: #4caf50;
+        box-shadow: 0 0 8px rgba(76,175,80,0.5);
+    }
+
+    /* Step content card */
+    .guide-card {
+        background: #181830;
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 12px;
+        padding: 16px 18px;
+        transition: border-color 0.2s;
+    }
+    .guide-card:hover {
+        border-color: rgba(100,216,255,0.12);
+    }
+    .guide-card-head {
+        display: flex; align-items: center; gap: 10px;
+        margin-bottom: 8px;
+    }
+    .guide-card-icon {
+        width: 32px; height: 32px;
+        border-radius: 8px;
+        background: rgba(100,216,255,0.06);
+        border: 1px solid rgba(100,216,255,0.1);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 16px; flex-shrink: 0;
+    }
+    .guide-card-title {
+        font-size: 14px; font-weight: 700; color: #e0e0f0;
+    }
+    .guide-card-tag {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 6px;
+        font-size: 10px; font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        margin-left: auto;
+    }
+    .guide-tag-done {
+        background: rgba(76,175,80,0.1);
+        color: #4caf50;
+        border: 1px solid rgba(76,175,80,0.2);
+    }
+    .guide-tag-action {
+        background: rgba(255,183,77,0.1);
+        color: #ffb74d;
+        border: 1px solid rgba(255,183,77,0.2);
+    }
+    .guide-tag-wait {
+        background: rgba(100,216,255,0.06);
+        color: #64d8ff;
+        border: 1px solid rgba(100,216,255,0.15);
+    }
+    .guide-card p {
+        font-size: 13px; color: #889; line-height: 1.65;
+        margin: 0;
+    }
+    .guide-card p strong { color: #bbc; }
+    .guide-callout {
+        margin-top: 10px; padding: 10px 14px;
+        background: rgba(100,216,255,0.03);
+        border: 1px solid rgba(100,216,255,0.08);
+        border-radius: 8px;
+        font-size: 12px; color: #778; line-height: 1.6;
+        display: flex; align-items: flex-start; gap: 8px;
+    }
+    .guide-callout-icon {
+        flex-shrink: 0; margin-top: 1px;
+        color: rgba(100,216,255,0.5);
+    }
+
+    /* ── CTA ── */
+    .guide-cta {
+        text-align: center;
+        padding: 8px 0 24px;
+        opacity: 0;
+        animation: guide-fade 0.5s ease 1.1s both;
+    }
+    .guide-cta .btn {
+        padding: 12px 32px;
+        font-size: 14px;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #1565c0, #1e88e5);
+        box-shadow: 0 4px 20px rgba(21,101,192,0.3);
+        transition: all 0.2s;
+    }
+    .guide-cta .btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 28px rgba(21,101,192,0.45);
+    }
+
+    @keyframes guide-pop {
+        0% { opacity: 0; transform: scale(0.5); }
+        100% { opacity: 1; transform: scale(1); }
+    }
+    @keyframes guide-fade {
+        0% { opacity: 0; transform: translateY(12px); }
+        100% { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 480px) {
+        .guide-timeline { padding-left: 28px; }
+        .guide-node { left: -21px; width: 16px; height: 16px; }
+        .guide-node-inner { width: 6px; height: 6px; }
+        .guide-card { padding: 14px; }
+    }
+    </style>
+
+    <!-- Hero -->
+    <div class="guide-hero">
+        <div class="guide-hero-check">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+        </div>
+        <h2>Welcome to 9Bot</h2>
+        <p>Here's how we get your bot running.</p>
+    </div>
+
+    <!-- Timeline -->
+    <div class="guide-timeline">
+
+        <div class="guide-step">
+            <div class="guide-node"><div class="guide-node-inner"></div></div>
+            <div class="guide-card">
+                <div class="guide-card-head">
+                    <div class="guide-card-icon">&#10003;</div>
+                    <div class="guide-card-title">Account Created</div>
+                    <span class="guide-card-tag guide-tag-done">Done</span>
+                </div>
+                <p>
+                    You're in. Your portal account is active and you can
+                    <a href="/portal/billing">manage billing</a> or
+                    <a href="/portal/account">update your account</a> any time.
+                </p>
+            </div>
+        </div>
+
+        <div class="guide-step">
+            <div class="guide-node"><div class="guide-node-inner"></div></div>
+            <div class="guide-card">
+                <div class="guide-card-head">
+                    <div class="guide-card-icon">&#127917;</div>
+                    <div class="guide-card-title">Send Game Details</div>
+                    <span class="guide-card-tag guide-tag-action">Action</span>
+                </div>
+                <p>
+                    Message us your <strong>Kingdom Guard login</strong> &mdash; the
+                    account you want automated. We use it once to log into the game
+                    on your dedicated server.
+                </p>
+                <div class="guide-callout">
+                    <span class="guide-callout-icon">&#128274;</span>
+                    <span>Credentials are only used on your private emulator instance.
+                    Never stored separately or shared.</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="guide-step">
+            <div class="guide-node"><div class="guide-node-inner"></div></div>
+            <div class="guide-card">
+                <div class="guide-card-head">
+                    <div class="guide-card-icon">&#9881;</div>
+                    <div class="guide-card-title">Server Setup</div>
+                    <span class="guide-card-tag guide-tag-wait">~24h</span>
+                </div>
+                <p>
+                    We provision a dedicated emulator, install the game, log in,
+                    and configure everything. This is a manual step on our end &mdash;
+                    usually done within 24 hours, often sooner.
+                </p>
+            </div>
+        </div>
+
+        <div class="guide-step">
+            <div class="guide-node"><div class="guide-node-inner"></div></div>
+            <div class="guide-card">
+                <div class="guide-card-head">
+                    <div class="guide-card-icon">&#128241;</div>
+                    <div class="guide-card-title">Dashboard Goes Live</div>
+                </div>
+                <p>
+                    Your device appears on the <a href="/portal/">Dashboard</a>
+                    with a live screenshot stream. Control everything from any
+                    phone or browser &mdash; no app needed.
+                </p>
+                <div class="guide-callout">
+                    <span class="guide-callout-icon">&#128278;</span>
+                    <span>Bookmark the device link on your phone for one-tap access.</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="guide-step">
+            <div class="guide-node"><div class="guide-node-inner"></div></div>
+            <div class="guide-card">
+                <div class="guide-card-head">
+                    <div class="guide-card-icon">&#9889;</div>
+                    <div class="guide-card-title">Start Automating</div>
+                </div>
+                <p>
+                    Toggle Auto Quest, Territory, Titans, or any mode. The bot
+                    handles quests, rallies, healing, AP, error recovery &mdash;
+                    all of it. Check in when you want, or don't. It runs 24/7.
+                </p>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="guide-cta">
+        <a href="/portal/" class="btn btn-primary">Go to Dashboard &rarr;</a>
+    </div>
+    """
+    return web.Response(text=_page("Setup Guide", body, user, csrf), content_type="text/html")
 
 
 # ------------------------------------------------------------------
@@ -926,10 +1660,13 @@ async def api_login(request: web.Request) -> web.Response:
         raise web.HTTPFound(f"/portal/login?error=Invalid+credentials&next={next_url}")
 
     auth.clear_rate_limit(ip)
+    is_first_login = not user.get("last_login")
     await asyncio.to_thread(db.update_user_login, user["id"])
     token = await asyncio.to_thread(db.create_session, user["id"])
 
-    resp = web.HTTPFound(next_url)
+    # First login → show the onboarding guide (unless they had a specific next_url)
+    dest = "/portal/guide" if is_first_login and next_url == "/portal/" else next_url
+    resp = web.HTTPFound(dest)
     auth.set_session_cookie(resp, token)
     return resp
 
@@ -948,13 +1685,17 @@ async def api_register(request: web.Request) -> web.Response:
     data = await request.post()
     invite_code = (data.get("invite_code") or "").strip()
     username = (data.get("username") or "").strip()
+    email = (data.get("email") or "").strip()
     password = data.get("password") or ""
 
-    if not invite_code or not username or not password:
+    if not invite_code or not username or not password or not email:
         raise web.HTTPFound("/portal/register?error=All+fields+required")
 
     if len(username) > 50 or not all(c.isalnum() or c in "-_" for c in username):
         raise web.HTTPFound("/portal/register?error=Invalid+username")
+
+    if len(email) > 200 or "@" not in email:
+        raise web.HTTPFound("/portal/register?error=Invalid+email+address")
 
     if len(password) < 6:
         raise web.HTTPFound("/portal/register?error=Password+must+be+at+least+6+characters")
@@ -962,7 +1703,7 @@ async def api_register(request: web.Request) -> web.Response:
     pw_hash = await asyncio.to_thread(auth.hash_password, password)
 
     try:
-        user_id = await asyncio.to_thread(db.create_user, username, pw_hash)
+        user_id = await asyncio.to_thread(db.create_user, username, pw_hash, email=email)
     except Exception:
         raise web.HTTPFound("/portal/register?error=Username+already+taken")
 
@@ -972,11 +1713,11 @@ async def api_register(request: web.Request) -> web.Response:
         await asyncio.to_thread(db.delete_user, user_id)
         raise web.HTTPFound("/portal/register?error=Invalid+or+used+invite+code")
 
-    # Auto-login
+    # Auto-login — redirect new users to the guide
     await asyncio.to_thread(db.update_user_login, user_id)
     token = await asyncio.to_thread(db.create_session, user_id)
 
-    resp = web.HTTPFound("/portal/")
+    resp = web.HTTPFound("/portal/guide")
     auth.set_session_cookie(resp, token)
     return resp
 
@@ -1000,7 +1741,7 @@ async def api_update_bot(request: web.Request) -> web.Response:
 
     bot = await asyncio.to_thread(db.get_bot, bot_name)
     if not bot:
-        raise web.HTTPNotFound(text="Bot not found")
+        raise web.HTTPNotFound(text="Server not found")
     if bot.get("owner_id") != user["user_id"] and not user["is_admin"]:
         raise web.HTTPForbidden(text="Not the owner")
 
@@ -1018,7 +1759,7 @@ async def api_grants_for_bot(request: web.Request) -> web.Response:
 
     bot = await asyncio.to_thread(db.get_bot, bot_name)
     if not bot:
-        raise web.HTTPNotFound(text="Bot not found")
+        raise web.HTTPNotFound(text="Server not found")
     if bot.get("owner_id") != user["user_id"] and not user["is_admin"]:
         raise web.HTTPForbidden(text="Not the owner")
 
@@ -1043,7 +1784,7 @@ async def api_create_grant(request: web.Request) -> web.Response:
 
     bot = await asyncio.to_thread(db.get_bot, bot_name)
     if not bot:
-        return web.json_response({"error": "Bot not found"}, status=404)
+        return web.json_response({"error": "Server not found"}, status=404)
     if bot.get("owner_id") != user["user_id"] and not user["is_admin"]:
         return web.json_response({"error": "Not the owner"}, status=403)
 
@@ -1098,7 +1839,7 @@ async def api_create_invite(request: web.Request) -> web.Response:
         # Check if user owns any bots
         bots = await asyncio.to_thread(db.get_user_bots, user["user_id"])
         if not bots.get("owned"):
-            return web.json_response({"error": "Only admin or bot owners can create invites"}, status=403)
+            return web.json_response({"error": "Only admin or server owners can create invites"}, status=403)
 
     code = await asyncio.to_thread(db.create_invite_code, user["user_id"])
     return web.json_response({"status": "ok", "code": code})
@@ -1150,7 +1891,72 @@ async def api_admin_set_owner(request: web.Request) -> web.Response:
 
     updated = await asyncio.to_thread(db.set_bot_owner, bot_name, owner_id)
     if not updated:
-        return web.json_response({"error": "Bot not found"}, status=404)
+        return web.json_response({"error": "Server not found"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_reset_password(request: web.Request) -> web.Response:
+    """Admin resets a user's password directly."""
+    await _require_admin(request)
+    await _check_csrf(request)
+    data = await request.json()
+
+    user_id = data.get("user_id")
+    new_password = data.get("new_password", "")
+
+    if not user_id or len(new_password) < 6:
+        return web.json_response({"error": "user_id and new_password (6+ chars) required"}, status=400)
+
+    user = await asyncio.to_thread(db.get_user_by_id, int(user_id))
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    pw_hash = await asyncio.to_thread(auth.hash_password, new_password)
+    await asyncio.to_thread(db.update_user_password, int(user_id), pw_hash)
+    # Kill existing sessions so they have to re-login
+    await asyncio.to_thread(db.delete_user_sessions, int(user_id))
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_grant_subscription(request: web.Request) -> web.Response:
+    """Admin grants a free subscription to a user."""
+    await _require_admin(request)
+    await _check_csrf(request)
+    data = await request.json()
+
+    user_id = data.get("user_id")
+    duration_days = data.get("duration_days")  # None = permanent
+
+    if not user_id:
+        return web.json_response({"error": "user_id required"}, status=400)
+
+    user = await asyncio.to_thread(db.get_user_by_id, int(user_id))
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    await asyncio.to_thread(
+        db.grant_admin_subscription,
+        int(user_id),
+        plan="standard",
+        device_limit=1,
+        duration_days=int(duration_days) if duration_days else None,
+    )
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_revoke_subscription(request: web.Request) -> web.Response:
+    """Admin revokes an admin-granted subscription."""
+    await _require_admin(request)
+    await _check_csrf(request)
+    data = await request.json()
+
+    user_id = data.get("user_id")
+    if not user_id:
+        return web.json_response({"error": "user_id required"}, status=400)
+
+    revoked = await asyncio.to_thread(db.revoke_admin_subscription, int(user_id))
+    if not revoked:
+        return web.json_response({"error": "No admin-granted subscription found"}, status=404)
     return web.json_response({"status": "ok"})
 
 
@@ -1181,6 +1987,83 @@ async def api_change_password(request: web.Request) -> web.Response:
     raise web.HTTPFound("/portal/account?msg=Password+changed+successfully")
 
 
+async def api_change_email(request: web.Request) -> web.Response:
+    data = await request.post()
+    csrf_token = data.get("csrf_token", "")
+    session_token = _get_session_token(request)
+    if not session_token or not auth.validate_csrf_token(session_token, csrf_token):
+        raise web.HTTPForbidden(text="Invalid CSRF token")
+
+    user_info = await asyncio.to_thread(db.validate_session, session_token)
+    if not user_info:
+        raise web.HTTPFound("/portal/login")
+
+    email = (data.get("email") or "").strip()
+    if email and (len(email) > 200 or "@" not in email):
+        raise web.HTTPFound("/portal/account?msg=Invalid+email+address")
+
+    await asyncio.to_thread(db.update_user_email, user_info["user_id"], email or None)
+    raise web.HTTPFound("/portal/account?msg=Email+updated+successfully")
+
+
+# ------------------------------------------------------------------
+# Device settings API (admin only)
+# ------------------------------------------------------------------
+
+async def api_set_device_label(request: web.Request) -> web.Response:
+    user = await _require_user(request)
+    await _check_csrf(request)
+    bot_name = request.match_info["bot_name"]
+    device_hash = request.match_info["device_hash"]
+
+    bot = await asyncio.to_thread(db.get_bot, bot_name)
+    if not bot:
+        return web.json_response({"error": "Server not found"}, status=404)
+    if bot.get("owner_id") != user["user_id"] and not user["is_admin"]:
+        return web.json_response({"error": "Not the owner"}, status=403)
+
+    data = await request.json()
+    label = (data.get("label") or "").strip()[:50]
+    await asyncio.to_thread(db.set_device_label, bot_name, device_hash, label)
+    return web.json_response({"status": "ok"})
+
+
+async def api_set_device_shared(request: web.Request) -> web.Response:
+    user = await _require_user(request)
+    await _check_csrf(request)
+    bot_name = request.match_info["bot_name"]
+    device_hash = request.match_info["device_hash"]
+
+    bot = await asyncio.to_thread(db.get_bot, bot_name)
+    if not bot:
+        return web.json_response({"error": "Server not found"}, status=404)
+    if bot.get("owner_id") != user["user_id"] and not user["is_admin"]:
+        return web.json_response({"error": "Not the owner"}, status=403)
+
+    data = await request.json()
+    is_shared = bool(data.get("is_shared", False))
+    await asyncio.to_thread(db.set_device_shared, bot_name, device_hash, is_shared)
+    return web.json_response({"status": "ok"})
+
+
+async def api_set_device_public(request: web.Request) -> web.Response:
+    user = await _require_user(request)
+    await _check_csrf(request)
+    bot_name = request.match_info["bot_name"]
+    device_hash = request.match_info["device_hash"]
+
+    bot = await asyncio.to_thread(db.get_bot, bot_name)
+    if not bot:
+        return web.json_response({"error": "Server not found"}, status=404)
+    if bot.get("owner_id") != user["user_id"] and not user["is_admin"]:
+        return web.json_response({"error": "Not the owner"}, status=403)
+
+    data = await request.json()
+    is_public = bool(data.get("is_public", False))
+    await asyncio.to_thread(db.set_device_public, bot_name, device_hash, is_public)
+    return web.json_response({"status": "ok"})
+
+
 # ------------------------------------------------------------------
 # Billing pages + API
 # ------------------------------------------------------------------
@@ -1199,8 +2082,11 @@ def _sub_badge(sub: dict | None) -> str:
     if not sub or sub.get("status") not in ("active", "past_due"):
         return '<span class="badge" style="color:#ef5350;border:1px solid rgba(239,83,80,0.35)">No Plan</span>'
     plan = sub.get("plan", "none").title()
+    is_admin_grant = sub.get("stripe_customer_id") == "admin_grant"
     if sub["status"] == "past_due":
         return f'<span class="badge" style="color:#ffb74d;border:1px solid rgba(255,183,77,0.35)">{plan} (Past Due)</span>'
+    if is_admin_grant:
+        return f'<span class="badge" style="color:#ab47bc;border:1px solid rgba(171,71,188,0.35)">{plan} (Admin)</span>'
     return f'<span class="badge badge-full">{plan}</span>'
 
 
@@ -1215,55 +2101,43 @@ async def page_pricing(request: web.Request) -> web.Response:
 
     current_plan = sub["plan"] if sub and sub["status"] in ("active", "past_due") else None
 
-    plans_html = ""
-    plans = [
-        ("basic", "Basic", "$10", "/mo", "2 devices", [
-            "Core bot access", "View-only dashboard", "Remote access via relay",
-        ]),
-        ("pro", "Pro", "$25", "/mo", "6 devices", [
-            "Full control of all auto-modes", "Priority support",
-            "All Basic features",
-        ]),
-        ("enterprise", "Enterprise", "$50", "/mo", "Unlimited", [
-            "API access", "Multi-bot support", "All Pro features",
-        ]),
-    ]
-
-    for plan_key, name, price, period, devices, features in plans:
-        features_html = "".join(
-            f'<li style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.03)">'
-            f'<span style="color:#4caf50;margin-right:8px">&#10003;</span>{f}</li>'
-            for f in features
+    is_current = current_plan == "standard"
+    if is_current:
+        btn = '<span class="btn btn-outline" style="width:100%;text-align:center;cursor:default">Current Plan</span>'
+    elif user and billing:
+        btn = (
+            '<button class="btn btn-primary" style="width:100%" '
+            'onclick="subscribe(\'standard\')">Subscribe</button>'
         )
-        is_current = current_plan == plan_key
-        if is_current:
-            btn = '<span class="btn btn-outline" style="width:100%;text-align:center;cursor:default">Current Plan</span>'
-        elif user and billing:
-            btn = (
-                f'<button class="btn btn-primary" style="width:100%" '
-                f'onclick="subscribe(\'{plan_key}\')">Subscribe</button>'
-            )
-        else:
-            btn = '<a href="/portal/login?next=/portal/pricing" class="btn btn-primary" style="width:100%;text-align:center">Login to Subscribe</a>'
+    else:
+        btn = '<a href="/portal/login?next=/portal/pricing" class="btn btn-primary" style="width:100%;text-align:center">Login to Subscribe</a>'
 
-        highlight = "border-color:rgba(100,216,255,0.3);box-shadow:0 0 20px rgba(100,216,255,0.08);" if plan_key == "pro" else ""
-        popular = '<div style="position:absolute;top:-10px;right:16px;background:#1565c0;color:#fff;font-size:10px;font-weight:700;padding:3px 10px;border-radius:6px;text-transform:uppercase;letter-spacing:1px">Popular</div>' if plan_key == "pro" else ""
+    features_html = "".join(
+        f'<li style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.03)">'
+        f'<span style="color:#4caf50;margin-right:8px">&#10003;</span>{f}</li>'
+        for f in [
+            "Full control of all auto-modes",
+            "Remote dashboard &amp; relay access",
+            "24/7 dedicated server",
+            "All features included",
+        ]
+    )
 
-        plans_html += f"""
-        <div class="card" style="flex:1;min-width:200px;position:relative;{highlight}">
-            {popular}
-            <h2 style="margin-bottom:4px">{name}</h2>
+    plans_html = f"""
+    <div style="display:flex;justify-content:center">
+        <div class="card" style="max-width:360px;width:100%;border-color:rgba(100,216,255,0.3);box-shadow:0 0 20px rgba(100,216,255,0.08)">
             <div style="margin-bottom:12px">
-                <span style="font-size:28px;font-weight:700">{price}</span>
-                <span class="muted">{period}</span>
+                <span style="font-size:32px;font-weight:700">$20</span>
+                <span class="muted">/mo</span>
             </div>
-            <div style="font-size:13px;color:#64d8ff;margin-bottom:16px;font-weight:600">{devices}</div>
+            <div style="font-size:13px;color:#64d8ff;margin-bottom:16px;font-weight:600">1 dedicated account</div>
             <ul style="list-style:none;padding:0;margin-bottom:20px;font-size:13px;color:#aab">
                 {features_html}
             </ul>
             {btn}
         </div>
-        """
+    </div>
+    """
 
     script = ""
     if user and billing:
@@ -1287,13 +2161,11 @@ async def page_pricing(request: web.Request) -> web.Response:
         """
 
     body = f"""
-    <h2 style="text-align:center;margin-bottom:8px">Choose Your Plan</h2>
+    <h2 style="text-align:center;margin-bottom:8px">Simple, Honest Pricing</h2>
     <p class="muted" style="text-align:center;margin-bottom:20px">
-        All plans include a 9Bot relay connection and remote dashboard access.
+        One plan. Full access. No upsells.
     </p>
-    <div style="display:flex;gap:12px;flex-wrap:wrap">
-        {plans_html}
-    </div>
+    {plans_html}
     {script}
     """
     return web.Response(text=_page("Pricing", body, user, csrf), content_type="text/html")
@@ -1335,6 +2207,34 @@ async def page_billing(request: web.Request) -> web.Response:
     current, limit = await asyncio.to_thread(billing.check_device_limit, user["user_id"])
     limit_text = "Unlimited" if limit >= 999 else str(limit)
 
+    is_admin_grant = sub.get("stripe_customer_id") == "admin_grant"
+    if is_admin_grant:
+        manage_btn = (
+            '<div style="padding:10px 14px;background:rgba(171,71,188,0.08);'
+            'border:1px solid rgba(171,71,188,0.2);border-radius:10px;font-size:13px;color:#ce93d8">'
+            'This subscription was granted by an admin. No payment required.</div>'
+        )
+        manage_script = ""
+    else:
+        manage_btn = '<button class="btn btn-primary" onclick="manageSubscription()">Manage Subscription</button>'
+        manage_script = f"""
+    <script>
+    async function manageSubscription() {{
+        const resp = await fetch("/portal/api/billing-portal", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: "{csrf}"}})
+        }});
+        if (resp.ok) {{
+            const data = await resp.json();
+            if (data.url) window.location.href = data.url;
+        }} else {{
+            alert("Failed to open billing portal");
+        }}
+    }}
+    </script>
+    """
+
     body = f"""
     <div class="card">
         <h2>Subscription</h2>
@@ -1352,31 +2252,15 @@ async def page_billing(request: web.Request) -> web.Response:
                 <div style="font-size:18px;font-weight:600">{current} / {limit_text}</div>
             </div>
             <div>
-                <div class="muted" style="margin-bottom:4px">Renews</div>
+                <div class="muted" style="margin-bottom:4px">{"Expires" if is_admin_grant else "Renews"}</div>
                 <div style="font-size:18px;font-weight:600">{period_end}</div>
             </div>
         </div>
-        <div style="display:flex;gap:10px;margin-top:16px">
-            <button class="btn btn-primary" onclick="manageSubscription()">Manage Subscription</button>
-            <a href="/portal/pricing" class="btn btn-outline">Change Plan</a>
+        <div style="margin-top:16px">
+            {manage_btn}
         </div>
     </div>
-
-    <script>
-    async function manageSubscription() {{
-        const resp = await fetch("/portal/api/billing-portal", {{
-            method: "POST",
-            headers: {{"Content-Type": "application/json"}},
-            body: JSON.stringify({{csrf_token: "{csrf}"}})
-        }});
-        if (resp.ok) {{
-            const data = await resp.json();
-            if (data.url) window.location.href = data.url;
-        }} else {{
-            alert("Failed to open billing portal");
-        }}
-    }}
-    </script>
+    {manage_script}
     """
     return web.Response(text=_page("Billing", body, user, csrf), content_type="text/html")
 
@@ -1412,7 +2296,7 @@ async def api_subscribe(request: web.Request) -> web.Response:
     data = await request.json()
     plan = data.get("plan", "").strip()
 
-    if plan not in ("basic", "pro", "enterprise"):
+    if plan not in ("standard",):
         return web.json_response({"error": "Invalid plan"}, status=400)
 
     try:
@@ -1482,10 +2366,17 @@ async def check_portal_access(
 
     Returns (access_level, username) if authorized, or None if no portal session.
     This does NOT check legacy token auth — that's handled separately.
+    Shared/community devices grant full access to any logged-in user.
     """
     user = await _get_user(request)
     if not user:
         return None
+
+    # Check if this is a shared/community device — full access for any logged-in user
+    if device_hash:
+        is_shared = await asyncio.to_thread(db.is_device_shared, bot_name, device_hash)
+        if is_shared:
+            return "full", user["username"]
 
     access = await asyncio.to_thread(db.check_access, user["user_id"], bot_name, device_hash)
     if access:
