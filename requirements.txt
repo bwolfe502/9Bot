@@ -15,6 +15,7 @@ pyobjc-framework-Vision; sys_platform == "darwin"
 pywin32==311; sys_platform == "win32"
 websockets==16.0
 qrcode==8.2
+anthropic>=0.49.0
 # pywebview is optional — provides native desktop window instead of browser tab.
 # Install manually: pip install pywebview
 # Falls back to opening browser if not installed.

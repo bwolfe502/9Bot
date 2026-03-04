@@ -436,6 +436,11 @@ def apply_settings(settings):
     set_console_verbose(settings.get("verbose_logging", False))
     import training
     training.configure(settings.get("collect_training_data", False))
+    import chat_translate
+    chat_translate.configure(
+        settings.get("chat_translate_enabled", False),
+        settings.get("chat_translate_api_key", ""),
+    )
     set_gather_options(
         settings.get("gather_enabled", True),
         settings.get("gather_mine_level", 4),
@@ -609,6 +614,13 @@ def shutdown():
     except Exception:
         pass
 
+    # Stop chat translation worker
+    try:
+        import chat_translate
+        chat_translate.shutdown()
+    except Exception:
+        pass
+
     # Close training data file
     try:
         import training
@@ -710,7 +722,7 @@ def create_bug_report_zip(clear_debug=True, notes=None):
             try:
                 with open(settings_path, "r", encoding="utf-8") as sf:
                     safe_settings = json.load(sf)
-                for key in ("relay_secret",):
+                for key in ("relay_secret", "chat_translate_api_key"):
                     if key in safe_settings and safe_settings[key]:
                         safe_settings[key] = "***REDACTED***"
                 zf.writestr("settings.json", json.dumps(safe_settings, indent=2))
