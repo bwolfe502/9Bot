@@ -1273,10 +1273,7 @@ async def page_admin(request: web.Request) -> web.Response:
         if (resp.ok) {{
             const data = await resp.json();
             document.getElementById("inviteResult").innerHTML =
-                '<div class="alert alert-success">Invite code: <code><strong>' +
-                data.code + '</strong></code>'
-                + ' <button class="btn btn-outline btn-sm" onclick="copyInviteEmail(\'' + data.code + '\')">Copy Email</button>'
-                + '</div>';
+                `<div class="alert alert-success">Invite code: <code><strong>${{data.code}}</strong></code> <button class="btn btn-outline btn-sm" onclick="copyInviteEmail('${{data.code}}')">Copy Email</button></div>`;
         }} else alert("Failed");
     }}
 
