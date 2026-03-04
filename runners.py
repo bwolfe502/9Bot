@@ -12,6 +12,7 @@ Key exports:
     run_auto_pass         — Pass battle (rally/reinforce/join war)
     run_auto_occupy       — Territory auto-occupy wrapper
     run_auto_reinforce    — Reinforce Throne loop
+    run_auto_reinforce_ally — Reinforce ally castles from protocol viewport data
     run_auto_mithril      — Standalone mithril mining loop
     run_auto_gold         — Gold gathering loop
     run_repeat            — Generic repeating task wrapper
@@ -37,7 +38,8 @@ from troops import troops_avail, heal_all, read_panel_statuses, get_troop_status
 from actions import (attack, reinforce_throne, target, check_quests,
                      rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
-                     mine_mithril_if_due, gather_gold_loop)
+                     mine_mithril_if_due, gather_gold_loop,
+                     reinforce_ally_castle)
 from territory import auto_occupy_loop
 
 
@@ -391,6 +393,90 @@ def run_auto_reinforce(device, stop_event, interval, variation):
     dlog.info("Auto Reinforce Throne stopped")
 
 
+_ALLY_REINFORCE_COOLDOWN_S = 1800  # 30 minutes per entity ID
+
+
+def run_auto_reinforce_ally(device, stop_event):
+    """Reinforce ally PLAYER_CITY castles the moment they appear in the viewport.
+
+    Subscribes to EVT_ALLY_CITY_SPOTTED on the device's EventBus. Each new
+    ally city entity is queued immediately by the event handler (protocol thread)
+    and processed by this runner thread — zero polling delay.
+
+    Re-reinforcement is suppressed for _ALLY_REINFORCE_COOLDOWN_S per entity ID.
+    When an entity leaves the viewport (UnionDelEntitiesNtf removes it from
+    GameState), it can be re-queued and reinforced again on next appearance.
+
+    Requires protocol to be enabled on this device.
+    """
+    import queue as _queue
+    dlog = get_logger("runner", device)
+    dlog.info("Auto Reinforce Ally started")
+    stop_check = stop_event.is_set
+    lock = config.get_device_lock(device)
+    reinforced = {}  # entity_id -> monotonic timestamp of last successful reinforce
+    pending = _queue.Queue()
+
+    try:
+        from startup import get_protocol_event_bus, set_protocol_ally_monitoring
+        from protocol.events import EVT_ALLY_CITY_SPOTTED
+    except ImportError:
+        dlog.error("Protocol not available — Auto Reinforce Ally requires protocol enabled")
+        config.clear_device_status(device)
+        return
+
+    bus = get_protocol_event_bus(device)
+    if bus is None:
+        dlog.error("No EventBus for %s — is protocol enabled?", device)
+        config.set_device_status(device, "Error: Enable protocol first")
+        return
+
+    def _on_spotted(entity):
+        pending.put(entity)
+
+    set_protocol_ally_monitoring(device, True)
+    bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
+    dlog.info("Ally monitoring enabled")
+
+    try:
+        while not stop_check():
+            try:
+                entity = pending.get(timeout=1.0)
+            except _queue.Empty:
+                continue
+
+            if stop_check():
+                break
+
+            # EntityInfo: field_1=ID, field_3=owner (OwnerInfo with named keys)
+            eid = entity.get("field_1") or entity.get("id") or entity.get("ID")
+            if eid is None:
+                continue
+            now = time.monotonic()
+            if now - reinforced.get(eid, 0) < _ALLY_REINFORCE_COOLDOWN_S:
+                dlog.debug("Ally %s on cooldown, skipping", eid)
+                continue
+
+            x = entity.get("X", 0)
+            z = entity.get("Z", 0)
+            owner = entity.get("field_3") or entity.get("owner") or {}
+            name = owner.get("name", "") if isinstance(owner, dict) else getattr(owner, "name", "")
+            dlog.info("Ally city spotted: %s at (%s, %s) — reinforcing", name or eid, x, z)
+            config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
+            with lock:
+                success = reinforce_ally_castle(device, x, z, name, stop_check)
+            if success:
+                reinforced[eid] = time.monotonic()
+    except Exception as e:
+        dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)
+    finally:
+        bus.off(EVT_ALLY_CITY_SPOTTED, _on_spotted)
+        set_protocol_ally_monitoring(device, False)
+
+    config.clear_device_status(device)
+    dlog.info("Auto Reinforce Ally stopped")
+
+
 def run_auto_mithril(device, stop_event):
     """Standalone mithril mining loop — checks every 60s if mining is due.
     Also useful as fallback when no other auto tasks are running."""
@@ -497,8 +583,9 @@ _MODE_LABELS = {
     "auto_groot":     "Join Groot",
     "auto_pass":      "Pass Battle",
     "auto_occupy":    "Occupy Towers",
-    "auto_reinforce": "Reinforce Throne",
-    "auto_mithril":   "Mine Mithril",
+    "auto_reinforce":      "Reinforce Throne",
+    "auto_reinforce_ally": "Reinforce Ally",
+    "auto_mithril":        "Mine Mithril",
     "auto_gold":      "Gather Gold",
 }
 

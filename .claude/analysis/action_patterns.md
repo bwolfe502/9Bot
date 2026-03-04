@@ -1,5 +1,110 @@
 # Action Success Rates and Failure Patterns
 
+## Aggregate Totals (Sessions 13-22, 2026-03-03, v2.1.0)
+
+### Session 13-22 Combined (2026-03-03, 2 devices: :5575, :5585)
+
+| Action | Attempts | Successes | Rate | Trend vs Prior |
+|--------|----------|-----------|------|----------------|
+| check_quests (5575) | 231 | ~8 | **~3%** | WORSE — bl_button broken on 5575 |
+| check_quests (5585) | 114 | 112 | **98%** | Stable |
+| join_rally (5575) | 77 | 43 | **56%** | IMPROVED (was 0%) |
+| join_rally (5585) | 99 | 64 | **65%** | IMPROVED (was 0%) |
+| rally_titan (5575) | 31 | 15 | **48%** | Worse |
+| rally_titan (5585) | 31 | 12 | **39%** | Worse |
+| rally_eg (5575) | 23 | 4 | **17%** | Worse |
+| rally_eg (5585) | 21 | 2 | **10%** | Worse |
+| pvp_attack (5575) | 9 | 3 | **33%** | Stable |
+| pvp_attack (5585) | 22 | 3 | **14%** | Worse |
+| gather_gold (5585) | 25 | 23 | **92%** | Stable |
+| heal_all | 98+133 | 100% | 100% | Stable |
+
+**Source**: stats/session_20260303_160818.json, session_20260303_201642.json
+
+---
+
+### NEW: check_quests 5575 — bl_button.png broken [CRITICAL, NEW]
+
+**5575 check_quests fails 89% of the time (357/403 in session_20260303_160818).**
+
+Root cause: `bl_button.png` scores **41%** consistently on device 127.0.0.1:5575 (needs 80%).
+The button is never found, so navigation to BATTLE_LIST always fails. Device 5585 succeeds at
+99% on the same template.
+
+The `bl_screen` template (screen detection) scores only **7-14%** on 5575's MAP screen,
+meaning the BATTLE_LIST navigation tap is not working at all on this device — the game may
+not be in the right state, or 5575 has a UI variation.
+
+When 5575 IS on BATTLE_LIST (seen from 20:26 onward), it scores 97% on bl_screen. So the
+template is correct — the problem is that navigation TO the battle list is failing.
+
+- 220 consecutive "Navigation verify FAILED: expected Screen.BATTLE_LIST, on Screen.MAP" for 5575
+- Failure begins at 18:53 and continues until a different screen context is entered at 20:26
+- After 20:26 (during a separate mode), 5575 reaches BATTLE_LIST 60 times successfully
+
+**Cascade**: 220 quest screen navigation failures → check_quests 89% fail rate → no rally
+dispatch, no PVP, no tower — 5575 bot is essentially non-functional during this period.
+
+**Hypothesis**: 5575 had a popup or overlay blocking the battle list button. The
+`bl_button.png` is in a search region that may be partially obscured.
+
+**Distinguishing from prior join_rally 0%**: Join rally is now WORKING (56%/65% success),
+which is a major improvement from previous sessions. The 0% join_rally was fixed.
+
+---
+
+### NEW: join_rally FIXED [IMPORTANT]
+
+Previous sessions showed 0/215 join_rally successes. This session shows:
+- 5575: 43/77 (56%)
+- 5585: 64/99 (65%)
+
+The `jr_detail_load` transition that was 0% in previous sessions is now working.
+**The join_rally fix appears to have taken effect.**
+
+---
+
+### NEW: rally_titan degraded [WATCH]
+
+Previous best: 141/197 (72%). This session: 27/62 combined (44%).
+- titan_search_menu_open: 16/28 (57%) for 5575, 2/14 (14%) for 5585
+- titan_on_map_select: 0/39 across both devices (known non-functional metric)
+- titan_depart_settle: 0/28 across both devices (known non-functional metric)
+
+Multiple `titan_select_not_found` failure screenshots. May be related to titan respawn timing
+or the search menu not opening reliably this session.
+
+---
+
+### NEW: gather_gold on 5585 — transition failures [NEW]
+
+gather_gold succeeds at 92% (23/25) but internal transitions fail completely:
+- `gather_search_menu_open`: 0/24 met (1.0s budget)
+- `gather_tab_load`: 0/24 met (0.8s budget)
+- `gold_mine_select`: 0/25 met (3s budget)
+
+Yet gather_gold itself succeeds. These transitions may be mis-named or the success condition
+is checked differently in the gather flow. Not a blocking issue.
+
+---
+
+### NEW: EG P6 failures persist [CONFIRMED]
+
+- `eg_p6_boss_tap`: 0/9 met across both devices
+- `eg_p6_attack_dialog`: 0/9 met across both devices
+- P6 attack dialog still never opens — the EG P6 flow remains broken
+
+---
+
+### NEW: heal transitions all 0% [LOW PRIORITY]
+
+All heal sub-transitions (heal_dialog_open, heal_confirm_ready, heal_result_show, heal_close_settle)
+show 0% met_count across both devices, but heal_all itself succeeds at 100%. These timed_wait
+transitions are not matching the actual heal dialog state changes — the conditions are likely
+checking wrong templates. Not blocking since heal_all succeeds.
+
+---
+
 ## Aggregate Totals (Sessions 8-12, 2026-03-02, v2.0.6-v2.0.7)
 
 | Action | Attempts | Successes | Rate | Trend vs Prior |

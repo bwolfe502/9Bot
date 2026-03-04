@@ -62,5 +62,8 @@ from actions.farming import (
     gather_gold, gather_gold_loop,
 )
 
+# -- reinforce ally --
+from actions.reinforce_ally import navigate_to_coord, reinforce_ally_castle
+
 # -- shared state --
 from actions._helpers import _last_depart_slot

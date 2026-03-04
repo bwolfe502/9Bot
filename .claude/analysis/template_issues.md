@@ -1,5 +1,24 @@
 # Template Matching Issues
 
+## bl_button.png -- Device-specific failure on 5575 [NEW, CRITICAL]
+
+**Device 127.0.0.1:5575**: 714 misses, best score consistently 41% (threshold 80%)
+**Device 127.0.0.1:5585**: 47 hits at 99%, 0 misses
+
+This is the root cause of the check_quests 89% failure rate on 5575. The template matches
+perfectly on 5585 but scores only 41% on 5575. The BATTLE_LIST screen itself IS detectable
+on 5575 when it loads (bl_screen scores 97%), so the screen template is fine — the button
+template fails.
+
+Possible causes:
+- 5575 has different UI rendering (different emulator resolution/DPI setting)
+- An overlay is covering the button region on 5575
+- The template was captured from 5585's layout and 5575 has a slightly different position
+
+**Source**: stats/session_20260303_160818.json (760 misses total in session)
+
+---
+
 ## search.png -- 66% confidence [CONFIRMED, CROSS-PLATFORM]
 - **Platforms**: macOS (0.666), Windows (0.665)
 - **Score**: Consistently 66% across all devices and sessions (63 hits total)

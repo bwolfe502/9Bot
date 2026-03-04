@@ -348,6 +348,44 @@ def get_protocol_chat_messages(device=None):
     return state.chat_messages  # thread-safe list copy
 
 
+def get_protocol_event_bus(device=None):
+    """Return the EventBus for *device*, or None if protocol is not active."""
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    return info["bus"] if info else None
+
+
+def set_protocol_ally_monitoring(device, enabled: bool) -> None:
+    """Enable or disable ally city tracking on the GameState for *device*."""
+    try:
+        state = _get_device_state(device)
+        if state is not None:
+            state.set_ally_monitoring(enabled)
+    except Exception:
+        pass
+
+
+def get_protocol_ally_cities(device=None):
+    """Return list of verified ally PLAYER_CITY entity dicts, or None if unavailable/stale.
+
+    Entities come from UnionEntitiesNtf (server-filtered to own alliance) and are
+    additionally validated against own unionID. Returns None when protocol is off or
+    entity data has not been received yet (no bail-out signal — unlike rallies, zero
+    ally cities on screen is normal). Callers use None as the signal to skip.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("entities", max_age_s=60.0):
+            return None
+        return state.ally_city_entities  # thread-safe list copy
+    except Exception:
+        return None
+
+
 def get_protocol_troop_snapshot(device):
     """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
     state = _get_device_state(device)

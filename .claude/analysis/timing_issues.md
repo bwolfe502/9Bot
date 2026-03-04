@@ -1,5 +1,55 @@
 # Timing Issues
 
+## ADB Performance (Sessions 13-22, 2026-03-03, v2.1.0)
+
+No ADB timing data recorded for this session (adb_timing: {} in stats files).
+
+### Transition Timing Summary (2026-03-03)
+
+All well-behaved transitions remain healthy:
+- `nav_map_to_alliance`: 100% met, avg 2.0s (budget 2.5s) — both devices
+- `nav_alliance_menu_load`: 100% met, avg 0.9s (budget 1.5s) — both devices
+- `verify_war_screen`: 100% met, avg 0.77s (budget 1.5s) — both devices
+- `nav_td_exit_to_map`: 100% met, avg 2.2s (budget 3.5s) — both devices
+- `jr_slot_to_depart`: 5575: 58/74 (78%), 5585: 79/99 (80%) — slight improvement
+- `jr_depart_to_map`: 100% met, avg 0.83s — both devices
+- `jr_backout_close_x`: 5575: 12/33 (36%), 5585: 18/33 (55%) — remains below 70%
+
+### Broken Transitions (confirmed, still 0%)
+
+| Transition | Count | Met | Budget |
+|------------|-------|-----|--------|
+| titan_on_map_select | 39 | 0 | 1.5s |
+| titan_depart_settle | 28 | 0 | 1.0s |
+| eg_search_menu_open | 7 | 0 | 1.5s |
+| eg_poll_troop_interval | 242 | 0 | 3.0s |
+| eg_p6_boss_tap | 9 | 0 | 1.0s |
+| eg_p6_attack_dialog | 9 | 0 | 1.0s |
+| heal_dialog_open | 6 | 0 | 1.0s |
+| heal_confirm_ready | 5 | 0 | 1.0s |
+| heal_result_show | 5 | 0 | 1.0s |
+| heal_close_settle | 5 | 0 | 2.0s |
+| gather_search_menu_open | 24 | 0 | 1.0s |
+| gather_tab_load | 24 | 0 | 0.8s |
+| gold_mine_select | 25 | 0 | 3.0s |
+
+**Note**: `eg_poll_troop_interval` at 0/242 is expected — this is a polling wait that never
+"meets" the condition in the traditional sense (it sleeps and checks periodically).
+
+**Note**: `gather_*` transitions at 0% despite gather_gold at 92% success — the timing
+checks appear to be measuring the wrong things or the gather flow bypasses these checkpoints.
+
+### verify_bl_screen — Critical failure for 5575 [NEW]
+
+- 5575: 38/365 (10%) met — severe, explained by bl_button.png failure
+- 5585: 105/108 (97%) met — normal
+- Budget 2.5s, avg when met: ~2.0s
+
+When bl_button.png fails (scores 41%), navigation to BATTLE_LIST times out, causing
+verify_bl_screen to fail. This is a downstream effect of the template issue, not a budget problem.
+
+---
+
 ## ADB Performance (Sessions 8-12, 2026-03-02)
 
 ### Per-device averages (session 10, 175 min, 6 devices)
