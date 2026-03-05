@@ -1343,6 +1343,16 @@ function startPollingFallback(img, dh) {
     _liveViewTimers[dh] = setInterval(poll, 3000);
 }
 
+/* ---------- Offline section toggle ---------- */
+function toggleOffline(header) {
+    var section = header.closest('.actions-section');
+    var grid = section.querySelector('.device-grid');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = grid.style.display !== 'none';
+    grid.style.display = isOpen ? 'none' : '';
+    arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
+}
+
 /* ---------- Stop All per device ---------- */
 function stopAllDevice(btn) {
     if (!confirm('Stop all tasks on this device?')) return;
@@ -1634,6 +1644,7 @@ async def _page_dashboard_admin(
 
     # Build device cards — SAME HTML structure as the bot's index.html
     cards_html = ""
+    offline_cards_html = ""
     for bot_name, bot_label, dhash, label, online in all_devices:
         api_base = f"/{bot_name}/d/{dhash}"
 
@@ -1758,8 +1769,8 @@ async def _page_dashboard_admin(
                 f'</div>'
             )
         else:
-            # Offline device card
-            cards_html += (
+            # Offline device card — separate section
+            offline_cards_html += (
                 f'<div class="card device-card device-card-offline" data-dhash="{dhash}">'
                 f'<div class="device-top">'
                 f'<div class="device-name-row">'
@@ -1775,6 +1786,21 @@ async def _page_dashboard_admin(
                 f'</div>'
                 f'</div>'
             )
+
+    # Collapsible offline section
+    offline_section = ""
+    if offline_cards_html:
+        offline_count = sum(1 for _, _, _, _, o in all_devices if not o)
+        offline_section = (
+            f'<div class="actions-section" style="margin-top:16px">'
+            f'<div class="actions-header" onclick="toggleOffline(this)" '
+            f'style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">'
+            f'<span style="font-size:13px;font-weight:600;color:#667">Offline Devices ({offline_count})</span>'
+            f'<span class="controls-arrow" style="color:#667">&#9654;</span>'
+            f'</div>'
+            f'<div class="device-grid" style="display:none">{offline_cards_html}</div>'
+            f'</div>'
+        )
 
     # Chat modal HTML (one copy for the whole page)
     chat_modal = (
@@ -1808,6 +1834,7 @@ async def _page_dashboard_admin(
     # Build page — use dashboard wrapper (portal nav CSS only + bot's style.css)
     body = (
         f'<div class="device-grid">{cards_html}</div>'
+        + offline_section
         + chat_modal
         + "\n<script>\n" + _PORTAL_DASHBOARD_JS + "\n</script>"
     )
