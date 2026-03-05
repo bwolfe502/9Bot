@@ -540,6 +540,7 @@ def apply_settings(settings):
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
     config.FRONTLINE_OCCUPY_ACTION = settings.get("frontline_occupy_action", "reinforce")
+    config.FRONTLINE_ENEMY_TEAMS = settings.get("frontline_enemy_teams", [])
     set_protocol_enabled(settings.get("protocol_enabled", False))
     # Territory passes & safe zones
     config.TERRITORY_PASSES = settings.get("territory_passes", {})

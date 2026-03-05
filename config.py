@@ -196,6 +196,7 @@ GATHER_MAX_TROOPS = 3            # Max troops to send gathering simultaneously
 # Tower quest
 TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires target marker on tower)
 FRONTLINE_OCCUPY_ACTION = "reinforce"  # "attack" = empty enemy towers, "reinforce" = empty ally towers
+FRONTLINE_ENEMY_TEAMS = []  # separate from ENEMY_TEAMS; empty = fall back to ENEMY_TEAMS
 
 # Protocol interception (opt-in, requires Frida Gadget in APK)
 PROTOCOL_ENABLED = False
@@ -331,6 +332,8 @@ SETTINGS_RULES = {
     "my_team":               {"type": str, "choices": ["yellow", "red", "blue", "green"]},
     "enemy_team":            {"type": str, "choices": ["yellow", "red", "blue", "green"]},  # legacy single-value, migrated to enemy_teams list
     "enemy_teams":           {"type": list},  # list of team color strings
+    "frontline_enemy_teams": {"type": list},  # list of team color strings (frontline occupy)
+    "frontline_occupy_action": {"type": str, "choices": ["attack", "reinforce"]},
     "mode":                  {"type": str, "choices": ["bl", "rw"]},
 }
 
@@ -485,6 +488,7 @@ _SETTINGS_TO_CONFIG = {
     "gather_max_troops":     "GATHER_MAX_TROOPS",
     "tower_quest_enabled":     "TOWER_QUEST_ENABLED",
     "frontline_occupy_action": "FRONTLINE_OCCUPY_ACTION",
+    "frontline_enemy_teams":   "FRONTLINE_ENEMY_TEAMS",
     "my_team":               "MY_TEAM_COLOR",
     "mithril_interval":      "MITHRIL_INTERVAL",
     "protocol_enabled":      "PROTOCOL_ENABLED",

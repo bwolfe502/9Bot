@@ -23,7 +23,8 @@ SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settin
 DEVICE_OVERRIDABLE_KEYS = {
     "auto_heal", "auto_restore_ap", "ap_use_free", "ap_use_potions",
     "ap_allow_large_potions", "ap_use_gems", "ap_gem_limit", "min_troops",
-    "my_team", "enemy_teams", "frontline_enemy_teams", "gather_enabled",
+    "my_team", "enemy_teams", "frontline_enemy_teams", "frontline_occupy_action",
+    "gather_enabled",
     "gather_mine_level", "gather_max_troops",
     "tower_quest_enabled", "eg_rally_own", "titan_rally_own", "mithril_interval",
     "protocol_enabled", "home_x", "home_z", "max_reinforce_distance",
