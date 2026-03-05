@@ -389,6 +389,23 @@ def get_protocol_ally_cities(device=None):
 _FACTION_TO_TEAM = {1: "red", 2: "blue", 3: "green", 4: "yellow"}
 
 
+def get_protocol_kvk_tower_troops(device=None):
+    """Return KvkBuilding troop counts observed from entity packets, or None.
+
+    Returns dict mapping (row, col) -> troop_count for towers seen in the
+    player's viewport since login.  A count > 0 means troops are present.
+    Returns None when protocol is off or no data has been collected yet.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        troops = state.kvk_tower_troops
+        return troops if troops is not None else None
+    except Exception:
+        return None
+
+
 def get_protocol_territory_grid(device=None):
     """Return territory grid from protocol, or None.
 
@@ -410,10 +427,12 @@ def get_protocol_territory_grid(device=None):
         if not raw_grid:
             return None
         result = {}
-        for (row, col), (faction_id, cur_faction_id, legion_id) in raw_grid.items():
+        for (row, col), val in raw_grid.items():
+            faction_id, cur_faction_id, legion_id = val[0], val[1], val[2]
+            cur_legion_id = val[3] if len(val) > 3 else 0
             owner_team = _FACTION_TO_TEAM.get(faction_id)
             contester_team = _FACTION_TO_TEAM.get(cur_faction_id) if cur_faction_id else None
-            has_defender = bool(legion_id)
+            has_defender = bool(legion_id) or bool(cur_legion_id)
             if owner_team or contester_team:
                 result[(row, col)] = (owner_team, contester_team, has_defender)
         return result
@@ -520,6 +539,7 @@ def apply_settings(settings):
         settings.get("gather_max_troops", 3),
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
+    config.FRONTLINE_OCCUPY_ACTION = settings.get("frontline_occupy_action", "reinforce")
     set_protocol_enabled(settings.get("protocol_enabled", False))
     # Territory passes & safe zones
     config.TERRITORY_PASSES = settings.get("territory_passes", {})

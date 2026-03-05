@@ -42,7 +42,7 @@ from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop,
                      reinforce_ally_castle, capture_home_coords)
-from territory import auto_occupy_loop
+from territory import auto_occupy_loop, frontline_occupy_loop
 
 
 # ============================================================
@@ -392,6 +392,13 @@ def run_auto_occupy(device, stop_event):
     get_logger("runner", device).info("Auto Occupy stopped")
 
 
+def run_frontline_occupy(device, stop_event):
+    config.set_device_status(device, "Frontline Occupy...")
+    frontline_occupy_loop(device, stop_check=stop_event.is_set)
+    config.clear_device_status(device)
+    get_logger("runner", device).info("Frontline Occupy stopped")
+
+
 def run_debug_occupy(device, stop_event):
     config.set_device_status(device, "Debug Occupy...")
     auto_occupy_loop(device, stop_check=stop_event.is_set, skip_troop_gate=True)
@@ -701,7 +708,8 @@ _MODE_LABELS = {
     "auto_titan":     "Rally Titans",
     "auto_groot":     "Join Groot",
     "auto_pass":      "Pass Battle",
-    "auto_occupy":    "Occupy Towers",
+    "auto_occupy":       "Occupy Towers",
+    "frontline_occupy":  "Frontline Occupy",
     "auto_reinforce":      "Reinforce Throne",
     "auto_reinforce_ally": "Reinforce Ally",
     "auto_mithril":        "Mine Mithril",

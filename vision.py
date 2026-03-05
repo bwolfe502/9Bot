@@ -642,6 +642,199 @@ def adb_swipe(device, x1, y1, x2, y2, duration_ms=300):
     if elapsed > 3.0:
         get_logger("vision", device).warning("adb_swipe slow: %.2fs", elapsed)
 
+def adb_pinch_zoom_out(device, cx=540, cy=960, spread=250, duration_ms=600):
+    """Simulate a pinch-in (zoom-out) gesture by running two inward swipes in parallel.
+
+    Two fingers start ``spread`` pixels to the left and right of ``(cx, cy)``
+    and move toward the centre.  Threads are used so both swipes start at
+    roughly the same time, which is close enough for emulators.
+    """
+    def _swipe(x1, y1, x2, y2):
+        try:
+            subprocess.run([adb_path, "-s", device, "shell", "input", "swipe",
+                            str(x1), str(y1), str(x2), str(y2), str(duration_ms)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=ADB_COMMAND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            get_logger("vision", device).warning("adb_pinch_zoom_out swipe timed out")
+
+    t1 = threading.Thread(target=_swipe, args=(cx - spread, cy, cx - 50, cy), daemon=True)
+    t2 = threading.Thread(target=_swipe, args=(cx + spread, cy, cx + 50, cy), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+
+def bluestacks_zoom_out(device, notches=3):
+    """Send Ctrl+scroll-down to zoom out in the BlueStacks window for this device.
+
+    BlueStacks intercepts zoom via a WH_MOUSE_LL low-level hook, which only fires
+    for input injected through the Windows pipeline via SendInput. The wheel event
+    goes to the window under the cursor, so we temporarily move the cursor to the
+    BlueStacks window center, inject Ctrl+scroll, then restore the cursor.
+
+    Returns True if input was sent, False on any failure or non-Windows.
+    """
+    if platform.system() != "Windows":
+        return False
+    try:
+        import ctypes
+        import ctypes.wintypes
+        from devices import get_device_hwnd
+
+        hwnd = get_device_hwnd(device)
+        if hwnd is None:
+            get_logger("vision", device).debug("bluestacks_zoom_out: hwnd not found")
+            return False
+
+        u32 = ctypes.windll.user32
+
+        INPUT_KEYBOARD    = 1
+        INPUT_MOUSE       = 0
+        KEYEVENTF_KEYUP   = 0x0002
+        MOUSEEVENTF_WHEEL = 0x0800
+        VK_CONTROL        = 0x11
+        WHEEL_DELTA       = 120
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long),
+                        ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+                        ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
+                        ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class _INPUT_UNION(ctypes.Union):
+            _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT)]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_ulong), ("_input", _INPUT_UNION)]
+
+        def _kbd(vk, flags=0):
+            inp = INPUT(type=INPUT_KEYBOARD)
+            inp._input.ki = KEYBDINPUT(wVk=vk, dwFlags=flags)
+            return inp
+
+        def _wheel(delta):
+            inp = INPUT(type=INPUT_MOUSE)
+            inp._input.mi = MOUSEINPUT(
+                mouseData=ctypes.c_ulong(ctypes.c_short(delta).value).value,
+                dwFlags=MOUSEEVENTF_WHEEL)
+            return inp
+
+        # Get BlueStacks window center
+        rect = ctypes.wintypes.RECT()
+        u32.GetWindowRect(hwnd, ctypes.byref(rect))
+        cx = (rect.left + rect.right) // 2
+        cy = (rect.top + rect.bottom) // 2
+
+        # Save current cursor position and move to BlueStacks center
+        pt = ctypes.wintypes.POINT()
+        u32.GetCursorPos(ctypes.byref(pt))
+        u32.SetCursorPos(cx, cy)
+        time.sleep(0.5)
+
+        # Ctrl-down held for the entire sequence, released only after all notches
+        ctrl_down = (INPUT * 1)(_kbd(VK_CONTROL))
+        u32.SendInput(1, ctrl_down, ctypes.sizeof(INPUT))
+        time.sleep(0.5)
+
+        wheel_input = (INPUT * 1)(_wheel(-WHEEL_DELTA))
+        for _ in range(notches):
+            u32.SendInput(1, wheel_input, ctypes.sizeof(INPUT))
+            time.sleep(0.3)
+
+        ctrl_up = (INPUT * 1)(_kbd(VK_CONTROL, KEYEVENTF_KEYUP))
+        u32.SendInput(1, ctrl_up, ctypes.sizeof(INPUT))
+        time.sleep(0.2)
+
+        # Restore cursor position
+        u32.SetCursorPos(pt.x, pt.y)
+
+        return True
+    except Exception as e:
+        get_logger("vision", device).warning("bluestacks_zoom_out failed: %s", e)
+        return False
+
+
+def bluestacks_test_drag(device):
+    """Test whether SendInput mouse click+drag registers in the BlueStacks window.
+
+    Moves the cursor to the BlueStacks window center, holds left button down,
+    drags 100px right, then releases. Used to verify SendInput mouse events work.
+    """
+    if platform.system() != "Windows":
+        return False
+    try:
+        import ctypes
+        import ctypes.wintypes
+        from devices import get_device_hwnd
+
+        hwnd = get_device_hwnd(device)
+        if hwnd is None:
+            return False
+
+        u32 = ctypes.windll.user32
+
+        INPUT_MOUSE            = 0
+        MOUSEEVENTF_LEFTDOWN   = 0x0002
+        MOUSEEVENTF_LEFTUP     = 0x0004
+        MOUSEEVENTF_MOVE       = 0x0001
+        MOUSEEVENTF_ABSOLUTE   = 0x8000
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long),
+                        ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+                        ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+
+        class _INPUT_UNION(ctypes.Union):
+            _fields_ = [("mi", MOUSEINPUT)]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_ulong), ("_input", _INPUT_UNION)]
+
+        def _mouse(flags, dx=0, dy=0):
+            inp = INPUT(type=INPUT_MOUSE)
+            inp._input.mi = MOUSEINPUT(dx=dx, dy=dy, dwFlags=flags)
+            return inp
+
+        rect = ctypes.wintypes.RECT()
+        u32.GetWindowRect(hwnd, ctypes.byref(rect))
+        cx = (rect.left + rect.right) // 2
+        cy = (rect.top + rect.bottom) // 2
+
+        pt = ctypes.wintypes.POINT()
+        u32.GetCursorPos(ctypes.byref(pt))
+        u32.SetCursorPos(cx, cy)
+        time.sleep(0.5)
+
+        # Left button down
+        btn_down = (INPUT * 1)(_mouse(MOUSEEVENTF_LEFTDOWN))
+        u32.SendInput(1, btn_down, ctypes.sizeof(INPUT))
+        time.sleep(0.1)
+
+        # Drag 100px to the right in 10px steps
+        for _ in range(10):
+            move = (INPUT * 1)(_mouse(MOUSEEVENTF_MOVE, dx=10, dy=0))
+            u32.SendInput(1, move, ctypes.sizeof(INPUT))
+            time.sleep(0.05)
+
+        # Left button up
+        btn_up = (INPUT * 1)(_mouse(MOUSEEVENTF_LEFTUP))
+        u32.SendInput(1, btn_up, ctypes.sizeof(INPUT))
+        time.sleep(0.1)
+
+        u32.SetCursorPos(pt.x, pt.y)
+        get_logger("vision", device).info("bluestacks_test_drag: drag sent")
+        return True
+    except Exception as e:
+        get_logger("vision", device).warning("bluestacks_test_drag failed: %s", e)
+        return False
+
+
 def adb_keyevent(device, keycode):
     """Send a key event via ADB (e.g. KEYCODE_BACK=4, KEYCODE_HOME=3)."""
     t0 = time.time()

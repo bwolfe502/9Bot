@@ -195,6 +195,7 @@ GATHER_MAX_TROOPS = 3            # Max troops to send gathering simultaneously
 
 # Tower quest
 TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires target marker on tower)
+FRONTLINE_OCCUPY_ACTION = "reinforce"  # "attack" = empty enemy towers, "reinforce" = empty ally towers
 
 # Protocol interception (opt-in, requires Frida Gadget in APK)
 PROTOCOL_ENABLED = False
@@ -482,7 +483,8 @@ _SETTINGS_TO_CONFIG = {
     "gather_enabled":        "GATHER_ENABLED",
     "gather_mine_level":     "GATHER_MINE_LEVEL",
     "gather_max_troops":     "GATHER_MAX_TROOPS",
-    "tower_quest_enabled":   "TOWER_QUEST_ENABLED",
+    "tower_quest_enabled":     "TOWER_QUEST_ENABLED",
+    "frontline_occupy_action": "FRONTLINE_OCCUPY_ACTION",
     "my_team":               "MY_TEAM_COLOR",
     "mithril_interval":      "MITHRIL_INTERVAL",
     "protocol_enabled":      "PROTOCOL_ENABLED",

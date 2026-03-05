@@ -491,6 +491,67 @@ def stop_bluestacks_instance(instance_name):
         return False
 
 
+def get_device_hwnd(device_id):
+    """Return the top-level window handle (HWND) for the emulator window mapped to device_id.
+
+    Finds the emulator process that LISTENs on the device's ADB port, then
+    enumerates visible top-level windows to find one owned by that process
+    that has a non-empty title (i.e. the main game window, not tool windows).
+
+    Returns the hwnd integer, or None if not found / not on Windows.
+    """
+    if platform.system() != "Windows":
+        return None
+    try:
+        import win32gui
+        import win32process
+        import psutil
+    except ImportError:
+        return None
+
+    port = _extract_port(device_id)
+    if port is None:
+        return None
+
+    # Find the emulator PID that listens on this port.
+    emu_names = ["hd-player", "bluestacks", "mumuplayer",
+                 "mumuvmmheadless", "nemuheadless", "nemuplayer"]
+    target_pid = None
+    for proc in psutil.process_iter(["pid", "name"]):
+        if not any(n in (proc.info["name"] or "").lower() for n in emu_names):
+            continue
+        try:
+            for conn in proc.net_connections(kind="tcp4"):
+                if conn.status == "LISTEN" and conn.laddr.port == port:
+                    target_pid = proc.info["pid"]
+                    break
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            pass
+        if target_pid:
+            break
+
+    if target_pid is None:
+        return None
+
+    # Enumerate windows to find one owned by that PID with a visible title.
+    result = [None]
+
+    def _enum(hwnd, _):
+        if result[0]:
+            return
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if pid == target_pid and win32gui.GetWindowText(hwnd):
+                result[0] = hwnd
+        except Exception:
+            pass
+
+    win32gui.EnumWindows(_enum, None)
+    return result[0]
+
+
 def get_instance_for_device(device_id):
     """Map an ADB device ID to a BlueStacks instance name using port matching.
 
