@@ -2,6 +2,9 @@
 {% block title_suffix %} - {{ device_name }} Settings{% endblock %}
 
 {% block content %}
+{% if device_filter %}
+<a href="/d/{{ device_hash }}{% if device_token %}?token={{ device_token }}{% endif %}" style="color:#64d8ff;font-size:13px;text-decoration:none">&larr; Back to Dashboard</a>
+{% endif %}
 <h1 style="font-size:18px;margin-bottom:4px">{{ device_name }}</h1>
 
 <!-- Device Tabs -->

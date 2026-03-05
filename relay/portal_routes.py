@@ -1149,6 +1149,12 @@ function refreshAllDevices() {
                 var dot = card.querySelector('.status-indicator');
                 if (dot) { if (dev.status !== 'Idle') dot.classList.add('active'); else dot.classList.remove('active'); }
 
+                // Troop count in header
+                var troopCount = card.querySelector('.device-troops');
+                if (troopCount && dev.troops) {
+                    var home = dev.troops.filter(function(t){ return t.action === 'Home'; }).length;
+                    troopCount.innerHTML = '&#9876; ' + home + '/' + dev.troops.length;
+                }
                 // Troops
                 var troopEl = card.querySelector('.troop-slots');
                 if (troopEl) {
@@ -1335,6 +1341,27 @@ function startPollingFallback(img, dh) {
     }
     poll();
     _liveViewTimers[dh] = setInterval(poll, 3000);
+}
+
+/* ---------- Stop All per device ---------- */
+function stopAllDevice(btn) {
+    if (!confirm('Stop all tasks on this device?')) return;
+    var apiBase = _apiOf(btn);
+    btn.textContent = 'Stopping...'; btn.disabled = true;
+    fetch(apiBase + '/tasks/stop-all', {method:'POST', credentials:'include'})
+        .then(function() {
+            btn.textContent = 'Stopped!';
+            // Clear all toggles on this card
+            var card = btn.closest('.device-card');
+            if (card) {
+                card.querySelectorAll('.toggle.on').forEach(function(t) { t.classList.remove('on'); });
+                card.querySelectorAll('.control-pill.pill-on').forEach(function(p) { p.classList.remove('pill-on'); });
+            }
+            setTimeout(function() { btn.textContent = 'Stop All'; btn.disabled = false; }, 2000);
+        }).catch(function() {
+            btn.textContent = 'Error';
+            setTimeout(function() { btn.textContent = 'Stop All'; btn.disabled = false; }, 2000);
+        });
 }
 
 /* ---------- Remote tap ---------- */
@@ -1721,6 +1748,13 @@ async def _page_dashboard_admin(
                 f'<div class="live-view-container" style="display:none">'
                 f'<img class="live-view-img" alt="Screenshot">'
                 f'</div></div>'
+                # Bottom bar (Settings + Stop All)
+                f'<div class="bottom-bar" style="margin-top:8px">'
+                f'<button type="button" class="bottom-btn bottom-btn-danger" style="flex:1" '
+                f'onclick="stopAllDevice(this)">Stop All</button>'
+                f'<a href="{api_base}/settings" class="bottom-btn" '
+                f'style="flex:1;text-align:center;text-decoration:none">Settings</a>'
+                f'</div>'
                 f'</div>'
             )
         else:
