@@ -16,7 +16,48 @@
 <a href="/calibrate" class="action-chip action-chip-debug" style="text-decoration:none;text-align:center">Calibrate</a>
 </div>
 
-<div class="section-header">Debug Actions</div>
+<!-- Device Selector (for one-shot actions) -->
+{% if devices|length > 1 %}
+<div class="card" style="padding:12px 16px">
+    <div class="device-select">
+        {% for dev in devices %}
+        <label class="device-option">
+            <input type="checkbox" name="device_select" value="{{ dev.id }}"
+                   checked
+                   onchange="updateDeviceForms()">
+            {{ dev.name }}
+        </label>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- One-Shot Actions -->
+<div class="section-header">Farm Actions</div>
+<div class="action-grid">
+{% for name in oneshot_farm %}
+<form method="post" action="/tasks/start" class="device-form">
+    <input type="hidden" name="device" value="{{ devices|map(attribute='id')|join(',') }}">
+    <input type="hidden" name="task_name" value="{{ name }}">
+    <input type="hidden" name="task_type" value="oneshot">
+    <button type="submit" class="action-chip">{{ name }}</button>
+</form>
+{% endfor %}
+</div>
+
+<div class="section-header" style="margin-top:16px">War Actions</div>
+<div class="action-grid">
+{% for name in oneshot_war %}
+<form method="post" action="/tasks/start" class="device-form">
+    <input type="hidden" name="device" value="{{ devices|map(attribute='id')|join(',') }}">
+    <input type="hidden" name="task_name" value="{{ name }}">
+    <input type="hidden" name="task_type" value="oneshot">
+    <button type="submit" class="action-chip action-chip-war">{{ name }}</button>
+</form>
+{% endfor %}
+</div>
+
+<div class="section-header" style="margin-top:16px">Debug Actions</div>
 <div class="action-grid">
 {% for name in debug_actions %}
 <form method="post" action="/tasks/start" class="device-form">

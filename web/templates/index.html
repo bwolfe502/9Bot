@@ -289,52 +289,6 @@
 </div>
 {% endif %}
 
-<!-- Device Selector (multi-device, owner only — for one-shot actions) -->
-{% if devices|length > 1 and not device_filter %}
-<div class="card" style="padding:12px 16px">
-    <div class="device-select">
-        {% for dev in devices %}
-        {% if not (dev.offline is defined and dev.offline) %}
-        <label class="device-option">
-            <input type="checkbox" name="device_select" value="{{ dev.id }}"
-                   checked
-                   onchange="updateDeviceForms()">
-            {{ dev.name }}
-        </label>
-        {% endif %}
-        {% endfor %}
-    </div>
-</div>
-{% endif %}
-
-{% if not (device_readonly is defined and device_readonly) %}
-<!-- Quick Actions (collapsible, starts minimized) -->
-<div class="actions-section">
-    <div class="actions-header" onclick="toggleActions(this)">
-        <span class="section-header" style="margin:0; border:none; padding:0; cursor:pointer">More Actions</span>
-        <span class="controls-arrow">&#9654;</span>
-    </div>
-    <div class="action-grid" style="display:none">
-    {% for name in oneshot_farm %}
-    <form method="post" action="{% if device_filter %}/d/{{ device_hash }}/tasks/start?token={{ device_token }}{% else %}/tasks/start{% endif %}" class="device-form">
-        <input type="hidden" name="device" value="{% if devices %}{{ devices[0].id }}{% endif %}">
-        <input type="hidden" name="task_name" value="{{ name }}">
-        <input type="hidden" name="task_type" value="oneshot">
-        <button type="submit" class="action-chip">{{ name }}</button>
-    </form>
-    {% endfor %}
-    {% for name in oneshot_war %}
-    <form method="post" action="{% if device_filter %}/d/{{ device_hash }}/tasks/start?token={{ device_token }}{% else %}/tasks/start{% endif %}" class="device-form">
-        <input type="hidden" name="device" value="{% if devices %}{{ devices[0].id }}{% endif %}">
-        <input type="hidden" name="task_name" value="{{ name }}">
-        <input type="hidden" name="task_type" value="oneshot">
-        <button type="submit" class="action-chip action-chip-war">{{ name }}</button>
-    </form>
-    {% endfor %}
-    </div>
-</div>
-{% endif %}
-
 <!-- Running Tasks -->
 {% if tasks %}
 <div class="section-header" style="margin-top:24px">Running</div>
@@ -742,28 +696,6 @@ function refreshStatus() {
 refreshStatus();
 setInterval(refreshStatus, 3000);
 
-function getSelectedDevices() {
-    var checkboxes = document.querySelectorAll('input[name="device_select"]:checked');
-    if (checkboxes.length > 0) {
-        return Array.prototype.map.call(checkboxes, function(cb) { return cb.value; });
-    }
-    // Single device (no selector shown) — read from device card
-    var card = document.querySelector('.device-card[data-device]');
-    if (card) return [card.getAttribute('data-device')];
-    // Last resort: read from first action form
-    var input = document.querySelector('.device-form input[name="device"]');
-    return input ? [input.value] : [];
-}
-function updateDeviceForms() {
-    var devices = getSelectedDevices();
-    var val = devices.join(',');
-    document.querySelectorAll('.device-form').forEach(function(form) {
-        var input = form.querySelector('input[name="device"]');
-        if (input) input.value = val;
-    });
-}
-document.addEventListener('DOMContentLoaded', updateDeviceForms);
-
 function toggleAutoMode(modeKey, deviceId) {
     // Block starting tasks while manual control is active
     if (deviceId && _manualControlDevices[deviceId]) return;
@@ -781,7 +713,7 @@ function toggleAutoMode(modeKey, deviceId) {
         if (deviceId) body += '&device=' + encodeURIComponent(deviceId);
     } else {
         url = API_PREFIX + '/tasks/start' + API_SUFFIX;
-        var device = deviceId || getSelectedDevices().join(',');
+        var device = deviceId;
         body = 'device=' + encodeURIComponent(device)
              + '&task_name=' + encodeURIComponent(modeKey)
              + '&task_type=auto';
@@ -807,15 +739,6 @@ function toggleAutoMode(modeKey, deviceId) {
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: body
     }).catch(function() {});
-}
-
-function toggleActions(header) {
-    var section = header.closest('.actions-section');
-    var grid = section.querySelector('.action-grid');
-    var arrow = header.querySelector('.controls-arrow');
-    var isOpen = grid.style.display !== 'none';
-    grid.style.display = isOpen ? 'none' : '';
-    arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
 }
 
 function toggleOffline(header) {
