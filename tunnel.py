@@ -224,6 +224,7 @@ async def _send_device_list(ws) -> None:
             devices.append({
                 "hash": device_hash(device_id),
                 "name": display_name or device_id,
+                "online": True,
             })
         # Include offline BlueStacks instances so portal can show Start Emulator
         for inst in get_offline_instances():
@@ -232,6 +233,7 @@ async def _send_device_list(ws) -> None:
                 devices.append({
                     "hash": dh,
                     "name": inst["display_name"],
+                    "online": False,
                 })
         if devices:
             await ws.send(json.dumps({

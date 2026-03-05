@@ -46,12 +46,16 @@ log = logging.getLogger("portal")
 
 # Reference to _bots dict from relay_server (injected at setup time)
 _active_bots: dict = {}
+_bot_device_status: dict = {}  # {bot_name: [{"hash", "name", "online"}, ...]}
 
 
-def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
+def setup_portal_routes(app: web.Application, active_bots: dict,
+                        bot_devices: dict | None = None) -> None:
     """Register all portal routes on the aiohttp app."""
-    global _active_bots
+    global _active_bots, _bot_device_status
     _active_bots = active_bots
+    if bot_devices is not None:
+        _bot_device_status = bot_devices
 
     # Pages
     app.router.add_get("/portal", _redirect_portal_slash)
@@ -1626,17 +1630,30 @@ async def _page_dashboard_admin(
     bots = await asyncio.to_thread(db.list_bots)
 
     # Collect all devices across all bots
+    # Each entry: (bot_name, bot_label, dhash, label, device_state)
+    # device_state: "online" | "offline" (emu stopped, startable) | "disconnected" (server off)
     all_devices = []
     for b in bots:
         name = b["bot_name"]
-        online = name in _active_bots and not _active_bots[name].closed
+        bot_online = name in _active_bots and not _active_bots[name].closed
         bot_label = _html_escape(b.get("label") or name)
         devices = await asyncio.to_thread(db.list_devices, name)
+        # Build lookup of per-device online status from bot's last report
+        dev_online_map = {}
+        for bd in _bot_device_status.get(name, []):
+            dev_online_map[bd["hash"]] = bd.get("online", True)
         for d in devices:
             label = _html_escape(
                 d.get("label") or d.get("device_name") or d["device_hash"][:8]
             )
-            all_devices.append((name, bot_label, d["device_hash"], label, online))
+            dh = d["device_hash"]
+            if not bot_online:
+                state = "disconnected"
+            elif dev_online_map.get(dh, True):
+                state = "online"
+            else:
+                state = "offline"
+            all_devices.append((name, bot_label, dh, label, state))
 
     if not all_devices:
         body = '<p class="muted" style="padding:24px;text-align:center">No devices registered.</p>'
@@ -1646,7 +1663,7 @@ async def _page_dashboard_admin(
         )
 
     # Pick the first online bot to source style.css from
-    css_bot = next((n for n, _, _, _, o in all_devices if o), all_devices[0][0])
+    css_bot = next((n for n, _, _, _, s in all_devices if s == "online"), all_devices[0][0])
 
     # Auto mode groups
     auto_modes = [
@@ -1663,7 +1680,8 @@ async def _page_dashboard_admin(
     # Build device cards — SAME HTML structure as the bot's index.html
     cards_html = ""
     offline_cards_html = ""
-    for bot_name, bot_label, dhash, label, online in all_devices:
+    disconnected_cards_html = ""
+    for bot_name, bot_label, dhash, label, state in all_devices:
         api_base = f"/{bot_name}/d/{dhash}"
 
         # Pills + toggles
@@ -1710,7 +1728,7 @@ async def _page_dashboard_admin(
             f'</div></div>'
         )
 
-        if online:
+        if state == "online":
             # Online device card — full controls
             cards_html += (
                 f'<div class="card device-card" data-dhash="{dhash}" data-api="{api_base}">'
@@ -1786,9 +1804,31 @@ async def _page_dashboard_admin(
                 f'</div>'
                 f'</div>'
             )
-        else:
-            # Offline device card — separate section
+        elif state == "offline":
+            # Offline emulator (bot server online, emulator stopped) — Start Emulator
             offline_cards_html += (
+                f'<div class="card device-card device-card-offline" data-dhash="{dhash}" data-api="{api_base}">'
+                f'<div class="device-top">'
+                f'<div class="device-name-row">'
+                f'<strong>{label}</strong>'
+                f'</div>'
+                f'<div class="device-header-right">'
+                f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
+                f'</div>'
+                f'<div class="device-status-bar">'
+                f'<span class="status-indicator"></span>'
+                f'<span class="status-text status-offline">Offline</span>'
+                f'</div>'
+                f'</div>'
+                f'<div class="emu-steps">'
+                f'<button type="button" class="emu-step-btn emu-step-emu" '
+                f'onclick="startEmulator(this)">Start Emulator</button>'
+                f'</div>'
+                f'</div>'
+            )
+        else:
+            # Disconnected (bot server off) — no actions possible
+            disconnected_cards_html += (
                 f'<div class="card device-card device-card-offline" data-dhash="{dhash}">'
                 f'<div class="device-top">'
                 f'<div class="device-name-row">'
@@ -1799,24 +1839,29 @@ async def _page_dashboard_admin(
                 f'</div>'
                 f'<div class="device-status-bar">'
                 f'<span class="status-indicator"></span>'
-                f'<span class="status-text status-offline">Server Offline</span>'
+                f'<span class="status-text status-offline">Disconnected</span>'
                 f'</div>'
                 f'</div>'
                 f'</div>'
             )
 
-    # Collapsible offline section
+    # Collapsible sections for non-online devices
     offline_section = ""
-    if offline_cards_html:
-        offline_count = sum(1 for _, _, _, _, o in all_devices if not o)
+    offline_count = sum(1 for _, _, _, _, s in all_devices if s == "offline")
+    disconnected_count = sum(1 for _, _, _, _, s in all_devices if s == "disconnected")
+    combined_html = offline_cards_html + disconnected_cards_html
+    total_hidden = offline_count + disconnected_count
+    if combined_html:
         offline_section = (
             f'<div class="actions-section" style="margin-top:16px">'
             f'<div class="actions-header" onclick="toggleOffline(this)" '
             f'style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">'
-            f'<span style="font-size:13px;font-weight:600;color:#667">Offline Devices ({offline_count})</span>'
+            f'<span style="font-size:13px;font-weight:600;color:#667">'
+            f'Offline ({offline_count}) &middot; Disconnected ({disconnected_count})'
+            f'</span>'
             f'<span class="controls-arrow" style="color:#667">&#9654;</span>'
             f'</div>'
-            f'<div class="device-grid" style="display:none">{offline_cards_html}</div>'
+            f'<div class="device-grid" style="display:none">{combined_html}</div>'
             f'</div>'
         )
 
