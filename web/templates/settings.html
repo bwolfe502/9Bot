@@ -310,6 +310,11 @@
                    class="input-sm" style="width:180px;font-size:12px;"
                    onchange="saveSetting('chat_translate_api_key', this.value)">
         </div>
+        <div class="settings-row" data-key="show_tooltips">
+            <span class="settings-row-label">Show Tooltips</span>
+            <button type="button" class="toggle{% if true %} on{% endif %}" id="tooltipsToggle"
+                    onclick="this.classList.toggle('on'); localStorage.setItem('show_tooltips', this.classList.contains('on') ? '1' : '0')"></button>
+        </div>
     </div>
 
 {% endblock %}
@@ -478,5 +483,13 @@ function autoCollapseSection(sectionId, isOn) {
         if (chevron) chevron.classList.add('collapsed');
     }
 }
+
+// Init tooltips toggle from localStorage
+(function() {
+    var btn = document.getElementById('tooltipsToggle');
+    if (btn && localStorage.getItem('show_tooltips') === '0') {
+        btn.classList.remove('on');
+    }
+})();
 </script>
 {% endblock %}
