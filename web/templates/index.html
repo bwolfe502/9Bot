@@ -108,32 +108,7 @@
 {% if devices %}<div class="device-grid">{% endif %}
 {% for dev in devices %}
 {% if dev.offline is defined and dev.offline %}
-<!-- Offline device card -->
-<div class="card device-card device-card-offline" data-device="{{ dev.id }}" data-instance="{{ dev.instance }}">
-    <div class="device-top">
-        <div class="device-name-row">
-            <strong>{{ dev.name }}</strong>
-        </div>
-        <div class="device-header-right">
-            {% if not device_filter and share_data and dev.id in share_data %}
-            <button type="button" class="share-btn" onclick="showShareModal('{{ share_data[dev.id].url }}', '{{ share_data[dev.id].ro_url or "" }}')" title="Share device access">Share</button>
-            {% endif %}
-        </div>
-        <div class="device-status-bar">
-            <span class="status-indicator"></span>
-            <span class="status-text {% if dev.status == 'Starting Emulator...' or dev.status == 'Waiting for ADB...' %}status-waiting{% elif dev.status == 'Offline' %}status-offline{% else %}status-error{% endif %}">{{ dev.status }}</span>
-        </div>
-    </div>
-    {% if not (device_readonly is defined and device_readonly) %}
-    <div class="emu-steps">
-        {% if dev.status == 'Starting Emulator...' or dev.status == 'Waiting for ADB...' or dev.status == 'Launching Game...' %}
-        <button type="button" class="emu-step-btn emu-step-emu emu-starting" disabled>Starting...</button>
-        {% else %}
-        <button type="button" class="emu-step-btn emu-step-emu" onclick="startEmulator(this, '{{ dev.id }}')">Start Emulator</button>
-        {% endif %}
-    </div>
-    {% endif %}
-</div>
+{# Offline cards rendered in separate section below #}
 {% else %}
 <!-- Online device card -->
 <div class="card device-card" data-device="{{ dev.id }}">
@@ -275,6 +250,44 @@
 {% endif %}
 {% endfor %}
 {% if devices %}</div>{% endif %}
+
+<!-- Offline Devices (admin only, collapsible) -->
+{% set offline_devices = devices|selectattr('offline', 'defined')|selectattr('offline')|list %}
+{% if offline_devices and not device_filter %}
+<div class="actions-section" id="offline-section">
+    <div class="actions-header" onclick="toggleOffline(this)">
+        <span class="section-header" style="margin:0; border:none; padding:0; cursor:pointer">Offline Devices ({{ offline_devices|length }})</span>
+        <span class="controls-arrow">&#9654;</span>
+    </div>
+    <div class="device-grid" style="display:none">
+    {% for dev in offline_devices %}
+    <div class="card device-card device-card-offline" data-device="{{ dev.id }}" data-instance="{{ dev.instance }}">
+        <div class="device-top">
+            <div class="device-name-row">
+                <strong>{{ dev.name }}</strong>
+            </div>
+            <div class="device-header-right">
+                {% if share_data and dev.id in share_data %}
+                <button type="button" class="share-btn" onclick="showShareModal('{{ share_data[dev.id].url }}', '{{ share_data[dev.id].ro_url or "" }}')" title="Share device access">Share</button>
+                {% endif %}
+            </div>
+            <div class="device-status-bar">
+                <span class="status-indicator"></span>
+                <span class="status-text {% if dev.status == 'Starting Emulator...' or dev.status == 'Waiting for ADB...' %}status-waiting{% elif dev.status == 'Offline' %}status-offline{% else %}status-error{% endif %}">{{ dev.status }}</span>
+            </div>
+        </div>
+        <div class="emu-steps">
+            {% if dev.status == 'Starting Emulator...' or dev.status == 'Waiting for ADB...' or dev.status == 'Launching Game...' %}
+            <button type="button" class="emu-step-btn emu-step-emu emu-starting" disabled>Starting...</button>
+            {% else %}
+            <button type="button" class="emu-step-btn emu-step-emu" onclick="startEmulator(this, '{{ dev.id }}')">Start Emulator</button>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+    </div>
+</div>
+{% endif %}
 
 <!-- Device Selector (multi-device, owner only — for one-shot actions) -->
 {% if devices|length > 1 and not device_filter %}
@@ -799,6 +812,15 @@ function toggleAutoMode(modeKey, deviceId) {
 function toggleActions(header) {
     var section = header.closest('.actions-section');
     var grid = section.querySelector('.action-grid');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = grid.style.display !== 'none';
+    grid.style.display = isOpen ? 'none' : '';
+    arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
+}
+
+function toggleOffline(header) {
+    var section = header.closest('.actions-section');
+    var grid = section.querySelector('.device-grid');
     var arrow = header.querySelector('.controls-arrow');
     var isOpen = grid.style.display !== 'none';
     grid.style.display = isOpen ? 'none' : '';
