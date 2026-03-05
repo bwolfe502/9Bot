@@ -65,6 +65,7 @@ def setup_portal_routes(app: web.Application, active_bots: dict,
     app.router.add_get("/portal/community", page_community)
     app.router.add_get("/portal/bot/{bot_name}", page_bot_detail)
     app.router.add_get("/portal/admin", page_admin)
+    app.router.add_get("/portal/admin/user/{user_id}", page_admin_user_detail)
     app.router.add_get("/portal/account", page_account)
     app.router.add_get("/portal/guide", page_guide)
 
@@ -89,6 +90,8 @@ def setup_portal_routes(app: web.Application, active_bots: dict,
     app.router.add_post("/portal/api/admin/reset-password", api_admin_reset_password)
     app.router.add_post("/portal/api/admin/grant-subscription", api_admin_grant_subscription)
     app.router.add_post("/portal/api/admin/revoke-subscription", api_admin_revoke_subscription)
+    app.router.add_post("/portal/api/admin/users/{user_id}/assign-device", api_admin_assign_device)
+    app.router.add_post("/portal/api/admin/users/{user_id}/unassign-device", api_admin_unassign_device)
     app.router.add_post("/portal/api/account/password", api_change_password)
     app.router.add_post("/portal/api/account/email", api_change_email)
     app.router.add_put("/portal/api/devices/{bot_name}/{device_hash}/label", api_set_device_label)
@@ -2243,7 +2246,7 @@ async def page_admin(request: web.Request) -> web.Response:
             f'<div class="adm-row-main">'
             f'<div class="adm-row-title">'
             f'{role_badge}'
-            f'<strong>{_html_escape(u["username"])}</strong>'
+            f'<a href="/portal/admin/user/{u["id"]}" class="adm-link"><strong>{_html_escape(u["username"])}</strong></a>'
             f'<span class="adm-id">#{u["id"]}</span>'
             f'</div>'
             f'<div class="adm-row-meta">'
@@ -2858,6 +2861,696 @@ async def page_admin(request: web.Request) -> web.Response:
     </script>
     """
     return web.Response(text=_page("Admin", body, user, csrf), content_type="text/html")
+
+
+async def page_admin_user_detail(request: web.Request) -> web.Response:
+    """Admin user detail — manage device assignments for a specific user."""
+    admin = await _require_admin(request)
+    csrf = _get_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    target = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not target:
+        raise web.HTTPNotFound(text="User not found")
+
+    # Subscription
+    sub = await asyncio.to_thread(db.get_subscription, user_id)
+
+    # All bots + pre-fetch devices
+    all_bots = await asyncio.to_thread(db.list_bots)
+    bot_map = {b["bot_name"]: b for b in all_bots}
+    devices_by_bot: dict[str, list] = {}
+    for b in all_bots:
+        devices_by_bot[b["bot_name"]] = await asyncio.to_thread(
+            db.list_devices, b["bot_name"]
+        )
+
+    # User's grants
+    user_grants = await asyncio.to_thread(db.list_grants_for_user, user_id)
+
+    # Online status helper
+    def _dev_state(bot_name, device_hash=None):
+        bot_on = (
+            bot_name in _active_bots
+            and not _active_bots[bot_name].closed
+        )
+        if not bot_on:
+            return "disconnected"
+        if device_hash:
+            dev_map = {
+                d["hash"]: d.get("online", True)
+                for d in _bot_device_status.get(bot_name, [])
+            }
+            return "online" if dev_map.get(device_hash, True) else "offline"
+        return "online"
+
+    # --- Build assigned devices list ---
+    assigned = []
+    assigned_keys: set[tuple] = set()
+
+    # From bot ownership
+    for b in all_bots:
+        if b.get("owner_id") == user_id:
+            for d in devices_by_bot.get(b["bot_name"], []):
+                key = (d["bot_name"], d["device_hash"])
+                assigned.append({
+                    "bot_name": d["bot_name"],
+                    "device_hash": d["device_hash"],
+                    "label": (
+                        d.get("label") or d.get("device_name")
+                        or d["device_hash"][:8]
+                    ),
+                    "bot_label": b.get("label") or b["bot_name"],
+                    "source": "owner",
+                    "grant_id": None,
+                    "access_level": "full",
+                    "state": _dev_state(d["bot_name"], d["device_hash"]),
+                })
+                assigned_keys.add(key)
+
+    # From grants
+    for g in user_grants:
+        bot = bot_map.get(g["bot_name"], {})
+        bot_label = bot.get("label") or g["bot_name"]
+        if g["device_hash"]:
+            key = (g["bot_name"], g["device_hash"])
+            if key not in assigned_keys:
+                dev_info = None
+                for d in devices_by_bot.get(g["bot_name"], []):
+                    if d["device_hash"] == g["device_hash"]:
+                        dev_info = d
+                        break
+                if dev_info:
+                    assigned.append({
+                        "bot_name": g["bot_name"],
+                        "device_hash": g["device_hash"],
+                        "label": (
+                            dev_info.get("label") or dev_info.get("device_name")
+                            or g["device_hash"][:8]
+                        ),
+                        "bot_label": bot_label,
+                        "source": "grant",
+                        "grant_id": g["id"],
+                        "access_level": g["access_level"],
+                        "state": _dev_state(g["bot_name"], g["device_hash"]),
+                    })
+                    assigned_keys.add(key)
+        else:
+            # Wildcard grant — all devices on this bot
+            for d in devices_by_bot.get(g["bot_name"], []):
+                key = (d["bot_name"], d["device_hash"])
+                if key not in assigned_keys:
+                    assigned.append({
+                        "bot_name": d["bot_name"],
+                        "device_hash": d["device_hash"],
+                        "label": (
+                            d.get("label") or d.get("device_name")
+                            or d["device_hash"][:8]
+                        ),
+                        "bot_label": bot_label,
+                        "source": "grant",
+                        "grant_id": g["id"],
+                        "access_level": g["access_level"],
+                        "state": _dev_state(d["bot_name"], d["device_hash"]),
+                    })
+                    assigned_keys.add(key)
+
+    # --- Build available devices grouped by server ---
+    available_servers: dict[str, dict] = {}
+    total_available = 0
+    for b in all_bots:
+        for d in devices_by_bot.get(b["bot_name"], []):
+            key = (d["bot_name"], d["device_hash"])
+            if key not in assigned_keys:
+                if b["bot_name"] not in available_servers:
+                    available_servers[b["bot_name"]] = {
+                        "bot_label": b.get("label") or b["bot_name"],
+                        "state": _dev_state(b["bot_name"]),
+                        "devices": [],
+                    }
+                available_servers[b["bot_name"]]["devices"].append({
+                    "device_hash": d["device_hash"],
+                    "label": (
+                        d.get("label") or d.get("device_name")
+                        or d["device_hash"][:8]
+                    ),
+                    "state": _dev_state(b["bot_name"], d["device_hash"]),
+                })
+                total_available += 1
+
+    # --- Render HTML ---
+    initial = _html_escape(target["username"][0].upper())
+    username = _html_escape(target["username"])
+    email = _html_escape(target.get("email") or "")
+    joined = target.get("created_at", "—")
+    last_login = target.get("last_login") or "never"
+
+    role_badge = (
+        '<span class="up-pill up-pill-admin">Admin</span>'
+        if target["is_admin"]
+        else '<span class="up-pill up-pill-user">User</span>'
+    )
+
+    # Subscription section
+    sub_section = ""
+    if sub and sub.get("status") in ("active", "past_due"):
+        is_admin_grant = sub.get("stripe_customer_id") == "admin_grant"
+        plan = sub.get("plan", "none").title()
+        limit = sub.get("device_limit", 0)
+        limit_text = "Unlimited" if limit >= 999 else str(limit)
+        status_cls = "up-sub-active" if sub["status"] == "active" else "up-sub-warn"
+        period = sub.get("current_period_end", "—")
+        try:
+            from datetime import datetime as dt
+            pe = dt.fromisoformat(period)
+            period = pe.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        src = "Admin" if is_admin_grant else "Stripe"
+        revoke_btn = ""
+        if is_admin_grant:
+            revoke_btn = (
+                '<button class="up-btn up-btn-danger" '
+                'onclick="revokeSub()">Revoke</button>'
+            )
+        sub_section = (
+            f'<div class="up-sub">'
+            f'<div class="up-sub-left">'
+            f'<span class="up-sub-dot {status_cls}"></span>'
+            f'<div>'
+            f'<div class="up-sub-plan">{plan}</div>'
+            f'<div class="up-sub-detail">{src} &middot; '
+            f'{limit_text} device{"s" if limit != 1 else ""}'
+            f' &middot; exp {period}</div>'
+            f'</div></div>'
+            f'{revoke_btn}'
+            f'</div>'
+        )
+    else:
+        sub_section = (
+            f'<div class="up-sub up-sub-empty">'
+            f'<span class="up-sub-none-text">No subscription</span>'
+            f'<div class="up-sub-grant-form">'
+            f'<select id="subDur" class="up-select">'
+            f'<option value="30">1 Month</option>'
+            f'<option value="90">3 Months</option>'
+            f'<option value="">Permanent</option>'
+            f'</select>'
+            f'<button class="up-btn up-btn-primary" onclick="grantSub()">'
+            f'Grant</button>'
+            f'</div></div>'
+        )
+
+    # Assigned device rows
+    assigned_rows = ""
+    for a in assigned:
+        state_cls = f"up-dot-{a['state']}"
+        label = _html_escape(a["label"])
+        bot_label = _html_escape(a["bot_label"])
+        source_html = ""
+        action_html = ""
+        if a["source"] == "owner":
+            source_html = '<span class="up-tag up-tag-owner">Owner</span>'
+        else:
+            tag_cls = (
+                "up-tag-full" if a["access_level"] == "full"
+                else "up-tag-ro"
+            )
+            source_html = (
+                f'<span class="up-tag {tag_cls}">{a["access_level"]}</span>'
+            )
+            action_html = (
+                f'<button class="up-btn up-btn-danger up-btn-sm" '
+                f'onclick="unassign({a["grant_id"]})">Unassign</button>'
+            )
+        assigned_rows += (
+            f'<div class="up-dev">'
+            f'<div class="up-dev-info">'
+            f'<span class="up-dot {state_cls}"></span>'
+            f'<div class="up-dev-text">'
+            f'<span class="up-dev-name">{label}</span>'
+            f'<span class="up-dev-server">{bot_label}</span>'
+            f'{source_html}'
+            f'</div></div>'
+            f'{action_html}'
+            f'</div>'
+        )
+    if not assigned_rows:
+        assigned_rows = (
+            '<div class="up-empty">No devices assigned</div>'
+        )
+
+    # Available device rows grouped by server
+    available_html = ""
+    for bot_name, server in available_servers.items():
+        state_cls = f"up-dot-{server['state']}"
+        bot_label = _html_escape(server["bot_label"])
+        count = len(server["devices"])
+        devs_html = ""
+        for d in server["devices"]:
+            dev_state = f"up-dot-{d['state']}"
+            dlabel = _html_escape(d["label"])
+            devs_html += (
+                f'<div class="up-dev up-dev-avail">'
+                f'<div class="up-dev-info">'
+                f'<span class="up-dot {dev_state}"></span>'
+                f'<span class="up-dev-name">{dlabel}</span>'
+                f'</div>'
+                f'<button class="up-btn up-btn-primary up-btn-sm" '
+                f'onclick="assign({json.dumps(bot_name)},'
+                f'{json.dumps(d["device_hash"])})">Assign</button>'
+                f'</div>'
+            )
+        assign_all_btn = ""
+        if count > 1:
+            assign_all_btn = (
+                f'<button class="up-btn up-btn-outline up-btn-xs" '
+                f'onclick="assignAll({json.dumps(bot_name)})">'
+                f'Assign All</button>'
+            )
+        available_html += (
+            f'<div class="up-group">'
+            f'<div class="up-group-header">'
+            f'<span class="up-dot {state_cls}"></span>'
+            f'<span class="up-group-name">{bot_label}</span>'
+            f'<span class="up-group-count">{count}</span>'
+            f'{assign_all_btn}'
+            f'</div>'
+            f'{devs_html}'
+            f'</div>'
+        )
+    if not available_html:
+        available_html = (
+            '<div class="up-empty">All devices assigned</div>'
+        )
+
+    email_html = (
+        f'<span>{email}</span><span class="up-sep"></span>'
+        if email else ""
+    )
+    delete_btn = (
+        "" if user_id == 1 else
+        '<button class="up-btn up-btn-danger" '
+        'onclick="deleteUser()">Delete</button>'
+    )
+
+    body = f"""
+    <style>
+    .up-back {{
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 13px; font-weight: 600; color: #667;
+        text-decoration: none; margin-bottom: 16px;
+        transition: color 0.15s;
+    }}
+    .up-back:hover {{ color: #64d8ff; text-decoration: none; }}
+    .up-back svg {{ transition: transform 0.15s; }}
+    .up-back:hover svg {{ transform: translateX(-2px); }}
+
+    .up-header {{
+        background: #141428; border-radius: 16px;
+        border: 1px solid rgba(255,255,255,0.04);
+        padding: 24px; margin-bottom: 20px;
+        position: relative; overflow: hidden;
+    }}
+    .up-header::before {{
+        content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+        background: linear-gradient(90deg, #64d8ff, rgba(100,216,255,0.05));
+    }}
+    .up-top {{ display: flex; align-items: flex-start; gap: 18px; }}
+    .up-avatar {{
+        width: 56px; height: 56px; border-radius: 50%; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 22px; font-weight: 700; color: #64d8ff;
+        background: radial-gradient(circle at 30% 30%,
+            rgba(100,216,255,0.12), rgba(100,216,255,0.03));
+        border: 2px solid rgba(100,216,255,0.2);
+        box-shadow: 0 0 20px rgba(100,216,255,0.08);
+    }}
+    .up-name {{ font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }}
+    .up-uid {{
+        font-family: "SF Mono","Consolas",monospace; font-size: 11px;
+        color: #445; margin-left: 8px;
+    }}
+    .up-meta {{
+        font-size: 12px; color: #556; margin-top: 4px;
+        display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    }}
+    .up-sep {{
+        display: inline-block; width: 3px; height: 3px; border-radius: 50%;
+        background: #334;
+    }}
+    .up-badges {{ display: flex; gap: 6px; margin-top: 8px; }}
+    .up-pill {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.8px; padding: 3px 9px; border-radius: 6px;
+    }}
+    .up-pill-admin {{
+        color: #ab47bc; background: rgba(171,71,188,0.1);
+        border: 1px solid rgba(171,71,188,0.2);
+    }}
+    .up-pill-user {{
+        color: #667; background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+    }}
+
+    .up-sub {{
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; margin-top: 16px; padding: 12px 14px;
+        background: #0e0e1e; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.04);
+    }}
+    .up-sub-left {{ display: flex; align-items: center; gap: 10px; }}
+    .up-sub-dot {{
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .up-sub-active {{
+        background: #4caf50; box-shadow: 0 0 6px rgba(76,175,80,0.4);
+    }}
+    .up-sub-warn {{ background: #ffb74d; }}
+    .up-sub-plan {{ font-size: 13px; font-weight: 600; }}
+    .up-sub-detail {{ font-size: 11px; color: #556; }}
+    .up-sub-empty {{ justify-content: space-between; }}
+    .up-sub-none-text {{ font-size: 12px; color: #556; }}
+    .up-sub-grant-form {{
+        display: flex; gap: 8px; align-items: center;
+    }}
+    .up-select {{
+        background: #141428; color: #e0e0f0;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 7px; padding: 6px 10px; font-size: 12px; outline: none;
+    }}
+
+    .up-actions {{
+        display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap;
+    }}
+
+    .up-btn {{
+        padding: 7px 14px; border-radius: 8px; border: none;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+        transition: all 0.15s; white-space: nowrap;
+    }}
+    .up-btn:active {{ transform: scale(0.96); }}
+    .up-btn-primary {{
+        background: rgba(100,216,255,0.1); color: #64d8ff;
+        border: 1px solid rgba(100,216,255,0.15);
+    }}
+    .up-btn-primary:hover {{ background: rgba(100,216,255,0.18); }}
+    .up-btn-danger {{
+        background: rgba(239,83,80,0.08); color: #ef5350;
+        border: 1px solid rgba(239,83,80,0.12);
+    }}
+    .up-btn-danger:hover {{ background: rgba(239,83,80,0.15); }}
+    .up-btn-outline {{
+        background: transparent; color: #889;
+        border: 1px solid rgba(255,255,255,0.08);
+    }}
+    .up-btn-outline:hover {{ border-color: rgba(255,255,255,0.2); color: #e0e0f0; }}
+    .up-btn-sm {{ padding: 5px 12px; font-size: 11px; }}
+    .up-btn-xs {{ padding: 3px 9px; font-size: 10px; }}
+
+    .up-section {{ margin-bottom: 20px; }}
+    .up-section-header {{
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 10px; padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+    }}
+    .up-section-title {{
+        font-size: 10px; font-weight: 700; color: #778;
+        text-transform: uppercase; letter-spacing: 1px;
+    }}
+    .up-section-count {{
+        font-size: 10px; font-weight: 700; color: #445;
+        background: rgba(255,255,255,0.04); border-radius: 10px;
+        padding: 2px 8px;
+    }}
+
+    .up-dev {{
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px; margin-bottom: 4px;
+        background: #141428; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.03);
+        transition: border-color 0.15s; gap: 10px;
+        animation: upFadeIn 0.2s ease both;
+    }}
+    .up-dev:hover {{ border-color: rgba(255,255,255,0.08); }}
+    .up-dev-info {{
+        display: flex; align-items: center; gap: 10px; min-width: 0;
+    }}
+    .up-dev-text {{
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }}
+    .up-dev-name {{ font-size: 13px; font-weight: 600; }}
+    .up-dev-server {{ font-size: 11px; color: #556; }}
+    @keyframes upFadeIn {{
+        from {{ opacity: 0; transform: translateY(4px); }}
+        to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .up-dev:nth-child(1) {{ animation-delay: 0s; }}
+    .up-dev:nth-child(2) {{ animation-delay: 0.03s; }}
+    .up-dev:nth-child(3) {{ animation-delay: 0.06s; }}
+    .up-dev:nth-child(4) {{ animation-delay: 0.09s; }}
+    .up-dev:nth-child(5) {{ animation-delay: 0.12s; }}
+    .up-dev:nth-child(6) {{ animation-delay: 0.15s; }}
+
+    .up-dot {{
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .up-dot-online {{
+        background: #4caf50;
+        box-shadow: 0 0 6px rgba(76,175,80,0.5);
+    }}
+    .up-dot-offline {{ background: #555; }}
+    .up-dot-disconnected {{ background: #333; }}
+
+    .up-tag {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.5px; padding: 2px 7px; border-radius: 5px;
+    }}
+    .up-tag-owner {{
+        color: #64d8ff; background: rgba(100,216,255,0.08);
+        border: 1px solid rgba(100,216,255,0.12);
+    }}
+    .up-tag-full {{
+        color: #4caf50; background: rgba(76,175,80,0.08);
+        border: 1px solid rgba(76,175,80,0.12);
+    }}
+    .up-tag-ro {{
+        color: #ffb74d; background: rgba(255,183,77,0.08);
+        border: 1px solid rgba(255,183,77,0.12);
+    }}
+
+    .up-group {{ margin-bottom: 12px; }}
+    .up-group-header {{
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 0; font-size: 12px;
+    }}
+    .up-group-name {{ font-weight: 600; color: #aab; }}
+    .up-group-count {{
+        font-size: 10px; color: #445;
+        background: rgba(255,255,255,0.04);
+        border-radius: 8px; padding: 1px 7px;
+    }}
+
+    .up-empty {{
+        padding: 28px; text-align: center; color: #445;
+        font-size: 13px; font-weight: 500;
+    }}
+
+    .up-toast {{
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        padding: 10px 20px; border-radius: 10px;
+        font-size: 13px; font-weight: 600; z-index: 1000;
+        pointer-events: none;
+        animation: upToastIn 0.2s ease, upToastOut 0.3s ease 1.7s forwards;
+        background: rgba(76,175,80,0.15); color: #66bb6a;
+        border: 1px solid rgba(76,175,80,0.3);
+    }}
+    @keyframes upToastIn {{
+        from {{ opacity: 0; transform: translateX(-50%) translateY(8px); }}
+    }}
+    @keyframes upToastOut {{
+        to {{ opacity: 0; transform: translateX(-50%) translateY(-8px); }}
+    }}
+
+    @media (max-width: 500px) {{
+        .up-top {{ gap: 14px; }}
+        .up-avatar {{ width: 46px; height: 46px; font-size: 18px; }}
+        .up-name {{ font-size: 17px; }}
+        .up-dev {{ padding: 8px 10px; }}
+        .up-sub {{ flex-direction: column; align-items: flex-start; gap: 10px; }}
+        .up-sub-grant-form {{ width: 100%; }}
+    }}
+    </style>
+
+    <a href="/portal/admin" class="up-back">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <path d="M10 3l-5 5 5 5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round"/></svg>
+        Admin
+    </a>
+
+    <div class="up-header">
+        <div class="up-top">
+            <div class="up-avatar">{initial}</div>
+            <div>
+                <div>
+                    <span class="up-name">{username}</span>
+                    <span class="up-uid">#{user_id}</span>
+                </div>
+                <div class="up-meta">
+                    {email_html}
+                    <span>joined {joined}</span>
+                    <span class="up-sep"></span>
+                    <span>last login {last_login}</span>
+                </div>
+                <div class="up-badges">{role_badge}</div>
+            </div>
+        </div>
+        {sub_section}
+        <div class="up-actions">
+            <button class="up-btn up-btn-outline"
+                onclick="resetPw()">Reset Password</button>
+            {delete_btn}
+        </div>
+    </div>
+
+    <div class="up-section">
+        <div class="up-section-header">
+            <span class="up-section-title">Assigned Devices</span>
+            <span class="up-section-count">{len(assigned)}</span>
+        </div>
+        {assigned_rows}
+    </div>
+
+    <div class="up-section">
+        <div class="up-section-header">
+            <span class="up-section-title">Available Devices</span>
+            <span class="up-section-count">{total_available}</span>
+        </div>
+        {available_html}
+    </div>
+
+    <script>
+    var csrf = "{csrf}";
+    var userId = {user_id};
+    var userName = {json.dumps(target["username"])};
+
+    function upToast(msg) {{
+        var t = document.createElement('div');
+        t.className = 'up-toast';
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(function() {{ t.remove(); }}, 2200);
+    }}
+
+    function assign(botName, deviceHash) {{
+        fetch("/portal/api/admin/users/" + userId + "/assign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                bot_name: botName,
+                device_hash: deviceHash,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Device assigned"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function assignAll(botName) {{
+        if (!confirm("Assign all devices on this server?")) return;
+        fetch("/portal/api/admin/users/" + userId + "/assign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                bot_name: botName,
+                device_hash: null,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("All devices assigned"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function unassign(grantId) {{
+        if (!confirm("Remove this device access?")) return;
+        fetch("/portal/api/admin/users/" + userId + "/unassign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, grant_id: grantId}})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Device unassigned"); location.reload(); }}
+            else alert("Failed to unassign");
+        }});
+    }}
+
+    function grantSub() {{
+        var dur = document.getElementById('subDur');
+        var days = dur ? dur.value : "30";
+        fetch("/portal/api/admin/grant-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                user_id: userId,
+                duration_days: days ? parseInt(days) : null,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Subscription granted"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function revokeSub() {{
+        if (!confirm("Revoke subscription for " + userName + "?")) return;
+        fetch("/portal/api/admin/revoke-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, user_id: userId}})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Subscription revoked"); location.reload(); }}
+            else alert("Failed to revoke");
+        }});
+    }}
+
+    function resetPw() {{
+        var pw = prompt("Set new password for " + userName + ":");
+        if (!pw) return;
+        if (pw.length < 6) {{ alert("Min 6 characters"); return; }}
+        fetch("/portal/api/admin/reset-password", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                user_id: userId,
+                new_password: pw,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) upToast("Password reset");
+            else alert("Failed");
+        }});
+    }}
+
+    function deleteUser() {{
+        if (!confirm("Delete " + userName + "? This revokes all access."))
+            return;
+        fetch("/portal/api/admin/users/" + userId + "/delete", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }}).then(function(resp) {{
+            if (resp.ok) window.location.href = "/portal/admin";
+            else alert("Failed to delete user");
+        }});
+    }}
+    </script>
+    """
+    return web.Response(
+        text=_page(f"User: {username}", body, admin, csrf),
+        content_type="text/html",
+    )
 
 
 async def page_account(request: web.Request) -> web.Response:
@@ -3603,6 +4296,47 @@ async def api_admin_revoke_subscription(request: web.Request) -> web.Response:
     revoked = await asyncio.to_thread(db.revoke_admin_subscription, int(user_id))
     if not revoked:
         return web.json_response({"error": "No admin-granted subscription found"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_assign_device(request: web.Request) -> web.Response:
+    """Admin assigns a device to a user (creates a grant)."""
+    admin = await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+    data = await request.json()
+    bot_name = data.get("bot_name", "").strip()
+    device_hash = data.get("device_hash")  # None for wildcard
+    if not bot_name:
+        return web.json_response({"error": "bot_name required"}, status=400)
+
+    target = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not target:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    bot = await asyncio.to_thread(db.get_bot, bot_name)
+    if not bot:
+        return web.json_response({"error": "Server not found"}, status=404)
+
+    grant_id = await asyncio.to_thread(
+        db.create_grant, user_id, bot_name, device_hash,
+        "full", admin["user_id"],
+    )
+    return web.json_response({"status": "ok", "grant_id": grant_id})
+
+
+async def api_admin_unassign_device(request: web.Request) -> web.Response:
+    """Admin removes a device grant from a user."""
+    await _require_admin(request)
+    await _check_csrf(request)
+    data = await request.json()
+    grant_id = data.get("grant_id")
+    if not grant_id:
+        return web.json_response({"error": "grant_id required"}, status=400)
+
+    deleted = await asyncio.to_thread(db.delete_grant, int(grant_id))
+    if not deleted:
+        return web.json_response({"error": "Grant not found"}, status=404)
     return web.json_response({"status": "ok"})
 
 

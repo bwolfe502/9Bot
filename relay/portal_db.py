@@ -687,6 +687,15 @@ def get_user_bots(user_id: int) -> dict:
     return {"owned": [dict(r) for r in owned], "shared": [dict(r) for r in shared]}
 
 
+def list_grants_for_user(user_id: int) -> list[dict]:
+    """List all grants for a specific user."""
+    rows = _conn().execute(
+        "SELECT * FROM grants WHERE user_id = ? ORDER BY bot_name, device_hash",
+        (user_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ------------------------------------------------------------------
 # Invite Codes
 # ------------------------------------------------------------------
