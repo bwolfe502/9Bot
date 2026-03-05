@@ -1148,11 +1148,13 @@ function refreshAllDevices() {
                     }
                     // Hide controls/events/live-view for offline devices
                     card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = 'none'; });
+                    _moveToOffline(card);
                     return;
                 }
                 card.classList.remove('device-card-offline');
                 // Restore sections hidden by offline state
                 card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = ''; });
+                _moveToOnline(card);
                 // Remove Start Emulator if device came online
                 var emuWrap = card.querySelector('.emu-steps');
                 if (emuWrap && !card.querySelector('.emu-steps-compact')) { /* don't remove the compact emu bar */ }
@@ -1376,6 +1378,68 @@ function toggleOffline(header) {
     var isOpen = grid.style.display !== 'none';
     grid.style.display = isOpen ? 'none' : '';
     arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
+}
+
+/* ---------- Move card between online/offline grids ---------- */
+function _getOfflineGrid() {
+    var section = document.querySelector('.actions-section');
+    if (section) return section.querySelector('.device-grid');
+    return null;
+}
+function _getOnlineGrid() {
+    // The main grid is the first .device-grid that is NOT inside .actions-section
+    var grids = document.querySelectorAll('.device-grid');
+    for (var i = 0; i < grids.length; i++) {
+        if (!grids[i].closest('.actions-section')) return grids[i];
+    }
+    return null;
+}
+function _ensureOfflineSection() {
+    var section = document.querySelector('.actions-section');
+    if (section) return section.querySelector('.device-grid');
+    // Create the offline section
+    var onlineGrid = _getOnlineGrid();
+    if (!onlineGrid) return null;
+    section = document.createElement('div');
+    section.className = 'actions-section';
+    section.style.marginTop = '16px';
+    section.innerHTML =
+        '<div class="actions-header" onclick="toggleOffline(this)" ' +
+        'style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">' +
+        '<span style="font-size:13px;font-weight:600;color:#667" class="offline-section-label">' +
+        'Offline (0) &middot; Disconnected (0)</span>' +
+        '<span class="controls-arrow" style="color:#667">&#9660;</span></div>' +
+        '<div class="device-grid"></div>';
+    onlineGrid.after(section);
+    return section.querySelector('.device-grid');
+}
+function _updateOfflineCounts() {
+    var offGrid = _getOfflineGrid();
+    if (!offGrid) return;
+    var cards = offGrid.querySelectorAll('.device-card');
+    var offline = 0, disconnected = 0;
+    cards.forEach(function(c) {
+        var st = c.querySelector('.status-text');
+        if (st && st.textContent === 'Disconnected') disconnected++;
+        else offline++;
+    });
+    var label = offGrid.closest('.actions-section').querySelector('.offline-section-label');
+    if (label) label.textContent = 'Offline (' + offline + ') \\u00b7 Disconnected (' + disconnected + ')';
+    // Hide section if empty
+    var section = offGrid.closest('.actions-section');
+    if (section) section.style.display = cards.length ? '' : 'none';
+}
+function _moveToOffline(card) {
+    var offGrid = _ensureOfflineSection();
+    if (!offGrid || card.parentNode === offGrid) return;
+    offGrid.appendChild(card);
+    _updateOfflineCounts();
+}
+function _moveToOnline(card) {
+    var onGrid = _getOnlineGrid();
+    if (!onGrid || card.parentNode === onGrid) return;
+    onGrid.appendChild(card);
+    _updateOfflineCounts();
 }
 
 /* ---------- Stop All per device ---------- */
@@ -2297,8 +2361,8 @@ async def page_admin(request: web.Request) -> web.Response:
     for s in subs:
         uname = _html_escape(s.get("username", "?"))
         is_admin_grant = s.get("stripe_customer_id") == "admin_grant"
-        src_cls = "adm-src-admin" if is_admin_grant else "adm-src-stripe"
-        src_label = "Admin" if is_admin_grant else "Stripe"
+        src_cls = "adm-src-granted" if is_admin_grant else "adm-src-stripe"
+        src_label = "Granted" if is_admin_grant else "Stripe"
         status_cls = "adm-sub-active" if s["status"] == "active" else ("adm-sub-warn" if s["status"] == "past_due" else "adm-sub-expired")
         period = s.get("current_period_end", "—")
         if period and period != "—":
@@ -2534,7 +2598,7 @@ async def page_admin(request: web.Request) -> web.Response:
         font-size: 9px; font-weight: 700; text-transform: uppercase;
         padding: 2px 7px; border-radius: 5px; letter-spacing: 0.5px;
     }}
-    .adm-src-admin {{ color: #ab47bc; background: rgba(171,71,188,0.1); }}
+    .adm-src-granted {{ color: #ab47bc; background: rgba(171,71,188,0.1); }}
     .adm-src-stripe {{ color: #64d8ff; background: rgba(100,216,255,0.1); }}
     .adm-sub-dot {{
         width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
@@ -3026,7 +3090,7 @@ async def page_admin_user_detail(request: web.Request) -> web.Response:
             period = pe.strftime("%Y-%m-%d")
         except Exception:
             pass
-        src = "Admin" if is_admin_grant else "Stripe"
+        src = "Granted" if is_admin_grant else "Stripe"
         revoke_btn = ""
         if is_admin_grant:
             revoke_btn = (
