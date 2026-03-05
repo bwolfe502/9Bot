@@ -1117,8 +1117,17 @@ function refreshAllDevices() {
                             st.classList.add('status-waiting');
                         else if (dev.status === 'Offline') st.classList.add('status-offline');
                     }
-                    // Update emu button
+                    // Show Start Emulator button (create if needed)
                     var emuBtn = card.querySelector('.emu-step-emu');
+                    if (!emuBtn) {
+                        var wrap = document.createElement('div');
+                        wrap.className = 'emu-steps';
+                        wrap.innerHTML = '<button type="button" class="emu-step-btn emu-step-emu" onclick="startEmulator(this)">Start Emulator</button>';
+                        // Insert after device-top
+                        var top = card.querySelector('.device-top');
+                        if (top) top.after(wrap);
+                        emuBtn = wrap.querySelector('.emu-step-emu');
+                    }
                     if (emuBtn) {
                         if (dev.emu_starting) {
                             emuBtn.textContent = 'Starting...';
@@ -1130,9 +1139,18 @@ function refreshAllDevices() {
                             emuBtn.classList.remove('emu-starting');
                         }
                     }
+                    // Hide controls/events/live-view for offline devices
+                    card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = 'none'; });
                     return;
                 }
                 card.classList.remove('device-card-offline');
+                // Restore sections hidden by offline state
+                card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = ''; });
+                // Remove Start Emulator if device came online
+                var emuWrap = card.querySelector('.emu-steps');
+                if (emuWrap && !card.querySelector('.emu-steps-compact')) { /* don't remove the compact emu bar */ }
+                var offlineEmu = card.querySelector('.emu-steps:not(.emu-steps-compact)');
+                if (offlineEmu) offlineEmu.remove();
 
                 // Status text + indicator
                 var st = card.querySelector('.status-text');

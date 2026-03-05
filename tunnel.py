@@ -216,7 +216,7 @@ async def _handle_request(ws, msg: dict, executor: ThreadPoolExecutor) -> None:
 async def _send_device_list(ws) -> None:
     """Send the current device list to the relay for portal registration."""
     try:
-        from devices import get_emulator_instances
+        from devices import get_emulator_instances, get_offline_instances
         from startup import device_hash
         instances = get_emulator_instances()
         devices = []
@@ -225,6 +225,14 @@ async def _send_device_list(ws) -> None:
                 "hash": device_hash(device_id),
                 "name": display_name or device_id,
             })
+        # Include offline BlueStacks instances so portal can show Start Emulator
+        for inst in get_offline_instances():
+            dh = device_hash(inst["device_id"])
+            if dh:
+                devices.append({
+                    "hash": dh,
+                    "name": inst["display_name"],
+                })
         if devices:
             await ws.send(json.dumps({
                 "type": "device_list",
