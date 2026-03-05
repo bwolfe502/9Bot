@@ -694,6 +694,7 @@ class TestRallyTitan:
              patch("actions.titans.read_ap", return_value=(400, 400)), \
              patch("actions.titans.logged_tap"), \
              patch("actions.titans.adb_tap"), \
+             patch("actions.titans.adb_keyevent"), \
              patch("actions.titans.tap_image"), \
              patch("actions.titans.timed_wait"), \
              patch("actions.titans.wait_for_image_and_tap", return_value=True), \

@@ -42,6 +42,7 @@ __all__ = [
     "EVT_BUFF_CHANGED",
     "EVT_TROOPS_CHANGED",
     "EVT_BROADCAST",
+    "EVT_ALLY_CITY_SPOTTED",
     # Classes
     "EventBus",
     "MessageRouter",
@@ -76,6 +77,7 @@ EVT_CITY_BURNING: str = "game:city_burning"
 EVT_BUFF_CHANGED: str = "game:buff_changed"
 EVT_TROOPS_CHANGED: str = "game:troops_changed"
 EVT_BROADCAST: str = "game:broadcast"
+EVT_ALLY_CITY_SPOTTED: str = "game:ally_city_spotted"
 
 
 # ------------------------------------------------------------------ #
@@ -315,7 +317,7 @@ def parse_chat_msgval(msgval: str) -> dict:
 
     Returns dict: ``{content: str, payload_type: int}``.
     """
-    result: Dict[str, Any] = {"content": msgval, "payload_type": 0}
+    result: Dict[str, Any] = {"content": msgval, "payload_type": 0, "source_language": ""}
     if not msgval:
         return result
 
@@ -332,6 +334,7 @@ def parse_chat_msgval(msgval: str) -> dict:
     # Text message — has "content" key.
     if "content" in parsed:
         result["content"] = parsed["content"]
+        result["source_language"] = parsed.get("sourceLanguage", "")
         return result
 
     # System notification (BizarreCave, alliance gifts, etc.)
@@ -508,6 +511,7 @@ def _extract_chat_payload(msg: object) -> dict:
         parsed = parse_chat_msgval(raw_msgval)
         result["content"] = parsed["content"]
         result["payload_type"] = parsed["payload_type"]
+        result["source_language"] = parsed.get("source_language", "")
 
         # Sender fallback: if playerInfo was empty, try meta JSON.
         if not result["sender"]:

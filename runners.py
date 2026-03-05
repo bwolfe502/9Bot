@@ -12,6 +12,7 @@ Key exports:
     run_auto_pass         — Pass battle (rally/reinforce/join war)
     run_auto_occupy       — Territory auto-occupy wrapper
     run_auto_reinforce    — Reinforce Throne loop
+    run_auto_reinforce_ally — Reinforce ally castles from protocol viewport data
     run_auto_mithril      — Standalone mithril mining loop
     run_auto_gold         — Gold gathering loop
     run_repeat            — Generic repeating task wrapper
@@ -23,6 +24,8 @@ Key exports:
 """
 
 import ctypes
+import math
+import os
 import threading
 import time
 import random
@@ -34,10 +37,11 @@ from navigation import check_screen, navigate
 from vision import (adb_tap, load_screenshot, find_image, tap_image,
                     wait_for_image_and_tap)
 from troops import troops_avail, heal_all, read_panel_statuses, get_troop_status, TroopAction
-from actions import (attack, reinforce_throne, target, check_quests,
-                     rally_titan, search_eg_reset, join_rally,
+from actions import (attack, phantom_clash_attack, reinforce_throne, target,
+                     check_quests, rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
-                     mine_mithril_if_due, gather_gold_loop)
+                     mine_mithril_if_due, gather_gold_loop,
+                     reinforce_ally_castle, capture_home_coords)
 from territory import auto_occupy_loop
 
 
@@ -107,6 +111,7 @@ def run_auto_quest(device, stop_event):
     dlog.info("Auto Quest started")
     reset_quest_tracking(device)
     reset_rally_blacklist(device)
+    _last_quest_check.pop(device, None)  # Force quest check on first iteration
     stop_check = stop_event.is_set
     lock = config.get_device_lock(device)
     try:
@@ -251,6 +256,27 @@ def run_auto_groot(device, stop_event, interval, variation):
     dlog.info("Rally Groot stopped")
 
 
+def run_auto_esb(device, stop_event, interval, variation):
+    """Loop phantom_clash_attack on a configurable interval."""
+    dlog = get_logger("runner", device)
+    dlog.info("Phantom Clash started (interval: %ss +/-%ss)", interval, variation)
+    stop_check = stop_event.is_set
+    lock = config.get_device_lock(device)
+    try:
+        while not stop_check():
+            with lock:
+                config.set_device_status(device, "Phantom Clash...")
+                phantom_clash_attack(device, stop_check=stop_check)
+            if stop_check():
+                break
+            config.set_device_status(device, "Idle")
+            sleep_interval(interval, variation, stop_check)
+    except Exception as e:
+        dlog.error("ERROR in Phantom Clash: %s", e, exc_info=True)
+    config.clear_device_status(device)
+    dlog.info("Phantom Clash stopped")
+
+
 def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
     dlog = get_logger("runner", device)
     stop_check = stop_event.is_set
@@ -360,18 +386,17 @@ def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
 
 
 def run_auto_occupy(device, stop_event):
-    config.auto_occupy_running = True
     config.set_device_status(device, "Occupying Towers...")
-
-    # Monitor stop event in background and set config flag when stopped
-    def monitor():
-        stop_event.wait()
-        config.auto_occupy_running = False
-
-    threading.Thread(target=monitor, daemon=True).start()
-    auto_occupy_loop(device)
+    auto_occupy_loop(device, stop_check=stop_event.is_set)
     config.clear_device_status(device)
     get_logger("runner", device).info("Auto Occupy stopped")
+
+
+def run_debug_occupy(device, stop_event):
+    config.set_device_status(device, "Debug Occupy...")
+    auto_occupy_loop(device, stop_check=stop_event.is_set, skip_troop_gate=True)
+    config.clear_device_status(device)
+    get_logger("runner", device).info("Debug Occupy stopped")
 
 
 def run_auto_reinforce(device, stop_event, interval, variation):
@@ -396,6 +421,179 @@ def run_auto_reinforce(device, stop_event, interval, variation):
         dlog.error("ERROR in Auto Reinforce Throne: %s", e, exc_info=True)
     config.clear_device_status(device)
     dlog.info("Auto Reinforce Throne stopped")
+
+
+_ALLY_REINFORCE_COOLDOWN_S = 1800  # 30 minutes per entity ID + position
+
+
+_REINFORCE_STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "reinforce_stats.json")
+
+
+def _log_reinforce_stat(device, name, power, dist, success):
+    """Append a reinforce attempt record to data/reinforce_stats.json."""
+    import json as _json
+    record = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "device": device,
+        "name": name,
+        "power": power,
+        "dist": round(dist, 1) if dist is not None else None,
+        "success": success,
+    }
+    try:
+        os.makedirs(os.path.dirname(_REINFORCE_STATS_FILE), exist_ok=True)
+        try:
+            with open(_REINFORCE_STATS_FILE, "r") as f:
+                stats = _json.load(f)
+        except (FileNotFoundError, _json.JSONDecodeError):
+            stats = []
+        stats.append(record)
+        with open(_REINFORCE_STATS_FILE, "w") as f:
+            _json.dump(stats, f, indent=2)
+    except Exception as e:
+        get_logger("runner", device).debug("Failed to save reinforce stat: %s", e)
+
+
+def _save_home_coords(device, x, z):
+    """Persist captured home coords to settings as device overrides."""
+    from settings import load_settings, save_settings
+    from config import validate_settings, set_device_overrides
+    from settings import DEFAULTS
+    settings = load_settings()
+    ds = settings.setdefault("device_settings", {})
+    dev = ds.setdefault(device, {})
+    dev["home_x"] = x
+    dev["home_z"] = z
+    settings["device_settings"] = ds
+    settings, _ = validate_settings(settings, DEFAULTS)
+    save_settings(settings)
+    # Update in-memory device config immediately.
+    existing = config._DEVICE_CONFIG.get(device, {})
+    existing["home_x"] = x
+    existing["home_z"] = z
+    set_device_overrides(device, existing)
+
+
+def run_auto_reinforce_ally(device, stop_event):
+    """Reinforce ally PLAYER_CITY castles the moment they appear in the viewport.
+
+    Subscribes to EVT_ALLY_CITY_SPOTTED on the device's EventBus. Each new
+    ally city entity is queued immediately by the event handler (protocol thread)
+    and processed by this runner thread — zero polling delay.
+
+    Re-reinforcement is suppressed for _ALLY_REINFORCE_COOLDOWN_S per entity ID.
+    When an entity leaves the viewport (UnionDelEntitiesNtf removes it from
+    GameState), it can be re-queued and reinforced again on next appearance.
+
+    Home coordinates are captured once at startup (if not already set) by
+    navigating away and back — centering the camera on the home castle — then
+    OCR-reading the coordinate banner. Re-capture via the dashboard after a
+    castle teleport.
+
+    Requires protocol to be enabled on this device.
+    """
+    import queue as _queue
+    dlog = get_logger("runner", device)
+    dlog.info("Auto Reinforce Ally started")
+    stop_check = stop_event.is_set
+    lock = config.get_device_lock(device)
+    reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
+    pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
+
+    try:
+        from startup import get_protocol_event_bus, set_protocol_ally_monitoring
+        from protocol.events import EVT_ALLY_CITY_SPOTTED
+    except ImportError:
+        dlog.error("Protocol not available — Auto Reinforce Ally requires protocol enabled")
+        config.clear_device_status(device)
+        return
+
+    bus = get_protocol_event_bus(device)
+    if bus is None:
+        dlog.error("No EventBus for %s — is protocol enabled?", device)
+        config.set_device_status(device, "Error: Enable protocol first")
+        return
+
+    # Always capture home coordinates on start.
+    config.set_device_status(device, "Capturing Home Coordinates...")
+    with lock:
+        coords = capture_home_coords(device, stop_check)
+    if coords:
+        home_x, home_z = coords
+        _save_home_coords(device, home_x, home_z)
+        dlog.info("Home coordinates set: X=%d Y=%d", home_x, home_z)
+    else:
+        dlog.warning("Failed to capture home coordinates — using last saved or disabling filter")
+        home_x = config.get_device_config(device, "home_x")
+        home_z = config.get_device_config(device, "home_z")
+
+    if stop_check():
+        config.clear_device_status(device)
+        return
+
+    def _on_spotted(entity):
+        power = entity.get("_power", 0)
+        pending.put((-power, time.monotonic(), entity))
+
+    set_protocol_ally_monitoring(device, True)
+    bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
+    dlog.info("Ally monitoring enabled (home X=%d Y=%d)", home_x, home_z)
+    config.set_device_status(device, "Watching for Allies...")
+
+    try:
+        while not stop_check():
+            try:
+                _neg_power, _arrival, entity = pending.get(timeout=1.0)
+            except _queue.Empty:
+                continue
+
+            if stop_check():
+                break
+
+            # EntityInfo: field_1=ID, field_3=owner (OwnerInfo with named keys)
+            eid = entity.get("field_1") or entity.get("id") or entity.get("ID")
+            if eid is None:
+                continue
+            now = time.monotonic()
+            last_t, last_x, last_z = reinforced.get(eid, (0, None, None))
+            x = entity.get("X", 0)
+            z = entity.get("Z", 0)
+            same_pos = (last_x == x and last_z == z)
+            if same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
+                dlog.debug("Ally %s on cooldown at same position, skipping", eid)
+                continue
+
+            owner = entity.get("field_3") or entity.get("owner") or {}
+            name = owner.get("name", "") if isinstance(owner, dict) else getattr(owner, "name", "")
+            pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+            from protocol.game_state import lookup_player_power
+            power = lookup_player_power(pid)
+
+            # Distance filter — entity coords are raw (1000x display units).
+            max_dist = config.get_device_config(device, "max_reinforce_distance")
+            if home_x and home_z and x and z:
+                dist = math.sqrt((x / 1000 - home_x) ** 2 + (z / 1000 - home_z) ** 2)
+                if max_dist and dist > max_dist:
+                    dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
+                    continue
+                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) dist=%.1f — reinforcing", name or eid, power, x, z, dist)
+            else:
+                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) — reinforcing", name or eid, power, x, z)
+            config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
+            with lock:
+                success = reinforce_ally_castle(device, x, z, name, stop_check)
+            if success:
+                reinforced[eid] = (time.monotonic(), x, z)
+            _log_reinforce_stat(device, name, power, dist if (home_x and home_z and x and z) else None, success)
+            config.set_device_status(device, "Watching for Allies...")
+    except Exception as e:
+        dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)
+    finally:
+        bus.off(EVT_ALLY_CITY_SPOTTED, _on_spotted)
+        set_protocol_ally_monitoring(device, False)
+
+    config.clear_device_status(device)
+    dlog.info("Auto Reinforce Ally stopped")
 
 
 def run_auto_mithril(device, stop_event):
@@ -504,9 +702,12 @@ _MODE_LABELS = {
     "auto_groot":     "Join Groot",
     "auto_pass":      "Pass Battle",
     "auto_occupy":    "Occupy Towers",
-    "auto_reinforce": "Reinforce Throne",
-    "auto_mithril":   "Mine Mithril",
+    "auto_reinforce":      "Reinforce Throne",
+    "auto_reinforce_ally": "Reinforce Ally",
+    "auto_mithril":        "Mine Mithril",
     "auto_gold":      "Gather Gold",
+    "auto_esb":       "Phantom Clash",
+    "debug_occupy":   "Debug Occupy",
 }
 
 
@@ -543,7 +744,6 @@ def _force_kill_thread(thread):
 def force_stop_all():
     """Force-kill every running task thread immediately."""
     _log = get_logger("runner")
-    config.auto_occupy_running = False
     config.MITHRIL_ENABLED_DEVICES.clear()
     config.MITHRIL_DEPLOY_TIME.clear()
     for key in list(running_tasks.keys()):

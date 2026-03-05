@@ -655,6 +655,19 @@ def adb_keyevent(device, keycode):
     elapsed = time.time() - t0
     stats.record_adb_timing(device, "keyevent", elapsed)
 
+def adb_text(device, text: str):
+    """Send text input via ADB (digits, letters, commas — no spaces or special chars)."""
+    t0 = time.time()
+    try:
+        subprocess.run([adb_path, "-s", device, "shell", "input", "text", text],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=ADB_COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        get_logger("vision", device).warning("adb_text timed out after %ds", ADB_COMMAND_TIMEOUT)
+        stats.record_adb_timing(device, "text", float(ADB_COMMAND_TIMEOUT), success=False)
+        return
+    elapsed = time.time() - t0
+    stats.record_adb_timing(device, "text", elapsed)
+
 GAME_PACKAGE = "com.tap4fun.odin.kingdomguard"
 
 def restart_game(device):

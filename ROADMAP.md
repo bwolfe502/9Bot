@@ -1,198 +1,132 @@
 # 9Bot Roadmap
 
-Priority: bug fixes, clean code, maintainability, usability — then new features.
+Priority: stability, usability, monetization — then new features.
 
 ---
 
-## Phase 1 — Bug Fixes & Reliability
+## Completed Work
 
-Harden existing features before adding new ones.
+<details>
+<summary>Click to expand completed phases</summary>
 
-- [x] Improve mithril mining reliability — detect occupied mines and plundered troops
-- [x] Improve titan rally miss detection — handle titan walking away, detect miss + retry
+**Reliability & Bug Fixes** — Hardened mithril mining, titan rally retry logic, AP recovery popup handling, join_rally success rate (blind tap + depart_anyway fallback), war screen speed optimizations, timed_wait budget tuning, multi-device contention reduction (poll 150→300ms, quest check 60→300s), error recovery with stuck-state detection, settings validation, image region audit, emulator start/stop control, game restart from dashboard, APK patch integration with streaming progress.
+
+**Testing & Quality** — 1106-test suite covering all major subsystems: combat (49), evil guard (30), titans (47), territory (66), quests (42), rallies (17), farming (22), plus vision, navigation, config, troops, runners, settings, and protocol modules. Failure screenshots added to join_rally and rally_titan debug flows. Automatic log/stats/debug uploading with progress feedback.
+
+**UI & Project Cleanup** — Web dashboard with mobile-friendly remote control, MJPEG live view (works through relay), per-device token-based sharing (full/read-only), per-device settings overrides, collapsible controls, mithril countdown timer, QR code for phone connection, clean quit flow. Refactored main.py → runners.py + settings.py, split actions.py (3600 lines) into actions/ package.
+
+**Quest Expansion** — Auto quest handles all types: Titan, Evil Guard, PVP, Tower, Gather, Fortress. Classification via keyword matching, dispatch priority chain, per-quest target overrides.
+
+**New Automations** — Phantom clash auto mode (5-min interval), auto reinforce ally castles (protocol-driven, 30-min cooldown), territory pass zone model (8 mountain passes, zone-aware targeting), multi-attack occupy loop with auto-reinforce.
+
+**Chat & Translation** — Chat viewer with protocol mirroring across devices, Claude Haiku auto-translation with Unicode script detection and batched API calls.
+
+**Security Audit (Feb 2026)** — No critical vulnerabilities found. Fixes: relay secret redaction, device ID whitelist, DOM XSS elimination (innerHTML → textContent), bug-report POST, pinned deps, zip-slip protection, wss:// relay tunnel, Bearer auth, non-root relay service, atomic settings writes, bot enumeration removed.
+
+**Protocol Interception** — Frida Gadget integration for instant game data reads (AP, troops, rallies, chat, entities). Per-device model with EventBus + GameState + InterceptorThread. APK patching via LIEF injection with pure Python signing. Wire registry (4,169 message types), protobuf decoder, typed message classes. Vision/OCR fast paths with automatic fallback.
+
+**Cloud SaaS Prep** — Docker-Android setup with deployment scripts, BlueStacks CLI management from dashboard, game login flow updated to one-time codes, relay portal with device list reporting, Stripe billing integration.
+
+**IP Protection** — Machine-bound license keys (HMAC + hardware fingerprint), remote validation against Google Sheets, 3-attempt startup check, dev mode bypass for .git repos.
+
+</details>
+
+---
+
+## Phase 1 — Polish & Hardening
+
+Improve what already exists. Small-to-medium items that increase reliability and usability.
+
 - [ ] Teleport system improvements — more reliable targeting and validation
-- [x] Error recovery — stuck-state detection, disconnect handling, popup resilience
-- [x] AP Recovery popup handling — detect game-opened AP popup during EG depart, restore AP inline
-- [x] Image region audit — verify all `IMAGE_REGIONS` in vision.py are still accurate. Existing regions verified correct for stationed.png, mithril_depart.png, depart.png (observed positions all within current bounds)
-- [x] Settings validation — validate `settings.json` on startup, catch invalid/corrupt values
-- [x] Fix join_rally success rate — replaced unreliable slot.png template with blind tap at (148, 1532), fixed close_x auto-dismiss on WAR screen, fixed scroll early-exit, added depart_anyway fallback
-- [x] Fix rally_titan instant failures (53%) — search menu not opening reliably (31-50% success). Diagnostic screenshot added (`titan_depart_miss_{N}`) — confirmed working after war screen speed optimizations
-- [x] ~~Fix heal flow~~ — 0% transitions are expected: heal button only appears when troops are injured (95% of the time they're healthy). Template works perfectly when healing is needed (100% confidence on hits)
-- [x] Tune timed_wait budgets — multiple rounds: `nav_kingdom_to_map` 2→3s, `recover_{name}` 1.5→2s, `verify_aq_screen` 2→3s, `nav_map_to_alliance` 2→2.5s, `nav_alliance_menu_load` 1→1.5s, `jr_backout_close_x` 4→2s (was over-budgeted)
-- [x] War screen speed optimization — removed label OCR (template match sufficient), disabled owner OCR (deferred to protocol), replaced lambda:False timed_waits with interruptible sleep, reduced scroll settle 1.5→0.8s, removed redundant depart wait
-- [x] Multi-device contention reduction — poll interval 150→300ms, quest check interval 60→300s when troops deployed, auto-install lz4 for protocol
-- [ ] Further multi-device performance — screenshot caching within timed_wait cycles, device-scoped OCR locks (Semaphore instead of global Lock), scrcpy/minicap for persistent screenshot streams
+- [ ] Multi-device performance — screenshot caching within timed_wait cycles, device-scoped OCR locks (Semaphore instead of global Lock), scrcpy/minicap for persistent screenshot streams
+- [ ] CSRF protection on POST endpoints
+- [ ] SHA-256 integrity verification for auto-updater downloads
+- [ ] Session summary — recap card on dashboard: runtime, rally count, gathers, heals, errors. Data already in `StatsTracker`, needs `summarize()` + endpoint
+- [ ] Reorganize "More Actions" section on dashboard
+- [ ] Clean up file and folder structure — organize `elements/`, consolidate debug dirs
+- [ ] Notification alerts — Discord webhook (POST to user-configured URL), ntfy.sh push notifications, settings UI for event selection and channel routing
+- [ ] Live testing suite — integration tests against a real emulator
+- [ ] Pre-release checklist — full test pass, live smoke test, version bump verification
 
-## Phase 2 — Testing & Quality
+## Phase 2 — Telemetry & Privacy
 
-Build confidence that everything works before shipping updates.
+The upload/debug pipeline exists but needs user trust features before broader rollout.
 
-### Critical Test Gaps (P0)
-- [x] `test_combat.py` — _check_dead, _find_green_pixel, _detect_player_at_eg, teleport (49 tests). Still missing: attack, phantom_clash, reinforce_throne, target
-- [x] `test_evil_guard.py` — expanded to 30 tests: _handle_ap_popup, search_eg_reset, _probe_priest, rally_eg guards/stop_check, EG_PRIEST_POSITIONS sanity
-- [x] `test_titans.py` — 47 tests: rally_titan (16), restore_ap (4), _restore_ap_from_open_menu (15), _close_ap_menu (3), _read_ap_from_menu (4), _read_gem_cost (5)
-- [x] `test_territory.py` — _classify_square_team, _get_border_color, _has_flag, _is_adjacent_to_my_territory, attack_territory, auto_occupy_loop (66 tests)
-
-### Major Test Gaps (P1)
-- [x] Expand `test_quests.py` — 42 new tests: _ocr_quest_rows (10), _claim_quest_rewards (4), _wait_for_rallies (5), _run_rally_loop (5), _check_quests_legacy (3), get_quest_tracking_state (5), get_quest_last_checked (3), _is_troop_defending_relaxed (4), _recall_tap_sequence (3)
-- [x] Expand `test_rallies.py` — 17 new tests: _on_war_screen (3), _ocr_error_banner (5), join_war_rallies guards (6), join_rally entry guards (3)
-- [x] `test_farming.py` — 22 tests: _is_mine_occupied (6), _set_gather_level (3), mine_mithril (4), mine_mithril_if_due (4), mithril constants (5)
-
-### Infrastructure
-- [x] Audit existing test suite — 989 tests (was 658 at start of Phase 2), well-structured
-- [ ] Add live testing suite — integration tests that run against a real emulator
-- [ ] Establish pre-release checklist — full test pass, live smoke test, version bump verification
-- [ ] Actionable test data — coverage reports, structured failure output, clear pass/fail signals
-- [ ] Keep CLAUDE.md current — ensure AI has full codebase context for efficient development
-- [x] Better debug data collection — failure screenshots added to join_rally (`jr_detail_load_fail`, `jr_slot_to_depart_fail`) and rally_titan (`titan_depart_miss_{N}`). Remaining: read_ap None returns
-- [x] Automatic log/stats/debug uploading to droplet — manual upload from dashboard with real progress feedback (Zipping → Uploading X% → Sent!/error). Auto-upload on interval via settings.
 - [ ] Telemetry consent prompt — explicit opt-in dialog on first run (never silent, never pre-checked)
 - [ ] Data scrubbing — strip device IPs, file paths, player names before upload
 - [ ] Screenshot masking — black out chat area and name regions before staging
-- [ ] Clear submitted data from local machine after successful upload (no duplicates)
-- [ ] Settings UI for telemetry — tier selection, "View queued data" button, opt-out
+- [ ] Clear submitted data from local machine after successful upload
+- [ ] Settings UI for telemetry — tier selection, "View queued data" button, opt-out at any time
 
-## Security Hardening (ongoing)
+## Phase 3 — Monetization & Distribution
 
-Audit performed Feb 2026. No critical vulnerabilities — no shell injection, no eval/exec/pickle,
-Jinja2 auto-escaping active, all subprocess calls use list args without shell=True.
+Transition from free/trusted-circle to paid product.
 
-### Completed
-- [x] Redact `relay_secret` from bug report ZIPs (shows `***REDACTED***`)
-- [x] Validate device IDs in `/tasks/start` against known devices whitelist
-- [x] Fix DOM XSS — replace `innerHTML` with `textContent`/DOM creation in dashboard JS
-- [x] Switch `/api/bug-report` from GET to POST (prevent prefetch/crawler triggers)
-- [x] Pin all dependency versions in `requirements.txt`
-- [x] Add zip-slip protection to auto-updater `extractall()`
-- [x] Zero-config relay — auto-derive URL/secret/bot-name from license key, no user-facing config
-- [x] Remove bot enumeration from relay landing page
-- [x] Fix settings.json wipe on update — added to `PRESERVE_FILES` in updater.py
+- [ ] Make GitHub repo private (prevent unlicensed source access)
+- [ ] Private download server — license-key auth for release ZIPs
+- [ ] Update `updater.py` to send license key as auth header (replace GitHub API)
+- [ ] Replace Google Sheets license backend with server-side API (usage tracking, auto-provisioning)
+- [ ] Nuitka compilation for releases — blocked by AV false positive risk; revisit when code-signing is affordable
+- [ ] Periodic re-validation during runtime (when piracy becomes an actual problem)
+- [ ] Auto-screenshot on license fail — console screenshot + timestamp after 3 invalid key attempts
 
-- [x] Switch relay tunnel to `wss://` (TLS) — nginx + Let's Encrypt on `1453.life`
-- [x] Move relay secret from URL query param to `Authorization: Bearer` header
-- [x] Run relay server as non-root `9bot` user in systemd
-- [x] Atomic settings write — temp file + `os.replace()` prevents corruption on crash
+## Phase 4 — Cloud SaaS
 
-### Remaining (prioritized)
-- [ ] Add CSRF protection to POST endpoints
-- [ ] Add integrity verification (SHA-256) to auto-updater downloads
-- [x] Atomic settings write — temp file + `os.replace()` prevents corruption on crash
+Host in the cloud — no local install, full IP protection. Detailed analysis in `memory/saas_planning.md`.
 
-## Monetization Prep (when needed)
-
-Not urgent — current license system (machine-bound keys + Google Sheets) is sufficient for
-a small trusted user base. Revisit when charging money or user count grows significantly.
-
-### Distribution
-- [ ] Make GitHub repo private (prevents unlicensed downloads of source)
-- [ ] Private download server — users authenticate with license key to get release ZIPs
-- [ ] Update `updater.py` to send license key as auth header instead of hitting GitHub API
-- [ ] Consider Nuitka compilation for releases (native .exe, no Python install needed) — blocked by AV false positive risk; revisit when code-signing certificate is affordable
-
-### IP Protection (current state)
-- [x] Machine-bound license keys (HMAC + hardware fingerprint) — can't copy `.license_key` between PCs
-- [x] Remote key validation against Google Sheets (instant revoke)
-- [x] License check on startup with 3-attempt limit
-- [x] Dev mode bypass for `.git` repos (doesn't affect end users)
-- [ ] Replace Google Sheets with server-side API (when: need usage tracking, auto-provisioning, or professional storefront)
-- [ ] Periodic re-validation during runtime (when: piracy becomes an actual problem, not preemptively)
-
-## Phase 3 — UI & Project Cleanup
-
-Clean up the interface and codebase structure for long-term maintainability.
-
-- [x] Web dashboard — mobile-friendly Flask remote control (toggle switches, action chips, device cards)
-- [x] Status text system — Title Case, expanded abbreviations, phase-specific statuses for rally_eg
-- [x] Multi-device sharing — token-based per-device URLs with full control and read-only access levels
-- [x] Per-device settings — device_settings overrides in settings.json, device tabs on settings page
-- [x] Live View — MJPEG streaming with polling fallback (works through relay tunnel)
-- [x] Collapsible controls — toggle between full switches and compact status pills
-- [x] Mithril countdown timer — purple accent timer in device header
-- [x] Quit button + clean process exit — `os._exit(0)` after pywebview closes
-- [ ] Clean up settings layout — currently cluttered
-- [ ] Reorganize "More Actions" section
-- [ ] Clean up file and folder structure — organize `elements/`, consolidate debug dirs
-- [x] Refactor main.py — extract task runners into shared `runners.py`, settings into `settings.py`
-- [x] Split actions.py (~3600 lines) into `actions/` package (quests, rallies, combat, titans, evil_guard, farming)
-- [x] Eliminate dashboard duplication — `web/dashboard.py` now imports from `runners.py` and `settings.py`
-
-## Phase 4 — Quest Expansion
-
-Extend auto quest to handle more quest types. The classification infrastructure already exists
-(`_classify_quest_text` recognizes all types) — they just need to be wired up.
-
-- [x] Add TOWER quests to auto quest loop
-- [x] Add GATHER (gold mining) to auto quest loop
-- [x] Add PVP to auto quest loop
-- [x] Expand `_classify_quest_text` and `_get_actionable_quests` for new types
-- [x] New template images for tower/gather/PvP quest UI elements
-
-## Phase 5 — New Automations
-
-Entirely new game automations.
-
-- [ ] Automatic frost giant function
-- [ ] Automatic lava haka spawning
-- [ ] EG theft prevention — collect training data to detect other players' Evil Guards and avoid stealing them. Need screenshots of own vs others' EG markers/rallies for template or ML-based classification
-
-## Phase 6 — UX & Notifications
-
-Quality-of-life features that make the bot feel polished.
-
-### Quick Wins
-- [x] QR code for phone connection — QR code button on access banner + share modal, generates via `/api/qr` endpoint
-- [ ] Session summary — on stop or on demand, show recap: runtime, rally count, gathers, heals, errors. Data already in `StatsTracker`, just needs a `summarize()` method and a dashboard card/endpoint
-
-### Notifications
-- [ ] Discord webhook alerts — POST to a user-configured webhook URL on key events (bot stopped on errors, EG complete, license issues). No bot token needed, just a URL in settings
-- [ ] Push notifications via ntfy.sh — free, no-account push notifications to phone. One HTTP POST per alert. Users subscribe to their own topic. Lighter than Discord, easier opt-in/out
-- [ ] Notification settings — let users pick which events trigger alerts (errors only, rally completions, all activity) and which channel (Discord, ntfy, both, none)
-
-### Security
-- [ ] Auto-screenshot on license fail — save console screenshot + timestamp after 3 invalid key attempts. Breadcrumb trail for key sharing/brute-force detection
-
-## Phase 7 — Cloud SaaS
-
-Host 9Bot in the cloud so users get a web URL with no local install. Full IP protection — users
-never see source code. Detailed analysis in `memory/saas_planning.md`.
-
-### Architecture
-Windows dedicated servers (Hetzner AX42, ~$55/mo) running 4 BlueStacks instances each.
-Dedicated instance per user (no time-sharing VMs). Users control via existing web dashboard.
-Docker for management plane (relay, orchestration API) — not for emulators.
-
-### Step 1 — Prove the model
-- [ ] Test BlueStacks CLI management — start/stop/create instances via command line
-- [ ] Prove on a home server or spare PC — cheapest way to validate (~$1-2/user/mo electricity only)
-- [ ] Run 4 beta users on it, validate performance and stability
+### Validate
+- [ ] Run beta users, validate performance and stability
 - [ ] Measure actual resource usage (RAM, CPU, disk) per instance
-- [ ] Investigate cloud phone services (Redfinger, etc.) as low-effort alternative
+- [ ] Evaluate alternatives: Docker-Android, cloud phone services (Redfinger), Android-x86 in Hyper-V
 
-### Step 2 — Orchestration
-- [ ] Orchestration API — assign users to servers/slots, start/stop instances remotely
+### Orchestration
+- [ ] API for user→server assignment, start/stop instances remotely
 - [ ] Server provisioning script — automate BlueStacks + 9Bot setup on fresh Windows servers
 - [ ] Health monitoring — detect crashed instances, stalled bots, resource exhaustion
 - [ ] Capacity tracking — which servers have free slots
 
-### Step 3 — User onboarding
-- [ ] Game login flow — VNC-in-browser (noVNC) or remote desktop stream for first-time setup
-- [ ] User management — sign-up, billing, slot assignment
-- [ ] "Cloud mode" dashboard — hide local setup instructions, show instance status
-
-### Step 4 — Launch
-- [ ] Offer SaaS alongside local option
-- [ ] Pricing model (target ~$15-25/mo per user at ~$7-11 cost)
+### Onboarding
+- [ ] "Cloud mode" dashboard — hide local setup, show instance status
 - [ ] Coordinated game update patching across all instances
 - [ ] Data backup strategy for user game accounts
 
-### Open questions
-- [ ] BlueStacks licensing for commercial/cloud use
-- [ ] Game ToS implications of cloud hosting vs user's own machine
-- [ ] Billing integration (Stripe, etc.)
-- [ ] Android-x86 in Hyper-V as BlueStacks alternative (avoids licensing questions)
-- [ ] Cloud phone services (Redfinger) — validate ADB access and game compatibility
+### Launch
+- [ ] Offer SaaS alongside local option
+- [ ] Pricing model (target ~$15-25/mo per user at ~$7-11 cost)
 
-### Future: Protocol-only mode
+### Open Questions
+- BlueStacks licensing for commercial/cloud use
+- Game ToS implications of cloud hosting vs user's own machine
+
+### Future: Protocol-Only Mode
 Long-term aspiration — fully reverse-engineer the game protocol, eliminate the emulator entirely.
-Each user becomes a lightweight Python process (~$1-2/mo). Massive engineering effort but would
-make K8s auto-scaling viable. Existing Frida protocol interception is the foundation for this.
+Each user becomes a lightweight Python process (~$1-2/mo). Existing Frida protocol interception
+is the foundation.
+
+---
+
+## Security Hardening (ongoing)
+
+<details>
+<summary>Audit completed Feb 2026 — no critical vulnerabilities</summary>
+
+No shell injection, no eval/exec/pickle, Jinja2 auto-escaping active, all subprocess calls use
+list args without shell=True. Fixes applied: relay secret redaction, device ID whitelist, DOM XSS
+fix, bug-report POST, pinned deps, zip-slip protection, wss:// tunnel, Bearer auth, non-root
+relay, atomic settings writes, bot enumeration removed.
+
+</details>
+
+### Remaining
+- [ ] CSRF protection on POST endpoints *(tracked in Phase 1)*
+- [ ] SHA-256 integrity verification for auto-updater *(tracked in Phase 1)*
+
+---
+
+## Backlog — Future Automations
+
+Not yet prioritized. Ideas for new game automations.
+
+- [ ] Automatic frost giant function
+- [ ] Automatic lava haka spawning
+- [ ] EG theft prevention — detect other players' Evil Guards to avoid stealing. Needs training data: own vs others' EG markers/rallies for template or ML-based classification

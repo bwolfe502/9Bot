@@ -192,17 +192,33 @@ MITHRIL_DEPLOY_TIME = {}     # {device_id: timestamp} — when troops were deplo
 GATHER_ENABLED = True
 GATHER_MINE_LEVEL = 4            # Gold mine level to search for (4, 5, or 6)
 GATHER_MAX_TROOPS = 3            # Max troops to send gathering simultaneously
-
 # Tower quest
 TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires target marker on tower)
+
+# Timing intervals (per-device overridable)
+VARIATION = 0
+TITAN_INTERVAL = 30
+GROOT_INTERVAL = 30
+REINFORCE_INTERVAL = 30
+PASS_INTERVAL = 30
+PASS_MODE = "Rally Joiner"
+
+# General task scheduler (runtime state only — schedule definitions are per-device in settings)
+SCHEDULES = []                   # [{id, mode, start, end, boot?, enabled?}] — loaded from settings
+SCHEDULED_TASKS = {}             # {task_key: schedule_id} — tracks scheduler-started tasks
+SCHEDULE_SUPPRESSED = set()      # {task_key} — manually stopped, don't restart this window
 
 # Protocol interception (opt-in, requires Frida Gadget in APK)
 PROTOCOL_ENABLED = False
 PROTOCOL_ACTIVE_DEVICES = set()  # {device_id} — devices with running protocol interceptor
 
+# Auto Reinforce Ally
+HOME_X = 0                       # Home castle X coordinate (display units, 0 = not set)
+HOME_Z = 0                       # Home castle Z/Y coordinate (display units, 0 = not set)
+MAX_REINFORCE_DISTANCE = 55      # Max distance to reinforce (display units, 0 = unlimited)
+
 # Emulator boot tracking
 EMULATOR_STARTING = {}  # {device_id: {"instance": str, "started_at": float}}
-EMULATOR_RECENTLY_STARTED = {}  # {device_id: float timestamp} — cleared after game start
 
 # Per-device lock — prevents concurrent tasks from controlling the same device
 import threading
@@ -230,9 +246,6 @@ def clear_device_status(device):
     """Clear status for a device (e.g. when task stops)."""
     DEVICE_STATUS.pop(device, None)
 
-auto_occupy_running = False
-auto_occupy_thread = None
-
 # Quit callback — set by run_web.py to close pywebview window cleanly
 _quit_callback = None
 
@@ -253,11 +266,34 @@ GRID_WIDTH = 24
 GRID_HEIGHT = 24
 THRONE_SQUARES = {(11, 11), (11, 12), (12, 11), (12, 12)}
 
+# Territory passes & safe zones (loaded from settings.json)
+TERRITORY_PASSES = {}         # {"1": {"name": "Fire North", "owned": false}, ...}
+TERRITORY_MUTUAL_ZONES = {}   # {"fire_earth": [[r,c],...], ...} — frontlines between teams
+TERRITORY_SAFE_ZONES = {}     # {"yellow": [[r,c],...], ...}
+TERRITORY_HOME_ZONES = {}     # {"yellow": [[r,c],...], ...}
+PASS_BLOCKED_SQUARES = set()  # computed from mutual/home/safe zones + pass ownership
+ZONE_EXPECTED_TEAMS = {}      # {(row,col): frozenset of team strings} — built by recompute_pass_blocked()
+
 BORDER_COLORS = {
     "yellow": (107, 223, 239),
     "green":  (100, 175, 160),  # recalibrated from live diagnostic data 2026-02-28
     "red":    (49, 85, 247),
     "blue":   (148, 145, 165)  # recalibrated from live diagnostic data 2026-02-28
+}
+
+# Which teams fight in each mutual zone (derived from map geometry)
+_MUTUAL_ZONE_TEAMS = {
+    "fire_earth":   frozenset({"red", "yellow"}),
+    "fire_ice":     frozenset({"red", "blue"}),
+    "earth_forest": frozenset({"yellow", "green"}),
+    "forest_ice":   frozenset({"green", "blue"}),
+}
+# Which teams can be in each home zone (home + 2 adjacent frontline teams)
+_HOME_ZONE_TEAMS = {
+    "red":    frozenset({"red", "yellow", "blue"}),
+    "yellow": frozenset({"red", "yellow", "green"}),
+    "green":  frozenset({"yellow", "green", "blue"}),
+    "blue":   frozenset({"red", "green", "blue"}),
 }
 
 # ============================================================
@@ -283,6 +319,11 @@ SETTINGS_RULES = {
     "collect_training_data": {"type": bool},
     "protocol_enabled":      {"type": bool},
     "chat_mirror":           {"type": bool},
+    "home_x":                {"type": int, "min": 0},
+    "home_z":                {"type": int, "min": 0},
+    "max_reinforce_distance":{"type": int, "min": 0},
+    "chat_translate_enabled":{"type": bool},
+    "chat_translate_api_key":{"type": str},
     # Ints — type + optional min/max
     "ap_gem_limit":          {"type": int, "min": 0, "max": 3500},
     "min_troops":            {"type": int, "min": 0, "max": 5},
@@ -298,7 +339,8 @@ SETTINGS_RULES = {
     # Strings — type + allowed values
     "pass_mode":             {"type": str, "choices": ["Rally Joiner", "Rally Starter"]},
     "my_team":               {"type": str, "choices": ["yellow", "red", "blue", "green"]},
-    "enemy_team":            {"type": str, "choices": ["yellow", "red", "blue", "green"]},  # legacy — ignored, enemies auto-derived from my_team
+    "enemy_team":            {"type": str, "choices": ["yellow", "red", "blue", "green"]},  # legacy single-value, migrated to enemy_teams list
+    "enemy_teams":           {"type": list},  # list of team color strings
     "mode":                  {"type": str, "choices": ["bl", "rw"]},
 }
 
@@ -455,6 +497,15 @@ _SETTINGS_TO_CONFIG = {
     "my_team":               "MY_TEAM_COLOR",
     "mithril_interval":      "MITHRIL_INTERVAL",
     "protocol_enabled":      "PROTOCOL_ENABLED",
+    "home_x":                "HOME_X",
+    "home_z":                "HOME_Z",
+    "max_reinforce_distance":"MAX_REINFORCE_DISTANCE",
+    "variation":             "VARIATION",
+    "titan_interval":        "TITAN_INTERVAL",
+    "groot_interval":        "GROOT_INTERVAL",
+    "reinforce_interval":    "REINFORCE_INTERVAL",
+    "pass_interval":         "PASS_INTERVAL",
+    "pass_mode":             "PASS_MODE",
 }
 
 _DEVICE_CONFIG = {}  # {device_id: {setting_key: value}}
@@ -473,8 +524,16 @@ def get_device_config(device, key):
 
 def get_device_enemy_teams(device):
     """Return enemy teams for a specific device."""
-    my_team = get_device_config(device, "my_team")
-    return [t for t in ALL_TEAMS if t != my_team]
+    # Check per-device override first
+    dev = _DEVICE_CONFIG.get(device)
+    if dev:
+        if "enemy_teams" in dev:
+            return dev["enemy_teams"]
+        # Derive enemies from per-device my_team override
+        if "my_team" in dev:
+            return [t for t in ALL_TEAMS if t != dev["my_team"]]
+    # Fall back to global
+    return ENEMY_TEAMS
 
 
 def set_device_overrides(device_id, overrides):
@@ -556,9 +615,101 @@ def set_gather_options(enabled, mine_level, max_troops):
     _log.info("Gather config: enabled=%s, mine_level=%d, max_troops=%d",
               GATHER_ENABLED, GATHER_MINE_LEVEL, GATHER_MAX_TROOPS)
 
-def set_territory_config(my_team):
-    """Set which team you are; all other teams become enemies automatically."""
+def set_territory_config(my_team, enemy_teams=None):
+    """Set which team you are and which teams to attack.
+
+    If enemy_teams is None or empty, all non-own teams become enemies.
+    """
     global MY_TEAM_COLOR, ENEMY_TEAMS
     MY_TEAM_COLOR = my_team
-    ENEMY_TEAMS = [t for t in ALL_TEAMS if t != my_team]
+    if enemy_teams:
+        ENEMY_TEAMS = [t for t in enemy_teams if t != my_team and t in ALL_TEAMS]
+    else:
+        ENEMY_TEAMS = [t for t in ALL_TEAMS if t != my_team]
     _log.info("Territory config: My team = %s, Enemies = %s", my_team, ENEMY_TEAMS)
+
+
+def recompute_pass_blocked():
+    """Rebuild PASS_BLOCKED_SQUARES from mutual zones, home zones, and safe zones.
+
+    Three zone types are gated by passes:
+    - **Mutual zones** (frontlines): each gated by a pass pair from adjacent teams.
+      Blocked if BOTH passes are unowned — owning either unlocks it.
+    - **Home zones** (team corners): gated by that team's two passes.
+      Own team's home is always accessible.  Enemy home blocked if both their
+      passes are unowned.
+    - **Safe zones**: always blocked for enemies, always open for own team.
+
+    Pass pair mapping:
+      fire_earth   → passes 1 (Fire North) + 3 (Earth South)
+      fire_ice     → passes 2 (Fire East)  + 7 (Ice West)
+      earth_forest → passes 4 (Earth East) + 5 (Forest West)
+      forest_ice   → passes 6 (Forest South) + 8 (Ice North)
+    Home: red → 1,2  yellow → 3,4  green → 5,6  blue → 7,8
+
+    Called on settings load, pass toggle, or team color change.
+    """
+    global PASS_BLOCKED_SQUARES
+    _MUTUAL_PASS_IDS = {
+        "fire_earth": ["1", "3"], "fire_ice": ["2", "7"],
+        "earth_forest": ["4", "5"], "forest_ice": ["6", "8"],
+    }
+    _HOME_PASS_IDS = {
+        "red": ["1", "2"], "yellow": ["3", "4"],
+        "green": ["5", "6"], "blue": ["7", "8"],
+    }
+
+    def _any_owned(pass_ids):
+        return any(
+            TERRITORY_PASSES.get(pid, {}).get("owned", False)
+            for pid in pass_ids
+        )
+
+    blocked = set()
+    # Mutual zones: blocked if both gating passes are unowned
+    for zone_key, squares in TERRITORY_MUTUAL_ZONES.items():
+        pass_ids = _MUTUAL_PASS_IDS.get(zone_key, [])
+        if not _any_owned(pass_ids):
+            for rc in squares:
+                blocked.add(tuple(rc))
+    # Home zones: gated by team's pass pair; own team always accessible
+    for team, squares in TERRITORY_HOME_ZONES.items():
+        if team == MY_TEAM_COLOR:
+            continue  # own home never blocked
+        pass_ids = _HOME_PASS_IDS.get(team, [])
+        if not _any_owned(pass_ids):
+            for rc in squares:
+                blocked.add(tuple(rc))
+    # Enemy safe zones always blocked
+    for team, zone in TERRITORY_SAFE_ZONES.items():
+        if team != MY_TEAM_COLOR:
+            for rc in zone:
+                blocked.add(tuple(rc))
+    PASS_BLOCKED_SQUARES = blocked
+
+    # Build zone-expected-teams inverse index for color disambiguation.
+    # Maps (row, col) → frozenset of team colors that should be present.
+    global ZONE_EXPECTED_TEAMS
+    zone_map = {}
+    for zone_key, squares in TERRITORY_MUTUAL_ZONES.items():
+        teams = _MUTUAL_ZONE_TEAMS.get(zone_key)
+        if not teams:
+            continue
+        for rc in squares:
+            key = tuple(rc)
+            zone_map[key] = zone_map[key] & teams if key in zone_map else teams
+    for team, squares in TERRITORY_HOME_ZONES.items():
+        teams = _HOME_ZONE_TEAMS.get(team)
+        if not teams:
+            continue
+        for rc in squares:
+            key = tuple(rc)
+            zone_map[key] = zone_map[key] & teams if key in zone_map else teams
+    for team, squares in TERRITORY_SAFE_ZONES.items():
+        safe_team = frozenset({team})
+        for rc in squares:
+            key = tuple(rc)
+            zone_map[key] = zone_map[key] & safe_team if key in zone_map else safe_team
+    ZONE_EXPECTED_TEAMS = zone_map
+    _log.debug("Pass-blocked squares recomputed: %d blocked, %d zone-mapped",
+               len(blocked), len(zone_map))

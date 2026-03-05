@@ -26,6 +26,12 @@
     <button type="submit" class="action-chip action-chip-debug">{{ name }}</button>
 </form>
 {% endfor %}
+<form method="post" action="/tasks/start" class="device-form">
+    <input type="hidden" name="device" value="{{ devices|map(attribute='id')|join(',') }}">
+    <input type="hidden" name="task_name" value="debug_occupy">
+    <input type="hidden" name="task_type" value="auto">
+    <button type="submit" class="action-chip action-chip-debug">Debug Occupy</button>
+</form>
 </div>
 
 <div class="section-header" style="margin-top:24px">Reports</div>
@@ -89,6 +95,31 @@
 </div>
 {% endif %}
 <p style="color:#667;font-size:12px;padding:2px 0 0;margin:0">Per-device Frida Gadget interception. Requires patched APK. <a href="/chat" style="color:#4cff8e">Chat Viewer</a></p>
+</div>
+
+<!-- APK Patch Modal -->
+<div class="patch-overlay" id="patch-overlay">
+<div class="patch-modal">
+    <div class="patch-title" id="patch-title">Enable Protocol</div>
+    <!-- Choice screen -->
+    <div id="patch-choice">
+        <p class="patch-desc">Protocol requires a patched APK with Frida Gadget injected.<br>
+        If you haven't patched this device yet, use <strong>Patch &amp; Enable</strong>.</p>
+        <div class="patch-actions">
+            <button class="patch-btn patch-btn-primary" id="patch-start-btn" onclick="startPatch()">Patch &amp; Enable</button>
+            <button class="patch-btn" onclick="enableOnly()">Enable Only</button>
+            <button class="patch-btn" onclick="closePatchModal()">Cancel</button>
+        </div>
+    </div>
+    <!-- Log viewer screen -->
+    <div id="patch-log-view" style="display:none">
+        <div class="patch-step" id="patch-step"></div>
+        <div class="patch-log" id="patch-log"></div>
+        <div id="patch-done-actions" style="display:none">
+            <button class="patch-btn patch-btn-primary" onclick="closePatchModal(true)">Close</button>
+        </div>
+    </div>
+</div>
 </div>
 
 <!-- Logs -->
@@ -247,22 +278,128 @@ function refreshLogs() {
         .catch(function() {});
 }
 
+var _patchDeviceId = null;
+var _patchBtn = null;
+var _patchPollId = null;
+var _patchLastLineCount = 0;
+
 function toggleProtocolDevice(deviceId, btn) {
-    btn.disabled = true;
+    // If currently enabled, just disable immediately (no modal)
+    var isEnabled = btn.textContent.trim() === 'Enabled';
+    if (isEnabled) {
+        btn.disabled = true;
+        var body = new FormData();
+        body.append('device_id', deviceId);
+        fetch(RELAY_PREFIX + '/api/protocol-toggle', {method: 'POST', body: body})
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                btn.textContent = data.enabled ? 'Enabled' : 'Disabled';
+                btn.style.borderColor = data.enabled ? '#4cff8e' : '#666';
+                btn.disabled = false;
+            })
+            .catch(function() {
+                btn.textContent = 'Error';
+                btn.style.borderColor = '#ff6464';
+                setTimeout(function() { btn.disabled = false; }, 2000);
+            });
+        return;
+    }
+    // Enabling: show patch modal
+    _patchDeviceId = deviceId;
+    _patchBtn = btn;
+    document.getElementById('patch-choice').style.display = '';
+    document.getElementById('patch-log-view').style.display = 'none';
+    document.getElementById('patch-title').textContent = 'Enable Protocol';
+    document.getElementById('patch-overlay').classList.add('visible');
+}
+
+function closePatchModal(reload) {
+    document.getElementById('patch-overlay').classList.remove('visible');
+    if (_patchPollId) { clearInterval(_patchPollId); _patchPollId = null; }
+    if (reload) location.reload();
+}
+
+function enableOnly() {
+    // Toggle on without patching
+    closePatchModal();
+    if (!_patchBtn || !_patchDeviceId) return;
+    _patchBtn.disabled = true;
     var body = new FormData();
-    body.append('device_id', deviceId);
+    body.append('device_id', _patchDeviceId);
     fetch(RELAY_PREFIX + '/api/protocol-toggle', {method: 'POST', body: body})
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            btn.textContent = data.enabled ? 'Enabled' : 'Disabled';
-            btn.style.borderColor = data.enabled ? '#4cff8e' : '#666';
-            btn.disabled = false;
+            _patchBtn.textContent = data.enabled ? 'Enabled' : 'Disabled';
+            _patchBtn.style.borderColor = data.enabled ? '#4cff8e' : '#666';
+            _patchBtn.disabled = false;
         })
         .catch(function() {
-            btn.textContent = 'Error';
-            btn.style.borderColor = '#ff6464';
-            setTimeout(function() { btn.disabled = false; }, 2000);
+            _patchBtn.disabled = false;
         });
+}
+
+function startPatch() {
+    document.getElementById('patch-choice').style.display = 'none';
+    document.getElementById('patch-log-view').style.display = '';
+    document.getElementById('patch-done-actions').style.display = 'none';
+    document.getElementById('patch-log').textContent = '';
+    document.getElementById('patch-step').textContent = 'Starting...';
+    document.getElementById('patch-title').textContent = 'Patching APK';
+    document.getElementById('patch-start-btn').disabled = true;
+    _patchLastLineCount = 0;
+
+    var body = new FormData();
+    body.append('device_id', _patchDeviceId);
+    fetch(RELAY_PREFIX + '/api/patch-apk', {method: 'POST', body: body})
+        .then(function(r) { return r.json(); })
+        .then(function() { _pollPatchProgress(); })
+        .catch(function(err) {
+            document.getElementById('patch-step').textContent = 'Failed to start: ' + err;
+            document.getElementById('patch-done-actions').style.display = '';
+        });
+}
+
+function _pollPatchProgress() {
+    if (_patchPollId) clearInterval(_patchPollId);
+    _patchPollId = setInterval(function() {
+        fetch(RELAY_PREFIX + '/api/patch-progress?device_id=' + encodeURIComponent(_patchDeviceId))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                var logEl = document.getElementById('patch-log');
+                var stepEl = document.getElementById('patch-step');
+                // Append only new lines
+                var lines = data.lines || [];
+                if (lines.length > _patchLastLineCount) {
+                    for (var i = _patchLastLineCount; i < lines.length; i++) {
+                        var div = document.createElement('div');
+                        div.className = 'patch-log-line';
+                        div.textContent = lines[i];
+                        logEl.appendChild(div);
+                    }
+                    _patchLastLineCount = lines.length;
+                    logEl.scrollTop = logEl.scrollHeight;
+                }
+                // Update step counter
+                if (data.total > 0) {
+                    stepEl.textContent = 'Step ' + data.step + ' / ' + data.total;
+                } else if (data.phase === 'running') {
+                    stepEl.textContent = 'Running...';
+                }
+                // Terminal states
+                if (data.phase === 'done') {
+                    clearInterval(_patchPollId); _patchPollId = null;
+                    stepEl.textContent = 'Complete!';
+                    stepEl.style.color = '#4cff8e';
+                    document.getElementById('patch-done-actions').style.display = '';
+                } else if (data.phase === 'error') {
+                    clearInterval(_patchPollId); _patchPollId = null;
+                    stepEl.textContent = 'Failed' + (data.error ? ': ' + data.error : '');
+                    stepEl.style.color = '#ff6464';
+                    document.getElementById('patch-done-actions').style.display = '';
+                }
+            })
+            .catch(function() {});
+    }, 500);
 }
 
 setInterval(refreshLogs, 5000);

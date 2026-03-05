@@ -26,8 +26,8 @@ from config import Screen
 from botlog import get_logger, timed_action
 from vision import (tap_image, wait_for_image_and_tap, timed_wait,
                     load_screenshot, find_image, find_all_matches,
-                    get_template, adb_tap, adb_swipe, logged_tap,
-                    clear_click_trail, save_failure_screenshot)
+                    get_template, get_last_best, adb_tap, adb_swipe,
+                    logged_tap, clear_click_trail, save_failure_screenshot)
 from navigation import navigate, check_screen
 from troops import troops_avail, all_troops_home, heal_all
 
@@ -105,37 +105,42 @@ def phantom_clash_attack(device, stop_check=None):
 
     logged_tap(device, 550, 450, "phantom_clash_attack_selection")
 
-    # Wait for the attack menu to open (esb_middle_attack_window.png)
+    # Phase 1: Wait for the attack menu to open (esb_middle_attack_window.png)
+    # Retap king periodically until the menu appears, but stop retapping once confirmed.
     start = time.time()
     menu_open = False
-    while time.time() - start < 31:
+    attack_tapped = False
+    while time.time() - start < 15:
         if stop_check and stop_check():
             return
         screen = load_screenshot(device)
-        # Always check for attack button even while waiting for menu
+        if find_image(screen, "esb_middle_attack_window.png"):
+            log.debug("Attack menu open, moving to attack button poll")
+            menu_open = True
+            break
         match = find_image(screen, "esb_attack.png")
         if match:
             _, (mx, my), h, w = match
             adb_tap(device, mx + w // 2, my + h // 2)
-            log.debug("Tapped esb_attack.png")
-            menu_open = True
+            log.debug("Tapped esb_attack.png during menu open phase (%.0f%%)",
+                      match[0] * 100)
+            attack_tapped = True
             break
-        if find_image(screen, "esb_middle_attack_window.png"):
-            log.debug("Attack menu open, waiting for esb_attack.png...")
-            menu_open = True
-        else:
-            log.debug("Attack menu not detected, retapping king")
-            logged_tap(device, 550, 450, "phantom_clash_attack_selection")
-        if _interruptible_sleep(1, stop_check):
+        # Menu not open yet — retap king every ~3s
+        log.debug("Attack menu not detected (best: %.0f%%), retapping king",
+                  get_last_best() * 100)
+        logged_tap(device, 550, 450, "phantom_clash_attack_selection")
+        if _interruptible_sleep(3, stop_check):
             return
 
-    if not menu_open:
-        log.warning("Timed out waiting for attack menu after 31s")
+    if not menu_open and not attack_tapped:
+        log.warning("Timed out waiting for attack menu after %.0fs", time.time() - start)
         return
 
-    # Menu is open but attack button wasn't found yet — keep polling
-    if not find_image(load_screenshot(device), "esb_attack.png"):
-        while time.time() - start < 31:
+    # Phase 2: Menu is open — poll for attack button (never retap king)
+    if not attack_tapped:
+        poll_start = time.time()
+        while time.time() - poll_start < 30:
             if stop_check and stop_check():
                 return
             screen = load_screenshot(device)
@@ -143,19 +148,27 @@ def phantom_clash_attack(device, stop_check=None):
             if match:
                 _, (mx, my), h, w = match
                 adb_tap(device, mx + w // 2, my + h // 2)
-                log.debug("Tapped esb_attack.png")
+                log.debug("Tapped esb_attack.png (%.0f%%) after %.0fs poll",
+                          match[0] * 100, time.time() - poll_start)
+                attack_tapped = True
                 break
-            if _interruptible_sleep(1, stop_check):
+            log.debug("Waiting for esb_attack.png (best: %.0f%%)",
+                      get_last_best() * 100)
+            if _interruptible_sleep(0.5, stop_check):
                 return
-        else:
-            log.warning("Timed out waiting for esb_attack.png after 31s")
+        if not attack_tapped:
+            log.warning("Timed out waiting for esb_attack.png after %.0fs with menu open",
+                        time.time() - poll_start)
+            save_failure_screenshot(device, "esb_attack_timeout")
             return
 
-    time.sleep(1)  # Wait for attack dialog
-    if tap_image("depart.png", device):
+    # Wait for depart button — may take 2-3s to appear after attack tap
+    if wait_for_image_and_tap("depart.png", device, timeout=5, threshold=0.7):
         log.info("Phantom Clash attack departed")
     else:
-        log.warning("Depart button not found after Phantom Clash attack sequence")
+        log.warning("Depart button not found after Phantom Clash attack (best: %.0f%%)",
+                    get_last_best() * 100)
+        save_failure_screenshot(device, "esb_depart_miss")
 
 @timed_action("reinforce_throne")
 def reinforce_throne(device):

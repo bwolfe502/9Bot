@@ -1,5 +1,5 @@
 """
-9Bot WebSocket Relay Server
+9Bot WebSocket Relay Server + Portal
 
 Standalone aiohttp server deployed on a DigitalOcean Droplet (or any VPS).
 Accepts WebSocket connections from 9Bot instances and proxies HTTP requests
@@ -7,6 +7,9 @@ from browsers to the appropriate bot.
 
 Supports streaming responses (MJPEG) via stream_start/stream_chunk/stream_end
 protocol messages.
+
+Portal: centralized access control at /portal/ — users log in, bot owners
+manage per-device grants, admin manages users and bot ownership.
 
 Bug report uploads are accepted via POST /_upload and stored on disk.
 Admin interface at GET /_admin for browsing/downloading/deleting uploads.
@@ -19,6 +22,7 @@ Environment variables:
     RELAY_SECRET  — shared secret for authenticating bot connections (required)
     RELAY_PORT    — HTTP port to listen on (default: 80)
     UPLOAD_DIR    — directory for bug report uploads (default: /opt/9bot-relay/uploads)
+    PORTAL_DB     — path to portal SQLite database (default: /opt/9bot-relay/portal.db)
 """
 
 import asyncio
@@ -78,14 +82,20 @@ h1 { font-size: 1.6em; margin-bottom: 0.3em; }
 
 
 def _landing_page() -> str:
-    return (
-        f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>9Bot Relay</title><style>{_STYLE}</style>"
-        f"</head><body><h1>9Bot Relay</h1>"
-        f'<p class="muted">Use your 9Bot dashboard to find your remote URL.</p>'
-        f"</body></html>"
-    )
+    site_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "site")
+    index = os.path.join(site_dir, "index.html")
+    try:
+        with open(index, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return (
+            f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            f"<title>9Bot</title><style>{_STYLE}</style>"
+            f"</head><body><h1>9Bot</h1>"
+            f'<p class="muted">Landing page not found.</p>'
+            f"</body></html>"
+        )
 
 
 def _offline_page(bot_name: str) -> str:
@@ -143,6 +153,13 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     _streams[bot_name] = {}
     log.info("Bot '%s' connected from %s", bot_name, request.remote)
 
+    # Register bot in portal database
+    try:
+        import portal_db
+        await asyncio.to_thread(portal_db.upsert_bot, bot_name)
+    except Exception as e:
+        log.debug("Portal DB bot upsert failed (non-fatal): %s", e)
+
     try:
         async for msg in ws:
             if msg.type == WSMsgType.TEXT:
@@ -150,6 +167,11 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
                     data = json.loads(msg.data)
                 except json.JSONDecodeError:
                     log.warning("Malformed JSON from bot '%s'", bot_name)
+                    continue
+
+                # Handle device_list messages from bot
+                if data.get("type") == "device_list":
+                    await _handle_device_list(bot_name, data)
                     continue
 
                 req_id = data.get("id")
@@ -227,14 +249,49 @@ async def _send_cancel_stream(bot_name: str, req_id: str) -> None:
             pass
 
 # ---------------------------------------------------------------------------
+# Device list handling (from bot WebSocket)
+# ---------------------------------------------------------------------------
+
+async def _handle_device_list(bot_name: str, data: dict) -> None:
+    """Process a device_list message from a bot, updating portal DB."""
+    try:
+        import portal_db
+        devices = data.get("devices", [])
+        reported_hashes = set()
+        for dev in devices:
+            dh = dev.get("hash", "").strip()
+            if not dh:
+                continue
+            reported_hashes.add(dh)
+            await asyncio.to_thread(
+                portal_db.upsert_device, bot_name, dh, dev.get("name"),
+            )
+        # Remove devices no longer reported
+        if reported_hashes:
+            await asyncio.to_thread(
+                portal_db.delete_stale_devices, bot_name, reported_hashes,
+            )
+        log.info("Bot '%s' reported %d device(s)", bot_name, len(reported_hashes))
+    except Exception as e:
+        log.debug("Portal DB device_list failed (non-fatal): %s", e)
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler (browser requests)
 # ---------------------------------------------------------------------------
 
 async def handle_http(request: web.Request) -> web.StreamResponse:
     path = request.path
 
-    # Landing page
+    # Landing page — redirect to portal if logged in
     if path == "/" or path == "":
+        try:
+            from portal_routes import _get_user
+            user = await _get_user(request)
+            if user:
+                raise web.HTTPFound("/portal/")
+        except ImportError:
+            pass
         return web.Response(text=_landing_page(), content_type="text/html")
 
     # Extract bot name from first path segment: /<bot_name>/...
@@ -249,6 +306,72 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
     if not path.endswith("/") and len(parts) == 1:
         raise web.HTTPFound(f"/{bot_name}/")
 
+    # --- Portal access control ---
+    # Check portal session → subscription → grants table → inject headers
+    # Falls through to legacy token auth (backward compat) if no portal session
+    portal_access = None
+    portal_user = None
+    # Extract device_hash from URL if present (e.g. /bot/d/<hash>/...)
+    _device_hash = None
+    _sub_parts = sub_path.strip("/").split("/")
+    if len(_sub_parts) >= 2 and _sub_parts[0] == "d":
+        _device_hash = _sub_parts[1]
+    try:
+        from portal_routes import check_portal_access, _get_user
+        result = await check_portal_access(request, bot_name, _device_hash)
+        if result:
+            portal_access, portal_user = result
+
+        # Subscription gating: if user is logged in but has no active sub,
+        # redirect to pricing.  Admins and legacy token users bypass.
+        # Shared/community devices also bypass subscription check.
+        if portal_access:
+            _is_shared_device = False
+            if _device_hash:
+                try:
+                    import portal_db
+                    _is_shared_device = await asyncio.to_thread(
+                        portal_db.is_device_shared, bot_name, _device_hash,
+                    )
+                except Exception:
+                    pass
+            user = await _get_user(request)
+            if user and not user["is_admin"] and not _is_shared_device:
+                try:
+                    import stripe_billing
+                    if stripe_billing.is_configured():
+                        has_sub = await asyncio.to_thread(
+                            stripe_billing.has_active_subscription, user["user_id"],
+                        )
+                        if not has_sub:
+                            raise web.HTTPFound("/portal/pricing")
+                except ImportError:
+                    pass  # stripe not installed — skip sub check
+    except ImportError:
+        pass
+
+    # If no portal access and no ?token= param, redirect to portal login
+    # Public devices bypass login entirely
+    has_token = "token" in request.query
+    # Allow static assets through without auth — they're referenced by
+    # authenticated pages but don't carry the ?token= parameter
+    is_static = sub_path.startswith("/static/")
+    if not portal_access and not has_token and not is_static:
+        _is_public = False
+        if _device_hash:
+            try:
+                import portal_db
+                _is_public = await asyncio.to_thread(
+                    portal_db.is_device_public, bot_name, _device_hash,
+                )
+            except Exception:
+                pass
+        if _is_public:
+            portal_access = "full"
+            portal_user = "public"
+        else:
+            raise web.HTTPFound(f"/portal/login?next={path}")
+
     ws = _bots.get(bot_name)
     if ws is None or ws.closed:
         return web.Response(text=_offline_page(bot_name), content_type="text/html")
@@ -261,12 +384,19 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
     if query:
         forward_path += "?" + query
 
+    # Build forwarded headers, injecting portal auth if present
+    fwd_headers = {k: v for k, v in request.headers.items()
+                   if k.lower() not in ("host", "transfer-encoding")}
+    if portal_access:
+        fwd_headers["X-Portal-Access"] = portal_access
+    if portal_user:
+        fwd_headers["X-Portal-User"] = portal_user
+
     envelope = {
         "id": req_id,
         "method": request.method,
         "path": forward_path,
-        "headers": {k: v for k, v in request.headers.items()
-                    if k.lower() not in ("host", "transfer-encoding")},
+        "headers": fwd_headers,
         "body_b64": base64.b64encode(body).decode("ascii") if body else "",
     }
 
@@ -323,6 +453,18 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
             html = html.replace('location.href="/', f'location.href="{p}/')
             html = html.replace("window.location='/", f"window.location='{p}/")
             html = html.replace('window.location="/', f'window.location="{p}/')
+            # Inject "Back to Portal" button for portal-authenticated users
+            if portal_access and "</body>" in html:
+                portal_btn = (
+                    '<a href="/portal/" style="position:fixed;top:10px;right:10px;'
+                    'z-index:9999;padding:6px 14px;background:#14142a;color:#64d8ff;'
+                    'border:1px solid rgba(100,216,255,0.25);border-radius:8px;'
+                    'font-size:12px;font-weight:600;text-decoration:none;'
+                    'font-family:-apple-system,system-ui,sans-serif;'
+                    'box-shadow:0 2px 8px rgba(0,0,0,0.3)"'
+                    '>&larr; Portal</a>'
+                )
+                html = html.replace("</body>", f"{portal_btn}</body>", 1)
             resp_body = html.encode("utf-8")
         except Exception:
             pass  # if decode fails, send original body
@@ -683,8 +825,38 @@ def create_app() -> web.Application:
     app.router.add_get("/_admin/uploads/{bot_name}", handle_admin_bot)
     app.router.add_delete("/_admin/uploads/{bot_name}", handle_admin_delete_bot)
     app.router.add_get("/_admin/uploads", handle_admin)
+
+    # Portal routes (user auth, grants, admin panel)
+    try:
+        import portal_db
+        import portal_routes
+        portal_db.init_db()
+        portal_routes.setup_portal_routes(app, _bots)
+        log.info("Portal enabled (db: %s)", portal_db.DB_PATH)
+    except ImportError as e:
+        log.warning("Portal disabled (missing dependency: %s)", e)
+    except Exception as e:
+        log.warning("Portal init failed: %s", e)
+
+    # Catch-all — must be last
     app.router.add_route("*", "/{path_info:.*}", handle_http)
     return app
+
+
+async def _periodic_session_cleanup(app: web.Application) -> None:
+    """Clean up expired portal sessions every hour."""
+    try:
+        import portal_db
+    except ImportError:
+        return
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            count = await asyncio.to_thread(portal_db.cleanup_expired_sessions)
+            if count:
+                log.info("Cleaned up %d expired session(s)", count)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
@@ -692,5 +864,31 @@ if __name__ == "__main__":
         print("ERROR: Set the RELAY_SECRET environment variable before starting.")
         print("  Example: RELAY_SECRET=my-secret-here python relay_server.py")
         raise SystemExit(1)
+
+    # CLI: create admin user
+    import sys
+    if len(sys.argv) >= 2 and sys.argv[1] == "create-admin":
+        if len(sys.argv) < 4:
+            print("Usage: python relay_server.py create-admin <username> <password>")
+            raise SystemExit(1)
+        import portal_db
+        portal_db.init_db()
+        portal_db.create_admin_cli(sys.argv[2], sys.argv[3])
+        raise SystemExit(0)
+
     log.info("Starting relay on port %d", RELAY_PORT)
-    web.run_app(create_app(), host="0.0.0.0", port=RELAY_PORT)
+    app = create_app()
+
+    # Start periodic session cleanup
+    async def start_background_tasks(app):
+        app["session_cleanup"] = asyncio.ensure_future(_periodic_session_cleanup(app))
+    async def cleanup_background_tasks(app):
+        app["session_cleanup"].cancel()
+        try:
+            await app["session_cleanup"]
+        except asyncio.CancelledError:
+            pass
+    app.on_startup.append(start_background_tasks)
+    app.on_cleanup.append(cleanup_background_tasks)
+
+    web.run_app(app, host="0.0.0.0", port=RELAY_PORT)

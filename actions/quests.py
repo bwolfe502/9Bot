@@ -784,15 +784,28 @@ def check_quests(device, stop_check=None):
             log.debug("Quest dedup: %d raw -> %d unique types (kept max remaining per type)", original_count, len(quests))
 
         # Update tracking with latest counter values
+        current_types = set()
         for q in quests:
             if q["quest_type"] in (QuestType.TITAN, QuestType.EVIL_GUARD, QuestType.PVP, QuestType.GATHER, QuestType.TOWER, QuestType.FORTRESS):
                 _track_quest_progress(device, q["quest_type"], q["current"], q.get("target"))
+                current_types.add(q["quest_type"])
+
+        # Clear stale tracking for quest types no longer on screen (quest rotation)
+        for key in list(_quest_last_seen):
+            if key[0] == device and key[1] not in current_types:
+                log.debug("Clearing stale quest tracking for %s (no longer on screen)", key[1])
+                _quest_last_seen.pop(key, None)
+                _quest_target.pop(key, None)
+                _quest_rallies_pending.pop(key, None)
+                _quest_pending_since.pop(key, None)
+                _quest_rally_slots.pop(key, None)
 
         actionable = _get_actionable_quests(device, quests)
 
         # Always check tower quest state — recall stranded defending troops
         # even when tower quests are no longer on screen.
-        _run_tower_quest(device, quests, stop_check)
+        _run_tower_quest(device, quests, stop_check,
+                         all_complete=not actionable)
 
         if not actionable:
             # Check pending rallies FIRST — don't mine gold while rallies are
@@ -1271,11 +1284,12 @@ def recall_tower_troop(device, stop_check=None):
     return False
 
 
-def _run_tower_quest(device, quests, stop_check=None):
+def _run_tower_quest(device, quests, stop_check=None, all_complete=False):
     """Handle tower/fortress quest: deploy if needed, recall when done.
 
     If troop is already defending, does nothing.
     If quest is complete and troop is defending, recalls.
+    all_complete: True when no other quests are actionable — free the troop.
     """
     log = get_logger("actions", device)
 
@@ -1290,11 +1304,8 @@ def _run_tower_quest(device, quests, stop_check=None):
     if not tower_quests:
         # No tower quests on screen — but troop may still be defending from a
         # previous quest. Recall it so it's not stuck indefinitely.
-        # Only recall if bot deployed it this session, or tower quests are enabled
-        # (disabled + not bot-deployed = user placed it intentionally).
-        if device in _tower_quest_state or (
-                config.get_device_config(device, "tower_quest_enabled") and
-                _is_troop_defending_relaxed(device)):
+        # During auto quest a defending troop with no quest is a wasted slot.
+        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
             log.info("No tower quests but troop still defending — recalling")
             recall_tower_troop(device, stop_check)
         return
@@ -1303,14 +1314,11 @@ def _run_tower_quest(device, quests, stop_check=None):
     all_done = len(active) == 0
 
     if all_done:
-        # All tower/fortress quests are completed but still visible on screen.
-        # Keep the troop defending — the quest row stays visible until the user
-        # collects rewards or the quest resets.  Only recall when the quest
-        # disappears from screen entirely (handled by the "no tower quests"
-        # branch above).
+        # All tower/fortress quests complete — free the troop for rallies/gold.
+        # Don't keep it defending when there's no tower quest benefit.
         if device in _tower_quest_state or _is_troop_defending_relaxed(device):
-            log.info("Tower quests complete but still on screen — keeping troop defending")
-            config.set_device_status(device, "Tower Quest: Complete, Defending...")
+            log.info("All tower quests complete — recalling tower troop")
+            recall_tower_troop(device, stop_check)
         return
 
     # Tower quest is active — check if already defending.

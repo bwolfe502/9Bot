@@ -1,13 +1,17 @@
 import cv2
+import json
 import numpy as np
 import os
 import time
 import random
+from collections import Counter
 
 import config
 from config import (SQUARE_SIZE, GRID_OFFSET_X, GRID_OFFSET_Y,
-                    GRID_WIDTH, GRID_HEIGHT, THRONE_SQUARES, BORDER_COLORS, Screen)
-from vision import load_screenshot, tap_image, adb_tap, tap_tower_until_attack_menu, get_template, save_failure_screenshot
+                    GRID_WIDTH, GRID_HEIGHT, THRONE_SQUARES, BORDER_COLORS, ALL_TEAMS, Screen)
+from vision import (load_screenshot, tap_image, wait_for_image_and_tap,
+                    find_image, adb_tap, adb_keyevent, get_template,
+                    save_failure_screenshot)
 from navigation import navigate
 from troops import troops_avail, all_troops_home, heal_all
 from actions import teleport
@@ -71,8 +75,12 @@ def _get_border_color(image, row, col):
     return (0, 0, 0)
 
 
-def _classify_square_team(bgr, device=None):
+def _classify_square_team(bgr, device=None, candidate_teams=None):
     """Determine team based on border color — find closest Euclidean match.
+
+    candidate_teams: optional frozenset of team colors expected in this zone.
+    When provided, only those teams are considered.  If none passes the threshold,
+    falls back to matching against all teams (handles third-team infiltration).
 
     Thresholds:
     - Green: <= 70 (neutral, always recognized)
@@ -86,11 +94,15 @@ def _classify_square_team(bgr, device=None):
     my_team = config.get_device_config(device, "my_team") if device else config.MY_TEAM_COLOR
     enemy_teams = config.get_device_enemy_teams(device) if device else config.ENEMY_TEAMS
 
+    check_colors = BORDER_COLORS
+    if candidate_teams is not None:
+        check_colors = {t: c for t, c in BORDER_COLORS.items() if t in candidate_teams}
+
     min_distance = float('inf')
     best_team = "unknown"
 
     distances = {}
-    for team, (target_b, target_g, target_r) in BORDER_COLORS.items():
+    for team, (target_b, target_g, target_r) in check_colors.items():
         distance = ((b - target_b)**2 + (g - target_g)**2 + (r - target_r)**2)**0.5
         distances[team] = distance
 
@@ -109,6 +121,10 @@ def _classify_square_team(bgr, device=None):
 
     if best_team == "unknown" and my_team in distances and distances[my_team] <= 95:
         return my_team
+
+    # Restricted search found no match — fall back to all teams
+    if candidate_teams is not None:
+        return _classify_square_team(bgr, device, candidate_teams=None)
 
     return "unknown"
 
@@ -364,276 +380,548 @@ def open_territory_manager(device):
 # TERRITORY ATTACK SYSTEM
 # ============================================================
 
-@timed_action("attack_territory")
-def attack_territory(device, debug=False):
-    """Full territory attack workflow: heal, verify troops home, navigate, attack"""
+def scan_targets(device):
+    """Scan the territory grid and return prioritized target lists.
+
+    Must be called while on the TERRITORY screen.
+
+    Returns dict with keys:
+        'unflagged_enemies': [(row, col), ...] — unflagged enemy squares adjacent to own territory
+        'flagged_enemies':   [(row, col), ...] — flagged enemy squares adjacent to own territory
+        'friendly':          [(row, col), ...] — own team squares adjacent to enemy territory (for reinforcement)
+        'image':             np.ndarray — the screenshot used for analysis
+    Returns None if screenshot fails.
+    """
     log = get_logger("territory", device)
-    log.info("Starting territory attack workflow...")
-
-    # Step 1: Navigate to map screen
-    if not navigate(Screen.MAP, device):
-        log.warning("Failed to navigate to map screen")
-        return False
-
-    # Step 2: Heal all troops
-    log.info("Healing troops...")
-    heal_all(device)
-    time.sleep(2)
-
-    # Step 3: Verify all troops are home
-    log.info("Checking if all troops are home...")
-    if not all_troops_home(device):
-        log.warning("Not all troops are home! Aborting territory attack.")
-        return False
-
-    log.info("All troops confirmed home. Proceeding...")
-
-    # Step 4: Navigate to territory screen
-    if not navigate(Screen.TERRITORY, device):
-        log.warning("Failed to navigate to territory screen")
-        return False
-
-    time.sleep(1)
-
-    # Step 5: Take screenshot and analyze grid
     image = load_screenshot(device)
-
     if image is None:
-        log.error("Failed to load screenshot")
-        return False
+        log.error("scan_targets: failed to load screenshot")
+        return None
 
-    if debug:
-        debug_img = image.copy()
-
-    # Build list of valid targets
-    log.info("Scanning grid for targets...")
     my_team = config.get_device_config(device, "my_team")
     enemy_teams = config.get_device_enemy_teams(device)
-    log.debug("My team: %s, Attacking: %s", my_team, enemy_teams)
+    log.debug("Scanning grid — my_team=%s, enemies=%s", my_team, enemy_teams)
 
-    targets = []
-    enemy_squares = []
-    adjacent_enemies = []
-    flagged_squares = []
+    # --- First pass: classify every square ---
+    grid = {}
+    blocked = config.PASS_BLOCKED_SQUARES
+    zone_expected = config.ZONE_EXPECTED_TEAMS
+    zone_overrides = 0
+    for row in range(GRID_HEIGHT):
+        for col in range(GRID_WIDTH):
+            if (row, col) in THRONE_SQUARES:
+                grid[(row, col)] = "throne"
+                continue
+            if (row, col) in blocked:
+                grid[(row, col)] = "blocked"
+                continue
+            border_color = _get_border_color(image, row, col)
+            candidates = zone_expected.get((row, col))
+            team = _classify_square_team(border_color, device=device,
+                                         candidate_teams=candidates)
+            # Track when zone filtering changed the result
+            if candidates:
+                team_raw = _classify_square_team(border_color, device=device)
+                if team_raw != team:
+                    zone_overrides += 1
+            grid[(row, col)] = team
+    if zone_overrides:
+        log.info("Zone hints overrode %d square classifications", zone_overrides)
+
+    # --- Second pass: neighbor voting for isolated squares ---
+    # If a square's team has zero neighbors of the same team but the majority
+    # of neighbors are a different team, reclassify to the majority team.
+    all_teams_set = set(ALL_TEAMS)
+    fixes = 0
+    for (row, col), team in list(grid.items()):
+        if team not in all_teams_set:
+            continue
+        neighbors = [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]
+        neighbor_teams = [grid.get((nr, nc)) for nr, nc in neighbors
+                         if grid.get((nr, nc)) in all_teams_set]
+        if not neighbor_teams:
+            continue
+        if team not in neighbor_teams:
+            # This square's team has no adjacent match — likely misclassified
+            counts = Counter(neighbor_teams)
+            majority_team, majority_count = counts.most_common(1)[0]
+            if majority_count >= 2:
+                grid[(row, col)] = majority_team
+                fixes += 1
+    if fixes:
+        log.debug("Neighbor voting fixed %d squares", fixes)
+
+    # --- Build target lists from corrected grid ---
+    unflagged_enemies = []
+    flagged_enemies = []
+    friendly_reinforce = []
 
     for row in range(GRID_HEIGHT):
         for col in range(GRID_WIDTH):
             if (row, col) in THRONE_SQUARES:
                 continue
+            if (row, col) in config.MANUAL_IGNORE_SQUARES:
+                continue
 
-            border_color = _get_border_color(image, row, col)
-            team = _classify_square_team(border_color, device=device)
+            team = grid[(row, col)]
 
             if team in enemy_teams:
-                enemy_squares.append((row, col))
-
-                if _is_adjacent_to_my_territory(image, row, col, device=device):
-                    adjacent_enemies.append((row, col))
-
-                    if not _has_flag(image, row, col):
-                        targets.append((row, col))
+                # Check adjacency using corrected grid
+                adj = False
+                for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
+                    if grid.get((nr, nc)) == my_team:
+                        adj = True
+                        break
+                if adj:
+                    if _has_flag(image, row, col):
+                        flagged_enemies.append((row, col))
                     else:
-                        flagged_squares.append((row, col))
+                        unflagged_enemies.append((row, col))
 
-    log.debug("Enemy squares detected: %d", len(enemy_squares))
-    log.debug("Enemy squares adjacent to my territory: %d", len(adjacent_enemies))
-    log.debug("Flagged squares: %d", len(flagged_squares))
-    log.debug("Valid targets (no flag): %d", len(targets))
+            elif team == my_team:
+                # Check if adjacent to enemy territory (frontline — worth reinforcing)
+                for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
+                    if grid.get((nr, nc)) in enemy_teams:
+                        friendly_reinforce.append((row, col))
+                        break
 
-    # Apply manual overrides
-    log.debug("Applying manual overrides...")
-    log.debug("Manual attack squares: %d", len(config.MANUAL_ATTACK_SQUARES))
-    log.debug("Manual ignore squares: %d", len(config.MANUAL_IGNORE_SQUARES))
-
+    # Manual attack overrides replace auto-detected targets entirely
     if config.MANUAL_ATTACK_SQUARES:
-        targets = list(config.MANUAL_ATTACK_SQUARES)
-        log.info("Using ONLY manual attack squares (ignoring auto-detect)")
-    else:
-        targets = [t for t in targets if t not in config.MANUAL_IGNORE_SQUARES]
+        # Still filter out pass-blocked squares from manual overrides
+        unflagged_enemies = [s for s in config.MANUAL_ATTACK_SQUARES
+                             if s not in blocked]
+        flagged_enemies = []
+        log.info("Using ONLY manual attack squares (%d)", len(unflagged_enemies))
 
-    log.debug("Final targets after manual overrides: %d", len(targets))
+    log.info("Scan: %d unflagged enemies, %d flagged, %d friendly frontline",
+             len(unflagged_enemies), len(flagged_enemies), len(friendly_reinforce))
 
-    # Create debug visualization
-    if debug:
-        for row in range(GRID_HEIGHT):
-            for col in range(GRID_WIDTH):
-                x, y = _get_square_center(row, col)
+    return {
+        "unflagged_enemies": unflagged_enemies,
+        "flagged_enemies": flagged_enemies,
+        "friendly": friendly_reinforce,
+        "image": image,
+    }
 
-                cv2.putText(debug_img, f"{row},{col}", (x-15, y),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.25, (255, 255, 255), 1)
 
-                if (row, col) in targets:
-                    cv2.circle(debug_img, (x, y), 8, (0, 255, 0), -1)
-                elif (row, col) in flagged_squares:
-                    cv2.line(debug_img, (x-8, y-8), (x+8, y+8), (0, 0, 255), 2)
-                    cv2.line(debug_img, (x-8, y+8), (x+8, y-8), (0, 0, 255), 2)
-                elif (row, col) in adjacent_enemies:
-                    cv2.circle(debug_img, (x, y), 6, (0, 255, 255), 2)
+def _pick_target(scan_result):
+    """Pick a target from scan results by priority.
 
-        cv2.imwrite(f"territory_debug_{device}.png", debug_img)
-        log.debug("Saved debug image")
+    Priority:
+        1. Unflagged enemy squares (best — no one marching there yet)
+        2. Flagged enemy squares (fallback — someone else may be attacking)
+        3. Friendly frontline squares (reinforce when no enemy targets)
 
-    if targets:
-        target_row, target_col = random.choice(targets)
-        click_x, click_y = _get_square_center(target_row, target_col)
+    Returns (row, col, action_type) or None if no targets.
+    action_type is "attack" or "reinforce".
+    """
+    for targets, action in [
+        (scan_result["unflagged_enemies"], "attack"),
+        (scan_result["flagged_enemies"], "attack"),
+        (scan_result["friendly"], "reinforce"),
+    ]:
+        if targets:
+            row, col = random.choice(targets)
+            return row, col, action
+    return None
 
-        log.info("Attacking square (%d, %d)", target_row, target_col)
 
-        # Remember this square PER DEVICE
-        config.LAST_ATTACKED_SQUARE[device] = (target_row, target_col)
+@timed_action("attack_territory")
+def attack_territory(device, debug=False):
+    """Scan territory grid and pick a target.
 
-        adb_tap(device, click_x, click_y)
+    Returns (row, col, action_type) on success, or None if no targets.
+    action_type is "attack" or "reinforce".
 
-        return True
-    else:
+    Side effect: stores target in config.LAST_ATTACKED_SQUARE[device]
+    and taps the target square on the territory grid (camera trick).
+    """
+    log = get_logger("territory", device)
+    log.info("Scanning territory for targets...")
+
+    if not navigate(Screen.TERRITORY, device):
+        log.warning("Failed to navigate to territory screen")
+        return None
+
+    time.sleep(1)
+
+    scan = scan_targets(device)
+    if scan is None:
+        return None
+
+    target = _pick_target(scan)
+    if target is None:
         log.warning("No valid targets found")
-        return False
+        return None
+
+    target_row, target_col, action_type = target
+    click_x, click_y = _get_square_center(target_row, target_col)
+
+    log.info("Selected target (%d, %d) — action: %s", target_row, target_col, action_type)
+
+    # Remember this square PER DEVICE
+    config.LAST_ATTACKED_SQUARE[device] = (target_row, target_col)
+
+    # Tap square on territory grid — this centers the camera on the tower
+    adb_tap(device, click_x, click_y)
+
+    return (target_row, target_col, action_type)
 
 # ============================================================
 # AUTO OCCUPY SYSTEM
 # ============================================================
 
-def _occupy_stopped(device):
-    """Check if auto occupy was stopped. Prints a message on first detection."""
-    if not config.auto_occupy_running:
-        log = get_logger("territory", device)
-        log.info("Auto occupy stop requested, aborting...")
-        return True
-    return False
-
-def _occupy_sleep(seconds):
+def _interruptible_sleep(seconds, stop_check):
     """Sleep in 1-second chunks, returning True immediately if stopped."""
-    for _ in range(seconds):
-        if not config.auto_occupy_running:
+    for _ in range(int(seconds)):
+        if stop_check():
             return True
         time.sleep(1)
     return False
 
+
+def _check_and_revive(device, log, stop_check):
+    """Check for dead.png. If found, tap to revive and wait for MAP.
+
+    Returns True if we were dead and revived (caller should pick a new target).
+    Returns False if alive.
+    Returns None if stopped.
+    """
+    if tap_image("dead.png", device):
+        log.warning("Dead! Tapping to revive...")
+        config.set_device_status(device, "Reviving...")
+        time.sleep(3)
+        # Wait for MAP screen after revive (up to 30s)
+        for _ in range(30):
+            if stop_check():
+                return None
+            from navigation import check_screen
+            if check_screen(device) == Screen.MAP:
+                log.info("Revived — back on MAP")
+                return True
+            time.sleep(1)
+        log.warning("Revive timeout — could not confirm MAP screen")
+        return True
+    return False
+
+
+def _tap_tower_and_detect_menu(device, log, timeout=10):
+    """Tap the tower at center screen repeatedly until a menu button appears.
+
+    Returns:
+        "attack"    — attack_button.png found (enemy troops in tower)
+        "reinforce" — reinforce_button.png found (empty or friendly tower)
+        None        — neither found within timeout
+    """
+    start = time.time()
+    attempt = 0
+    while time.time() - start < timeout:
+        attempt += 1
+        log.debug("Tapping tower (540, 900), attempt %d...", attempt)
+        adb_tap(device, 540, 900)
+        time.sleep(1)
+
+        screen = load_screenshot(device)
+        if screen is None:
+            continue
+
+        if find_image(screen, "attack_button.png", threshold=0.7):
+            log.debug("Attack button detected")
+            return "attack"
+
+        if find_image(screen, "reinforce_button.png", threshold=0.7):
+            log.debug("Reinforce button detected")
+            return "reinforce"
+
+    log.debug("No menu button found after %ds", timeout)
+    return None
+
+
+def _do_depart(device, log, action_type):
+    """Tap the action button and depart. Handles depart_anyway fallback.
+
+    action_type: "attack" or "reinforce"
+    Returns True if depart was tapped successfully.
+    """
+    # Tap the action button
+    if action_type == "attack":
+        if not tap_image("attack_button.png", device, threshold=0.7):
+            log.warning("attack_button.png not found for tap")
+            return False
+    else:
+        if not tap_image("reinforce_button.png", device, threshold=0.7):
+            log.warning("reinforce_button.png not found for tap")
+            return False
+
+    time.sleep(1)
+
+    # Try depart
+    if wait_for_image_and_tap("depart.png", device, timeout=5):
+        log.info("Depart tapped (%s)", action_type)
+        return True
+
+    # Depart Anyway fallback (low health troops)
+    s = load_screenshot(device)
+    if s is not None and find_image(s, "depart_anyway.png", threshold=0.65) is not None:
+        log.warning("Low health troops — 'Depart Anyway' visible")
+        if config.get_device_config(device, "auto_heal"):
+            log.info("Healing troops before retry — returning False for cycle retry")
+            # Dismiss the depart dialog first — BACK key closes it reliably
+            adb_keyevent(device, 4)  # KEYCODE_BACK
+            time.sleep(0.5)
+            navigate(Screen.MAP, device)
+            heal_all(device)
+            return False  # caller will retry the full cycle from MAP
+        else:
+            log.info("Auto heal off — tapping Depart Anyway")
+            if tap_image("depart_anyway.png", device, threshold=0.65):
+                return True
+
+    log.warning("Depart failed — neither depart.png nor depart_anyway.png found")
+    save_failure_screenshot(device, "occupy_depart_fail")
+    return False
+
+
 @timed_action("auto_occupy")
-def auto_occupy_loop(device):
-    """Auto occupy loop: attack territory -> teleport -> click square -> attack -> wait"""
+def auto_occupy_loop(device, stop_check, skip_troop_gate=False):
+    """Auto occupy loop — per-device, cooperative stop via stop_check callback.
+
+    Cycle:
+        1. Scan territory grid for targets (priority: unflagged > flagged > reinforce)
+        2. Tap target square on grid (camera trick — centers camera on tower)
+        3. Teleport near the tower
+        4. Navigate back to territory, tap target again (re-centers camera)
+        5. Tap tower → detect menu (attack or reinforce) → depart
+        6. Wait for troops → repeat
+
+    Handles: death recovery, navigation failures, teleport failures,
+    menu detection failures, depart_anyway fallback.
+    """
     log = get_logger("territory", device)
     log.info("Auto occupy started")
 
-    while config.auto_occupy_running:
+    consecutive_tp_fails = 0
+    _MAX_CONSECUTIVE_TP_FAILS = 3
+    _MAX_TOTAL_TP_FAILS = 5
+
+    while not stop_check():
         try:
-            # Check for dead.png and tap it if it exists
-            log.debug("Checking for dead.png...")
-            if tap_image("dead.png", device):
-                log.info("Found and clicked dead.png")
-                time.sleep(2)
-
-            if _occupy_stopped(device):
+            # --- Death check at start of each cycle ---
+            revive_result = _check_and_revive(device, log, stop_check)
+            if revive_result is None:
+                break  # Stopped
+            if stop_check():
                 break
 
-            # Check if all troops are home
-            if not all_troops_home(device):
-                log.info("Troops not home, waiting...")
-                if _occupy_sleep(10):
+            # --- Wait for troops ---
+            config.set_device_status(device, "Checking Troops...")
+            if not navigate(Screen.MAP, device):
+                log.warning("Cannot reach MAP — retrying in 10s")
+                config.set_device_status(device, "Navigating...")
+                if _interruptible_sleep(10, stop_check):
                     break
                 continue
-
-            log.info("=== Starting auto occupy cycle ===")
-
-            # Step 1: Attack territory
-            log.info("Step 1: Attacking territory...")
-            if not attack_territory(device, debug=False):
-                log.warning("Failed to attack territory, skipping cycle")
-                if _occupy_sleep(10):
-                    break
-                continue
-
-            if _occupy_stopped(device):
-                break
-            time.sleep(2)
-
-            # Double-check troops are home before teleporting
-            log.info("Double-checking troops are home before teleport...")
-            if not all_troops_home(device):
-                log.warning("Troops not home! Skipping teleport.")
-                if _occupy_sleep(10):
-                    break
-                continue
-
-            if _occupy_stopped(device):
-                break
-
-            # Step 2: Teleport
-            log.info("Step 2: Teleporting...")
-            if not teleport(device):
-                log.warning("Teleport failed, skipping cycle")
-                if _occupy_sleep(10):
-                    break
-                continue
-
-            if _occupy_stopped(device):
-                break
-            time.sleep(2)
-
-            # Step 3: Navigate back to territory screen and click the square we attacked
-            if device in config.LAST_ATTACKED_SQUARE:
-                target_row, target_col = config.LAST_ATTACKED_SQUARE[device]
-                log.info("Step 3: Navigating to territory screen to click square (%d, %d)...", target_row, target_col)
-
-                if not navigate(Screen.TERRITORY, device):
-                    log.warning("Failed to navigate to territory screen")
-                    if _occupy_sleep(10):
-                        break
-                    continue
-
-                if _occupy_stopped(device):
-                    break
-                time.sleep(1)
-
-                # Calculate click position for the last attacked square
-                click_x = int(GRID_OFFSET_X + target_col * SQUARE_SIZE + SQUARE_SIZE / 2)
-                click_y = int(GRID_OFFSET_Y + target_row * SQUARE_SIZE + SQUARE_SIZE / 2)
-
-                log.debug("Clicking square (%d, %d) at (%d, %d)", target_row, target_col, click_x, click_y)
-                adb_tap(device, click_x, click_y)
-
-                if not tap_tower_until_attack_menu(device, timeout=10):
-                    log.warning("Tower attack menu did not open for square (%d, %d)",
-                                target_row, target_col)
-                    save_failure_screenshot(device, "occupy_tower_menu_fail")
-            else:
-                log.warning("No last attacked square remembered, skipping territory click")
-
-            if _occupy_stopped(device):
-                break
-
-            # Step 4: Attack
-            time.sleep(1)
-            log.info("Step 4: Attacking...")
 
             if config.get_device_config(device, "auto_heal"):
                 heal_all(device)
 
-            troops = troops_avail(device)
-            min_troops = config.get_device_config(device, "min_troops")
+            avail = troops_avail(device)
+            total = config.DEVICE_TOTAL_TROOPS.get(device, 5)
+            log.info("Troops: %d/%d home", avail, total)
 
-            if troops > min_troops:
-                if not tap_image("depart.png", device):
-                    log.warning("First depart tap failed")
-                    save_failure_screenshot(device, "occupy_depart_fail")
-                else:
-                    time.sleep(1)
-                    tap_image("depart.png", device)  # confirmation tap
-            else:
-                log.warning("Not enough troops available (have %d, need more than %d)", troops, min_troops)
+            if not skip_troop_gate and not all_troops_home(device):
+                config.set_device_status(device, "Waiting for Troops...")
+                if _interruptible_sleep(10, stop_check):
+                    break
+                continue
 
+            if stop_check():
+                break
+
+            log.info("=== Starting auto occupy cycle ===")
+
+            # --- Step 1: Scan territory and pick target ---
+            config.set_device_status(device, "Scanning Territory...")
+            target_result = attack_territory(device)
+
+            if target_result is None:
+                log.warning("No targets found — waiting 30s before rescan")
+                config.set_device_status(device, "No Targets...")
+                if _interruptible_sleep(30, stop_check):
+                    break
+                continue
+
+            target_row, target_col, action_type = target_result
+            config.set_device_status(
+                device,
+                f"Targeting ({target_row},{target_col})..."
+            )
+
+            if stop_check():
+                break
+            time.sleep(2)  # Let camera settle after territory grid tap
+
+            # --- Step 2: Teleport near the target ---
+            # The territory grid tap already centered camera on the tower.
+            # Now we're on MAP screen (tapping grid square switches to MAP).
+            # The camera trick: tap the tower to open info → camera pans down
+            # → close dialog → teleport from the better position below tower.
+            config.set_device_status(device, "Teleporting...")
+            if not teleport(device):
+                consecutive_tp_fails += 1
+                log.warning("Teleport failed (%d consecutive)", consecutive_tp_fails)
+
+                if consecutive_tp_fails >= _MAX_CONSECUTIVE_TP_FAILS:
+                    log.warning("Too many consecutive teleport fails — trying different target")
+                    consecutive_tp_fails = 0
+                    if _interruptible_sleep(5, stop_check):
+                        break
+                    continue
+
+                if _interruptible_sleep(10, stop_check):
+                    break
+                continue
+
+            consecutive_tp_fails = 0  # Reset on success
+
+            if stop_check():
+                break
             time.sleep(2)
 
-            log.info("Cycle complete, waiting 10 seconds...")
+            # --- Death check after teleport ---
+            revive_result = _check_and_revive(device, log, stop_check)
+            if revive_result is None:
+                break
+            if revive_result:
+                continue  # Got killed during teleport — restart with new target
 
-            # Wait 10 seconds before next cycle
-            if _occupy_sleep(10):
+            if stop_check():
+                break
+
+            # --- Step 3: Navigate back to territory, re-tap target square ---
+            config.set_device_status(
+                device,
+                f"{'Attacking' if action_type == 'attack' else 'Reinforcing'} Tower..."
+            )
+
+            if not navigate(Screen.TERRITORY, device):
+                log.warning("Cannot reach TERRITORY screen for tower interaction")
+                # Try BACK key recovery
+                adb_keyevent(device, 4)
+                time.sleep(2)
+                if not navigate(Screen.TERRITORY, device):
+                    log.warning("TERRITORY nav failed twice — skipping cycle")
+                    if _interruptible_sleep(10, stop_check):
+                        break
+                    continue
+
+            if stop_check():
+                break
+            time.sleep(1)
+
+            # Re-tap the target square to center camera on tower again
+            click_x, click_y = _get_square_center(target_row, target_col)
+            log.debug("Re-tapping square (%d, %d) at (%d, %d)",
+                      target_row, target_col, click_x, click_y)
+            adb_tap(device, click_x, click_y)
+            time.sleep(2)  # Camera settles on MAP after grid tap
+
+            if stop_check():
+                break
+
+            # --- Step 4: Tap tower to open menu ---
+            menu_type = _tap_tower_and_detect_menu(device, log, timeout=10)
+
+            if menu_type is None:
+                log.warning("Tower menu did not open for (%d, %d) — skipping",
+                            target_row, target_col)
+                save_failure_screenshot(device, "occupy_tower_menu_fail")
+                if _interruptible_sleep(5, stop_check):
+                    break
+                continue
+
+            # Decide what to do based on menu vs what we expected
+            actual_action = menu_type  # "attack" or "reinforce"
+            if actual_action != action_type:
+                log.info("Expected %s but got %s — proceeding with %s",
+                         action_type, actual_action, actual_action)
+
+            if stop_check():
+                break
+
+            # --- Step 5: Multi-attack loop then reinforce ---
+            min_troops = config.get_device_config(device, "min_troops")
+            attack_count = 0
+
+            # Attack loop: keep attacking until tower flips to reinforce
+            while actual_action == "attack" and not stop_check():
+                troops = troops_avail(device)
+                if troops <= min_troops:
+                    log.warning("Not enough troops to attack (have %d, need >%d) — stopping attacks",
+                                troops, min_troops)
+                    adb_keyevent(device, 4)  # BACK to close menu
+                    time.sleep(1)
+                    break
+
+                attack_count += 1
+                config.set_device_status(
+                    device,
+                    f"Attacking Tower ({attack_count})..."
+                )
+
+                if not _do_depart(device, log, "attack"):
+                    log.warning("Attack depart failed — stopping attacks")
+                    adb_keyevent(device, 4)
+                    time.sleep(1)
+                    break
+
+                log.info("Attack %d deployed to (%d, %d)",
+                         attack_count, target_row, target_col)
+                time.sleep(1)
+
+                if stop_check():
+                    break
+
+                # Re-tap tower to check if it flipped to reinforce
+                menu_type = _tap_tower_and_detect_menu(device, log, timeout=8)
+                if menu_type is None:
+                    log.info("Tower menu didn't reopen after attack %d — done", attack_count)
+                    break
+                if menu_type == "reinforce":
+                    log.info("Tower flipped to reinforce after %d attack(s)", attack_count)
+                    actual_action = "reinforce"
+                    break
+                # Still "attack" — loop continues
+
+            if stop_check():
+                break
+
+            # Reinforce: capture the tower (spend even the last troop)
+            if actual_action == "reinforce":
+                troops = troops_avail(device)
+                if troops <= 0:
+                    log.warning("No troops left to reinforce — skipping")
+                    adb_keyevent(device, 4)
+                    time.sleep(1)
+                else:
+                    config.set_device_status(device, "Reinforcing Tower...")
+                    if _do_depart(device, log, "reinforce"):
+                        log.info("Cycle complete — reinforced (%d, %d) after %d attack(s)",
+                                 target_row, target_col, attack_count)
+                    else:
+                        log.warning("Reinforce depart failed")
+                        adb_keyevent(device, 4)
+                        time.sleep(1)
+
+            # --- Wait before next cycle ---
+            config.set_device_status(device, "Waiting for Troops...")
+            if _interruptible_sleep(10, stop_check):
                 break
 
         except Exception as e:
             log.error("Error in auto occupy loop: %s", e, exc_info=True)
             save_failure_screenshot(device, "occupy_exception")
-            if _occupy_sleep(5):
+            if _interruptible_sleep(10, stop_check):
                 break
 
     log.info("Auto occupy stopped")
@@ -643,13 +931,14 @@ def auto_occupy_loop(device):
 # ============================================================
 
 def diagnose_grid(device):
-    """Full grid diagnostic — classifies all 576 squares, saves debug image and report.
+    """Full grid diagnostic — classifies all 576 squares, saves debug image, JSON, and report.
 
     Navigates to territory screen, screenshots, then runs the same border-color
     classification pipeline as attack_territory.  Outputs:
       - Per-team counts and grid map to INFO log
       - Unknown squares with BGR values to DEBUG log
       - Color-coded debug image to debug/territory_diag_{device}.png
+      - Structured JSON to data/territory_diag_{device}_{timestamp}.json
     """
     log = get_logger("territory", device)
 
@@ -670,6 +959,7 @@ def diagnose_grid(device):
     team_counts = {}          # team_name -> count
     unknown_details = []      # (row, col, bgr_tuple, best_team, distance)
     grid_map = []             # list of 24 strings, each 24 chars
+    square_data = []          # per-square JSON export
 
     # Dot colors for the debug image (BGR)
     DOT_COLORS = {
@@ -681,6 +971,8 @@ def diagnose_grid(device):
     }
     TEAM_CHAR = {"yellow": "Y", "green": "G", "red": "R", "blue": "B", "unknown": "?"}
 
+    enemy_teams = set(config.get_device_enemy_teams(device))
+
     for row in range(GRID_HEIGHT):
         row_chars = []
         for col in range(GRID_WIDTH):
@@ -689,20 +981,39 @@ def diagnose_grid(device):
                 continue
 
             bgr = _get_border_color(image, row, col)
-            team = _classify_square_team(bgr, device=device)
+            candidates = config.ZONE_EXPECTED_TEAMS.get((row, col))
+            team = _classify_square_team(bgr, device=device,
+                                         candidate_teams=candidates)
             team_counts[team] = team_counts.get(team, 0) + 1
             row_chars.append(TEAM_CHAR.get(team, "?"))
 
+            # Compute distance to nearest known color
+            best_team = "unknown"
+            best_dist = float("inf")
+            for t, (tb, tg, tr) in BORDER_COLORS.items():
+                d = ((bgr[0]-tb)**2 + (bgr[1]-tg)**2 + (bgr[2]-tr)**2)**0.5
+                if d < best_dist:
+                    best_dist = d
+                    best_team = t
+
+            has_flg = _has_flag(image, row, col)
+            is_adj = _is_adjacent_to_my_territory(image, row, col, device=device)
+
+            sq = {
+                "row": row,
+                "col": col,
+                "bgr_avg": [int(v) for v in bgr],
+                "classified_team": team,
+                "nearest_team": best_team,
+                "distance": round(best_dist, 1),
+                "has_flag": has_flg,
+                "is_adjacent": is_adj,
+                "zone_expected": sorted(candidates) if candidates else None,
+            }
+            square_data.append(sq)
+
             # Collect unknown details for threshold tuning
             if team == "unknown":
-                # Compute closest known color distance
-                best_team = "unknown"
-                best_dist = float("inf")
-                for t, (tb, tg, tr) in BORDER_COLORS.items():
-                    d = ((bgr[0]-tb)**2 + (bgr[1]-tg)**2 + (bgr[2]-tr)**2)**0.5
-                    if d < best_dist:
-                        best_dist = d
-                        best_team = t
                 unknown_details.append((row, col, tuple(int(v) for v in bgr),
                                         best_team, round(best_dist, 1)))
 
@@ -712,42 +1023,55 @@ def diagnose_grid(device):
             cv2.circle(debug_img, (cx, cy), 6, color, -1)
             cv2.circle(debug_img, (cx, cy), 6, (0, 0, 0), 1)  # outline
 
+            # Mark flags and targets on debug image
+            if team in enemy_teams and is_adj:
+                if has_flg:
+                    cv2.line(debug_img, (cx-7, cy-7), (cx+7, cy+7), (0, 0, 200), 2)
+                    cv2.line(debug_img, (cx-7, cy+7), (cx+7, cy-7), (0, 0, 200), 2)
+                else:
+                    cv2.circle(debug_img, (cx, cy), 9, (0, 255, 0), 2)
+
         grid_map.append("".join(row_chars))
 
-    # --- Flag & adjacency stats (enemy squares only) -----------------------------
-    enemy_teams = set(config.get_device_enemy_teams(device))
+    # --- Summary stats -----------------------------------------------------------
     enemy_count = sum(v for k, v in team_counts.items() if k in enemy_teams)
-    flagged = 0
-    adjacent = 0
-    valid_targets = 0
-    for row in range(GRID_HEIGHT):
-        for col in range(GRID_WIDTH):
-            if (row, col) in THRONE_SQUARES:
-                continue
-            bgr = _get_border_color(image, row, col)
-            team = _classify_square_team(bgr, device=device)
-            if team in enemy_teams:
-                is_adj = _is_adjacent_to_my_territory(image, row, col, device=device)
-                has_flg = _has_flag(image, row, col)
-                if is_adj:
-                    adjacent += 1
-                    if has_flg:
-                        flagged += 1
-                        # Mark flagged on debug image
-                        cx, cy = _get_square_center(row, col)
-                        cv2.line(debug_img, (cx-7, cy-7), (cx+7, cy+7), (0, 0, 200), 2)
-                        cv2.line(debug_img, (cx-7, cy+7), (cx+7, cy-7), (0, 0, 200), 2)
-                    else:
-                        valid_targets += 1
-                        # Mark valid targets on debug image
-                        cx, cy = _get_square_center(row, col)
-                        cv2.circle(debug_img, (cx, cy), 9, (0, 255, 0), 2)
+    flagged = sum(1 for sq in square_data
+                  if sq["classified_team"] in enemy_teams and sq["is_adjacent"] and sq["has_flag"])
+    adjacent = sum(1 for sq in square_data
+                   if sq["classified_team"] in enemy_teams and sq["is_adjacent"])
+    valid_targets = adjacent - flagged
 
     # --- Save debug image --------------------------------------------------------
     safe_device = device.replace(":", "_").replace(".", "_")
     debug_path = os.path.join("debug", f"territory_diag_{safe_device}.png")
     os.makedirs("debug", exist_ok=True)
     cv2.imwrite(debug_path, debug_img)
+
+    # --- Save JSON diagnostic data -----------------------------------------------
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = os.path.join("data", f"territory_diag_{safe_device}_{timestamp}.json")
+    os.makedirs("data", exist_ok=True)
+    diag_json = {
+        "device": device,
+        "timestamp": datetime.now().isoformat(),
+        "my_team": config.get_device_config(device, "my_team"),
+        "enemy_teams": list(enemy_teams),
+        "team_counts": dict(sorted(team_counts.items())),
+        "summary": {
+            "enemy_total": enemy_count,
+            "enemy_adjacent": adjacent,
+            "enemy_flagged": flagged,
+            "valid_targets": valid_targets,
+        },
+        "squares": square_data,
+    }
+    try:
+        with open(json_path, "w") as f:
+            json.dump(diag_json, f, indent=2)
+        log.info("JSON diagnostic saved: %s", json_path)
+    except OSError as e:
+        log.warning("Failed to save JSON diagnostic: %s", e)
 
     # --- Log results -------------------------------------------------------------
     log.info("=== TERRITORY GRID DIAGNOSTIC ===")

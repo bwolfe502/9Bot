@@ -26,6 +26,7 @@ import time
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from .events import (
+    EVT_ALLY_CITY_SPOTTED,
     EVT_AP_CHANGED,
     EVT_ATTACK_INCOMING,
     EVT_BATTLE_RESULT,
@@ -87,6 +88,68 @@ CATEGORIES = (
 # ------------------------------------------------------------------ #
 #  Shared player name cache (persisted to disk)
 # ------------------------------------------------------------------ #
+
+# In-memory power cache — populated from UnionNtf at login, persisted to disk.
+_PLAYER_POWERS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "player_powers.json")
+_player_powers: Dict[str, int] = {}  # playerID (str) → power (might)
+_player_powers_lock = threading.Lock()
+_player_powers_dirty = False
+_player_powers_loaded = False
+
+
+def _load_player_powers() -> None:
+    """Load cached player powers from disk (called once)."""
+    global _player_powers, _player_powers_loaded
+    _player_powers_loaded = True
+    try:
+        with open(_PLAYER_POWERS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _player_powers = {k: int(v) for k, v in data.items()}
+            log.debug("Loaded %d cached player powers", len(_player_powers))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+
+
+def _save_player_powers() -> None:
+    """Persist player powers to disk."""
+    global _player_powers_dirty
+    _player_powers_dirty = False
+    try:
+        os.makedirs(os.path.dirname(_PLAYER_POWERS_FILE), exist_ok=True)
+        with open(_PLAYER_POWERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(_player_powers, f)
+    except OSError:
+        log.debug("Failed to save player powers cache", exc_info=True)
+
+
+def cache_player_power(player_id: Any, power: int) -> None:
+    """Cache a player ID → power mapping. Thread-safe, persisted to disk."""
+    global _player_powers_dirty
+    if not player_id or not power:
+        return
+    with _player_powers_lock:
+        if not _player_powers_loaded:
+            _load_player_powers()
+        _player_powers[str(player_id)] = int(power)
+        _player_powers_dirty = True
+
+
+def lookup_player_power(player_id: Any) -> int:
+    """Look up a cached player power by ID. Returns 0 if unknown."""
+    if not player_id:
+        return 0
+    with _player_powers_lock:
+        if not _player_powers_loaded:
+            _load_player_powers()
+        return _player_powers.get(str(player_id), 0)
+
+
+def save_player_powers_if_dirty() -> None:
+    """Save the power cache to disk if there are unsaved changes."""
+    with _player_powers_lock:
+        if _player_powers_dirty:
+            _save_player_powers()
 
 _PLAYER_NAMES_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "player_names.json")
 _player_names_lock = threading.Lock()
@@ -181,6 +244,9 @@ class GameState:
         self._server_ts: Optional[int] = None
         self._lineups: Dict[int, Lineup] = {}                 # lineup.id -> Lineup
         self._lineup_states: Dict[int, NewLineupStateInfo] = {}  # lineupID -> state
+        self._union_entities: Dict[Any, dict] = {}           # entity_id -> raw dict (ally PLAYER_CITY only)
+        self._own_union_id: int = 0                          # populated from UnionNtf
+        self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
 
         # -- connection metadata ----------------------------------- #
         self.protocol_connected: bool = False
@@ -291,6 +357,19 @@ class GameState:
         with self._lock:
             return dict(self._lineup_states)
 
+    @property
+    def ally_city_entities(self) -> List[dict]:
+        """Verified ally PLAYER_CITY entities (own unionID confirmed, from UnionEntitiesNtf)."""
+        with self._lock:
+            return list(self._union_entities.values())
+
+    def set_ally_monitoring(self, enabled: bool) -> None:
+        """Enable or disable ally city tracking.  Called by run_auto_reinforce_ally."""
+        with self._lock:
+            self._ally_monitoring = enabled
+            if not enabled:
+                self._union_entities.clear()
+
     def is_fresh(self, category: str, max_age_s: float = 30.0) -> bool:
         """True if *category* was updated within *max_age_s* seconds."""
         with self._lock:
@@ -347,6 +426,8 @@ class GameState:
         self._sub("msg:UnionNtf", self._on_union_members)
         self._sub("msg:ChatSendMsgReq", self._on_chat_send_req)
         self._sub("msg:ChatSendMsgNtf", self._on_chat_send_ntf)
+        self._sub("msg:UnionEntitiesNtf", self._on_union_entities)
+        self._sub("msg:UnionDelEntitiesNtf", self._on_del_union_entities)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -456,6 +537,13 @@ class GameState:
                 cache_player_name(sender_id, sender)
             self._chat.append(msg)
             self._touch("chat")
+        # Request translation outside the lock (fire-and-forget).
+        if isinstance(msg, dict):
+            try:
+                import chat_translate
+                chat_translate.request_translation(msg)
+            except ImportError:
+                pass
 
     def _on_chat_history(self, msg: Any) -> None:
         """msg:ChatPullMsgAck — historical messages from chat pull.
@@ -479,6 +567,7 @@ class GameState:
         if not isinstance(msg, ChatPullMsgAck):
             return
         added = 0
+        new_entries = []
         with self._lock:
             for chat_one_msg in (msg.msgList or []):
                 # Dedup by historyId.
@@ -542,17 +631,26 @@ class GameState:
                     "channel_type": channel_type,
                     "timestamp": getattr(chat_one_msg, "timeStamp", 0),
                     "payload_type": parsed["payload_type"],
+                    "source_language": parsed.get("source_language", ""),
                     "sender_id": sender_id,
                     "union_name": union_name,
                     "history_id": hid,
                     "raw": chat_one_msg,
                 }
                 self._chat.append(entry)
+                new_entries.append(entry)
                 added += 1
             if added:
                 self._touch("chat")
         # Persist any newly learned names outside the lock.
         save_player_names_if_dirty()
+        # Request batch translation for new history messages (outside lock).
+        if new_entries:
+            try:
+                import chat_translate
+                chat_translate.request_batch_translation(new_entries)
+            except ImportError:
+                pass
 
     def _on_player_heads(self, msg: Any) -> None:
         """msg:GetPlayerHeadInfoAck — cache player names from head lookups.
@@ -594,14 +692,22 @@ class GameState:
                 if name:
                     entry["sender"] = name
         save_player_names_if_dirty()
+        save_player_powers_if_dirty()
 
     def _on_union_members(self, msg: Any) -> None:
-        """msg:UnionNtf — cache player names from the alliance member list.
+        """msg:UnionNtf — cache player names from the alliance member list and own union ID.
 
         Sent at login with the full member roster.  The game client uses
         this to resolve alliance chat sender names (no GetPlayerHeadInfoReq
         is sent for alliance channels).
         """
+        # Capture own union ID (UnionNtf.ID, field 1).
+        union_id = msg.get("ID", 0) if isinstance(msg, dict) else getattr(msg, "ID", 0)
+        if union_id:
+            with self._lock:
+                self._own_union_id = int(union_id)
+            log.debug("Own union ID set to %d from UnionNtf", union_id)
+
         members = None
         if isinstance(msg, dict):
             members = msg.get("members", [])
@@ -618,6 +724,7 @@ class GameState:
                     head = member.get("head")
                     if isinstance(head, dict):
                         name = head.get("name", "")
+                power = member.get("power", 0)
             else:
                 pid = getattr(member, "playerID", 0)
                 name = getattr(member, "name", "")
@@ -625,9 +732,17 @@ class GameState:
                     head = getattr(member, "head", None)
                     if head:
                         name = getattr(head, "name", "")
+                power = getattr(member, "power", 0)
             if pid and name:
                 cache_player_name(pid, name)
                 cached += 1
+            if pid and power:
+                cache_player_power(pid, power)
+                log.info("UnionNtf member: playerID=%s name=%s power=%s", pid, name, power)
+        powers_cached = sum(1 for m in (members or [])
+                           if (m.get("playerID", 0) if isinstance(m, dict) else getattr(m, "playerID", 0))
+                           and (m.get("power", 0) if isinstance(m, dict) else getattr(m, "power", 0)))
+        log.info("UnionNtf: cached %d player names, %d powers", cached, powers_cached)
         if cached:
             log.debug("Cached %d player names from UnionNtf", cached)
             # Retroactively fix Player#<id> senders in existing chat entries.
@@ -713,16 +828,92 @@ class GameState:
             self._attacks = list(msg.intelligences)
             self._touch("attacks")
 
+    @staticmethod
+    def _entity_id(ent: dict) -> Any:
+        """Extract entity ID from a raw EntityInfo dict.
+
+        EntityInfo has sequential=False so wire fields use positional names:
+        field_1 = ID (int64).  Fall back to semantic aliases for robustness.
+        """
+        return ent.get("field_1") or ent.get("id") or ent.get("ID")
+
+    @staticmethod
+    def _entity_coords(ent: dict):
+        """Extract (X, Z) world coordinates from a raw EntityInfo dict.
+
+        Tries explicit X/Z keys first (set by _on_position after PositionNtf),
+        then EntityInfo.field_4 (PositionInfo decoded via decode_unknown):
+            PositionInfo.field_1 = Coord → decoded as {"1": x_int, "2": z_int}
+        """
+        x = ent.get("X", 0)
+        z = ent.get("Z", 0)
+        if x or z:
+            return x, z
+        pos = ent.get("field_4")
+        if isinstance(pos, dict):
+            coord = pos.get("1")
+            if isinstance(coord, dict):
+                x = coord.get("X") or coord.get("1") or 0
+                z = coord.get("Z") or coord.get("2") or 0
+        return x, z
+
+    def _is_ally_city(self, ent: dict) -> bool:
+        """Return True if *ent* is a PLAYER_CITY (type=2) belonging to own alliance.
+
+        EntityInfo has sequential=False — wire fields use positional names:
+          field_2 = type (MapUnitType enum), field_3 = owner (OwnerInfo).
+        OwnerInfo has sequential=True so its sub-fields use semantic names.
+        Caller must hold _lock.
+        """
+        # field_2 = MapUnitType; fall back to "type" for robustness.
+        etype = ent.get("field_2", ent.get("type", -1))
+        if etype != 2:  # MapUnitType.PLAYER_CITY
+            return False
+        # field_3 = OwnerInfo (decoded with named keys because OwnerInfo is sequential).
+        owner = ent.get("field_3") or ent.get("owner")
+        if not isinstance(owner, dict):
+            return False
+        # Accept when own union ID unknown yet (0) — still better than missing it.
+        entity_union_id = owner.get("unionID", 0)
+        own_uid = self._own_union_id
+        if own_uid and entity_union_id and entity_union_id != own_uid:
+            return False
+        return bool(entity_union_id)  # must have some unionID to be an alliance member
+
     def _on_entity_spawned(self, msg: Any) -> None:
-        """EVT_ENTITY_SPAWNED — payload is an EntitiesNtf (raw dicts)."""
+        """EVT_ENTITY_SPAWNED — payload is an EntitiesNtf (raw dicts).
+
+        Also routes ally PLAYER_CITY entities into _union_entities so that
+        allies who teleport nearby (game sends EntitiesNtf, not UnionEntitiesNtf)
+        are detected and reinforced.
+        """
         from .messages import EntitiesNtf
         if not isinstance(msg, EntitiesNtf):
             return
+        new_city_ids = []
         with self._lock:
             for ent in msg.entities:
-                eid = ent.get("id") or ent.get("ID") or id(ent)
+                eid = self._entity_id(ent) or id(ent)
                 self._entities[eid] = ent
+                if self._ally_monitoring and self._is_ally_city(ent):
+                    owner = ent.get("field_3") or ent.get("owner") or {}
+                    name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                    is_new = eid not in self._union_entities
+                    self._union_entities[eid] = ent
+                    # Pre-extract coordinates so runner can use X/Z immediately.
+                    if is_new:
+                        x, z = self._entity_coords(ent)
+                        if x or z:
+                            ent["X"] = x
+                            ent["Z"] = z
+                        log.debug("EntitiesNtf ally city spotted id=%s name=%s x=%s z=%s",
+                                  eid, name, ent.get("X", 0), ent.get("Z", 0))
+                        new_city_ids.append(eid)
             self._touch("entities")
+        for eid in new_city_ids:
+            ent = self._union_entities.get(eid)
+            if ent:
+                self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
 
     def _on_del_entities(self, msg: Any) -> None:
         """msg:DelEntitiesNtf — remove entities by ID."""
@@ -754,6 +945,11 @@ class GameState:
                             ent["Z"] = pi.coord.Z
                         if pi.pos_raw:
                             ent["pos_raw"] = pi.pos_raw
+                        # Keep _union_entities in sync — ally cities move on teleport.
+                        if pi.ID in self._union_entities:
+                            self._union_entities[pi.ID] = ent
+                            log.debug("PositionNtf ally city teleport id=%s x=%s z=%s",
+                                      pi.ID, ent.get("X"), ent.get("Z"))
                 self._touch("entities")
             return
         # Fallback for raw dicts (backward compat).
@@ -783,15 +979,25 @@ class GameState:
             self._touch("lineups")
 
     def _on_lineup_state(self, msg: Any) -> None:
-        """msg:NewLineupStateNtf — update lineup states."""
+        """msg:NewLineupStateNtf — update lineup states.
+
+        If a lineupID is unknown (e.g. interceptor restarted mid-session and
+        missed the initial LineupsNtf), create a stub Lineup so the troop
+        shows up in protocol snapshots.
+        """
         if not isinstance(msg, NewLineupStateNtf):
             return
         with self._lock:
             for info in msg.lineups:
-                # Update state on the stored Lineup if we have it.
                 lu = self._lineups.get(info.lineupID)
                 if lu is not None:
                     lu.state = info.state
+                else:
+                    # Create stub lineup from state notification — enough for
+                    # troop counting (id + state) even without full Lineup data.
+                    self._lineups[info.lineupID] = Lineup(
+                        id=info.lineupID, state=info.state,
+                    )
                 # ERR (0) or DEFENDER (1) = troop at home; remove state entry
                 # so Lineup.state (which we just updated) is the source of truth.
                 if info.state in (0, 1):
@@ -839,6 +1045,77 @@ class GameState:
                 self._touch("lineups")
             if "rallies" in self._last_update:
                 self._touch("rallies")
+
+    def _on_union_entities(self, msg: Any) -> None:
+        """msg:UnionEntitiesNtf — track ally PLAYER_CITY entities.
+
+        UnionEntitiesNtf is the game's dedicated message for alliance member
+        entities (server-filtered). We additionally verify owner.unionID matches
+        our own union and only store PLAYER_CITY (type=2) entities.
+        Emits EVT_ALLY_CITY_SPOTTED for each newly seen city.
+
+        Also bootstraps _own_union_id from the first entity seen here — since
+        the server only sends our own alliance members, their unionID is ours.
+        """
+        entities = getattr(msg, "entities", None)
+        if entities is None and isinstance(msg, dict):
+            entities = msg.get("entities", [])
+        if not entities:
+            return
+
+        with self._lock:
+            if not self._ally_monitoring:
+                return
+
+        new_city_ids = []
+        with self._lock:
+            for ent in entities:
+                ent_dict = ent if isinstance(ent, dict) else vars(ent)
+                eid = self._entity_id(ent_dict) or id(ent_dict)
+                is_ally = self._is_ally_city(ent_dict)
+                if not is_ally:
+                    continue
+                # Bootstrap own_union_id from the first confirmed ally entity.
+                if not self._own_union_id:
+                    owner = ent_dict.get("field_3") or ent_dict.get("owner") or {}
+                    uid = owner.get("unionID", 0) if isinstance(owner, dict) else 0
+                    if uid:
+                        self._own_union_id = int(uid)
+                        log.info("Bootstrapped own_union_id=%d from UnionEntitiesNtf", uid)
+                is_new = eid not in self._union_entities
+                self._union_entities[eid] = ent_dict
+                if is_new:
+                    x, z = self._entity_coords(ent_dict)
+                    if x or z:
+                        ent_dict["X"] = x
+                        ent_dict["Z"] = z
+                    owner = ent_dict.get("field_3") or ent_dict.get("owner") or {}
+                    name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                    pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+                    power = lookup_player_power(pid)
+                    ent_dict["_power"] = power  # pre-computed for priority queue
+                    log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s",
+                             eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0))
+                    new_city_ids.append(eid)
+            self._touch("entities")
+
+        # Emit outside lock.
+        for eid in new_city_ids:
+            ent = self._union_entities.get(eid)
+            if ent:
+                self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
+
+    def _on_del_union_entities(self, msg: Any) -> None:
+        """msg:UnionDelEntitiesNtf — remove ally entities by ID."""
+        ids = getattr(msg, "ids", None)
+        if ids is None and isinstance(msg, dict):
+            ids = msg.get("ids", [])
+        if not ids:
+            return
+        with self._lock:
+            for eid in ids:
+                self._union_entities.pop(eid, None)
+            self._touch("entities")
 
     def _on_connected(self, *args: Any) -> None:
         """EVT_CONNECTED — mark protocol as live."""

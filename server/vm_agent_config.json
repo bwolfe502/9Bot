@@ -1,0 +1,11 @@
+{
+  "instances": [
+    {"name": "Instance1", "port": 8081, "adb_device": "127.0.0.1:5555"},
+    {"name": "Instance2", "port": 8082, "adb_device": "127.0.0.1:5557"},
+    {"name": "Instance3", "port": 8083, "adb_device": "127.0.0.1:5559"},
+    {"name": "Instance4", "port": 8084, "adb_device": "127.0.0.1:5561"}
+  ],
+  "bluestacks_path": "C:\\Program Files\\BlueStacks_nxt",
+  "ninebot_path": "C:\\9Bot",
+  "game_package": "com.tap4fun.odin.kingdomguard"
+}

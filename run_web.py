@@ -63,9 +63,19 @@ def _open_app_window(url, log):
     webbrowser.open(url)
 
 
+def _is_headless():
+    """Detect headless mode: cloud server or explicit --headless flag."""
+    if os.environ.get("CLOUD_MODE") == "1":
+        return True
+    if "--headless" in sys.argv:
+        return True
+    return False
+
+
 def main():
     settings = initialize()
     log = get_logger("run_web")
+    headless = _is_headless()
 
     # ------------------------------------------------------------------
     # Flask server (background thread)
@@ -156,6 +166,19 @@ def main():
     # Native window (pywebview) or browser fallback
     # ------------------------------------------------------------------
     url = "http://127.0.0.1:8080"
+
+    if headless:
+        # Cloud / headless mode: no window, no browser — just serve Flask
+        log.info("Headless mode — no GUI window")
+        print(f"\n  Dashboard: http://{local_ip}:8080\n")
+        try:
+            print("Running in headless mode. Press Ctrl+C to stop.\n")
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+        _on_exit()
+        return
 
     def _try_import_webview():
         """Try to import pywebview, auto-install on first run if missing."""

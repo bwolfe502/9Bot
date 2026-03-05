@@ -512,7 +512,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 if not depart_tapped:
                     # Check for low health troops (Depart Anyway button)
                     da_screen = load_screenshot(device)
-                    if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.75) is not None:
+                    if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.65) is not None:
                         log.warning("Low health troops — 'Depart Anyway' visible")
                         if config.get_device_config(device, "auto_heal"):
                             log.info("Healing troops before retry")

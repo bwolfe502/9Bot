@@ -126,12 +126,11 @@
     </div>
     {% if not (device_readonly is defined and device_readonly) %}
     <div class="emu-steps">
-        {% if dev.status == 'Starting Emulator...' or dev.status == 'Waiting for ADB...' %}
-        <button type="button" class="emu-step-btn emu-step-emu emu-starting" disabled><span class="emu-step-num">1</span> Starting...</button>
+        {% if dev.status == 'Starting Emulator...' or dev.status == 'Waiting for ADB...' or dev.status == 'Launching Game...' %}
+        <button type="button" class="emu-step-btn emu-step-emu emu-starting" disabled>Starting...</button>
         {% else %}
-        <button type="button" class="emu-step-btn emu-step-emu" onclick="startEmulator(this, '{{ dev.id }}')"><span class="emu-step-num">1</span> Start Emulator</button>
+        <button type="button" class="emu-step-btn emu-step-emu" onclick="startEmulator(this, '{{ dev.id }}')">Start Emulator</button>
         {% endif %}
-        <button type="button" class="emu-step-btn emu-step-game" disabled><span class="emu-step-num">2</span> Start Game</button>
     </div>
     {% endif %}
 </div>
@@ -221,10 +220,37 @@
     {% endif %}
     {% endif %}
 
+    {% if not (device_readonly is defined and device_readonly) %}
+    <!-- Collapsible Events section -->
+    <div class="device-events-section">
+        <div class="events-header" onclick="toggleEvents(this)">
+            <span class="events-label">Events</span>
+            <span class="controls-arrow">&#9660;</span>
+        </div>
+        <div class="events-body" style="display:none">
+            {% set groot_key = dev.id ~ '_auto_groot' %}
+            <div class="auto-row" data-mode="auto_groot" data-device="{{ dev.id }}">
+                <span class="auto-label">Join Groot</span>
+                <button type="button" class="toggle{% if groot_key in active_tasks %} on{% endif %}"
+                        onclick="toggleAutoMode('auto_groot', '{{ dev.id }}')"
+                        title="Join Groot"></button>
+            </div>
+            {% set esb_key = dev.id ~ '_auto_esb' %}
+            <div class="auto-row" data-mode="auto_esb" data-device="{{ dev.id }}">
+                <span class="auto-label">Phantom Clash</span>
+                <button type="button" class="toggle{% if esb_key in active_tasks %} on{% endif %}"
+                        onclick="toggleAutoMode('auto_esb', '{{ dev.id }}')"
+                        title="Phantom Clash"></button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="live-view-section">
         <div class="live-view-buttons">
-            {% if not (dev.recently_started is defined and dev.recently_started) %}
             <button type="button" class="live-view-toggle" onclick="toggleLiveView(this, '{{ dev.id }}')" data-active="false">Live View</button>
+            {% if not (device_readonly is defined and device_readonly) %}
+            <button type="button" class="manual-control-toggle" onclick="toggleManualControl(this, '{{ dev.id }}')" data-active="false">Manual Control</button>
             {% endif %}
             <button type="button" class="chat-view-toggle" data-device="{{ dev.id }}" onclick="openDeviceChat('{{ dev.id }}')" style="display:none">Chat</button>
             {% if not (device_readonly is defined and device_readonly) %}
@@ -236,12 +262,8 @@
         {% if dev.emu_instance is defined and dev.emu_instance %}
         {% if not (device_readonly is defined and device_readonly) %}
         <div class="emu-steps emu-steps-compact">
-            <button type="button" class="emu-step-btn emu-step-stop" onclick="stopEmulator(this, '{{ dev.id }}')"><span class="emu-step-num">1</span> Stop Emulator</button>
-            {% if dev.recently_started is defined and dev.recently_started %}
-            <button type="button" class="emu-step-btn emu-step-game emu-step-game-ready" onclick="startGame(this, '{{ dev.id }}')"><span class="emu-step-num">2</span> Start Game</button>
-            {% else %}
-            <button type="button" class="emu-step-btn emu-step-game" onclick="restartGame(this, '{{ dev.id }}')"><span class="emu-step-num">2</span> Restart Game</button>
-            {% endif %}
+            <button type="button" class="emu-step-btn emu-step-stop" onclick="stopEmulator(this, '{{ dev.id }}')">Stop Emulator</button>
+            <button type="button" class="emu-step-btn emu-step-game" onclick="restartGame(this, '{{ dev.id }}')">Restart Game</button>
         </div>
         {% endif %}
         {% endif %}
@@ -542,7 +564,7 @@ function refreshStatus() {
                         if (text) {
                             text.textContent = dev.status;
                             text.classList.remove('status-active', 'status-waiting', 'status-navigating', 'status-stopping', 'status-error', 'status-offline');
-                            if (dev.status.indexOf('Starting') !== -1 || dev.status.indexOf('Waiting') !== -1) {
+                            if (dev.status.indexOf('Starting') !== -1 || dev.status.indexOf('Waiting') !== -1 || dev.status.indexOf('Launching') !== -1) {
                                 text.classList.add('status-waiting');
                             } else if (dev.status === 'Offline') {
                                 text.classList.add('status-offline');
@@ -584,6 +606,20 @@ function refreshStatus() {
                         } else {
                             text.classList.add('status-active');
                         }
+                        // Scheduled badge
+                        var badge = statusBar.querySelector('.scheduled-badge');
+                        if (dev.scheduled) {
+                            if (!badge) {
+                                badge = document.createElement('span');
+                                badge.className = 'scheduled-badge';
+                                badge.textContent = '\u23F0';
+                                badge.title = 'Scheduled';
+                                badge.style.cssText = 'margin-left:4px;font-size:11px;opacity:0.7;';
+                                text.parentNode.insertBefore(badge, text.nextSibling);
+                            }
+                        } else if (badge) {
+                            badge.remove();
+                        }
                     }
                     if (dot) {
                         if (dev.status !== 'Idle') dot.classList.add('active');
@@ -612,24 +648,6 @@ function refreshStatus() {
                         mithTimer.style.display = '';
                     } else {
                         mithTimer.style.display = 'none';
-                    }
-                }
-                // Update game button: Start Game → Restart Game when recently_started clears
-                var gameBtn = card.querySelector('.emu-step-game-ready');
-                if (gameBtn && !dev.recently_started) {
-                    gameBtn.classList.remove('emu-step-game-ready');
-                    gameBtn.innerHTML = '<span class="emu-step-num">2</span> Restart Game';
-                    gameBtn.setAttribute('onclick', "restartGame(this, '" + dev.id + "')");
-                    // Add Live View button if missing (game just started)
-                    var btns = card.querySelector('.live-view-buttons');
-                    if (btns && !btns.querySelector('.live-view-toggle')) {
-                        var lv = document.createElement('button');
-                        lv.type = 'button';
-                        lv.className = 'live-view-toggle';
-                        lv.setAttribute('data-active', 'false');
-                        lv.textContent = 'Live View';
-                        lv.onclick = function() { toggleLiveView(lv, dev.id); };
-                        btns.insertBefore(lv, btns.firstChild);
                     }
                 }
                 // Show/hide chat button + feed based on chat_available (protocol or mirrored)
@@ -661,6 +679,11 @@ function refreshStatus() {
                 var device = row.getAttribute('data-device');
                 var toggle = row.querySelector('.toggle');
                 if (!toggle) return;
+                // Manual control keeps all toggles off for this device
+                if (device && _manualControlDevices[device]) {
+                    toggle.classList.remove('on');
+                    return;
+                }
                 var stoppingKey = (device || '') + '_' + key;
                 var isRunning;
                 if (device) {
@@ -729,6 +752,8 @@ function updateDeviceForms() {
 document.addEventListener('DOMContentLoaded', updateDeviceForms);
 
 function toggleAutoMode(modeKey, deviceId) {
+    // Block starting tasks while manual control is active
+    if (deviceId && _manualControlDevices[deviceId]) return;
     var selector = '.auto-row[data-mode="' + modeKey + '"]';
     if (deviceId) selector += '[data-device="' + deviceId + '"]';
     var row = document.querySelector(selector);
@@ -778,6 +803,15 @@ function toggleActions(header) {
     var isOpen = grid.style.display !== 'none';
     grid.style.display = isOpen ? 'none' : '';
     arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
+}
+
+function toggleEvents(header) {
+    var section = header.closest('.device-events-section');
+    var body = section.querySelector('.events-body');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : '';
+    arrow.textContent = isOpen ? '\u25B6' : '\u25BC';
 }
 
 function toggleControls(header) {
@@ -878,39 +912,126 @@ function _pollBugreportProgress(btn) {
 
 // Live View — MJPEG stream with polling fallback
 var _liveViewTimers = {};
+var _manualControlDevices = {};  // deviceId → true when manual control is active
+
+function _startStream(img, btn, deviceId, fps) {
+    var streamUrl;
+    if (IS_FRIEND_VIEW) {
+        streamUrl = API_PREFIX + '/api/stream' + API_SUFFIX + '&fps=' + fps + '&quality=30';
+    } else {
+        streamUrl = RELAY_PREFIX + '/api/stream?device=' + encodeURIComponent(deviceId) + '&fps=' + fps + '&quality=30';
+    }
+    img.onerror = function() {
+        if (btn.getAttribute('data-active') !== 'true') return;
+        img.onerror = null;
+        startPollingFallback(img, deviceId);
+    };
+    img.src = streamUrl;
+}
+
+function _activateLiveView(card, deviceId, fps) {
+    var btn = card.querySelector('.live-view-toggle');
+    var container = card.querySelector('.live-view-container');
+    var img = container.querySelector('.live-view-img');
+    if (btn && btn.getAttribute('data-active') === 'true') {
+        // Already active — just restart stream at new FPS if needed
+        img.src = '';
+        _startStream(img, btn, deviceId, fps);
+        return;
+    }
+    if (btn) {
+        btn.setAttribute('data-active', 'true');
+        btn.classList.add('live-view-on');
+    }
+    container.style.display = '';
+    _startStream(img, btn || container, deviceId, fps);
+}
+
+function _deactivateLiveView(card, deviceId) {
+    var btn = card.querySelector('.live-view-toggle');
+    var container = card.querySelector('.live-view-container');
+    var img = container.querySelector('.live-view-img');
+    if (btn) {
+        btn.setAttribute('data-active', 'false');
+        btn.classList.remove('live-view-on');
+    }
+    container.style.display = 'none';
+    img.src = '';
+    if (_liveViewTimers[deviceId]) {
+        clearInterval(_liveViewTimers[deviceId]);
+        delete _liveViewTimers[deviceId];
+    }
+}
+
 function toggleLiveView(btn, deviceId) {
     var active = btn.getAttribute('data-active') === 'true';
     var card = btn.closest('.device-card');
-    var container = card.querySelector('.live-view-container');
-    var img = container.querySelector('.live-view-img');
     if (active) {
-        btn.setAttribute('data-active', 'false');
-        btn.classList.remove('live-view-on');
-        container.style.display = 'none';
-        img.src = '';
-        if (_liveViewTimers[deviceId]) {
-            clearInterval(_liveViewTimers[deviceId]);
-            delete _liveViewTimers[deviceId];
+        _deactivateLiveView(card, deviceId);
+        // Also turn off manual control if it was on
+        if (_manualControlDevices[deviceId]) {
+            var mcBtn = card.querySelector('.manual-control-toggle');
+            if (mcBtn) {
+                mcBtn.setAttribute('data-active', 'false');
+                mcBtn.classList.remove('manual-control-on');
+            }
+            card.classList.remove('manual-mode');
+            delete _manualControlDevices[deviceId];
         }
     } else {
-        btn.setAttribute('data-active', 'true');
-        btn.classList.add('live-view-on');
-        container.style.display = '';
-        var streamUrl;
-        if (IS_FRIEND_VIEW) {
-            streamUrl = API_PREFIX + '/api/stream' + API_SUFFIX + '&fps=5&quality=30';
-        } else {
-            streamUrl = RELAY_PREFIX + '/api/stream?device=' + encodeURIComponent(deviceId) + '&fps=5&quality=30';
-        }
-        // Try MJPEG stream first; fall back to polling on error
-        img.onerror = function() {
-            if (btn.getAttribute('data-active') !== 'true') return;
-            img.onerror = null;  // prevent loop
-            startPollingFallback(img, deviceId);
-        };
-        img.src = streamUrl;
+        var fps = _manualControlDevices[deviceId] ? 8 : 5;
+        _activateLiveView(card, deviceId, fps);
     }
 }
+
+function toggleManualControl(btn, deviceId) {
+    var active = btn.getAttribute('data-active') === 'true';
+    var card = btn.closest('.device-card');
+    if (active) {
+        // Deactivate manual control
+        btn.setAttribute('data-active', 'false');
+        btn.classList.remove('manual-control-on');
+        card.classList.remove('manual-mode');
+        delete _manualControlDevices[deviceId];
+        // Downgrade stream FPS if live view still active
+        var lvBtn = card.querySelector('.live-view-toggle');
+        if (lvBtn && lvBtn.getAttribute('data-active') === 'true') {
+            _activateLiveView(card, deviceId, 5);
+        }
+    } else {
+        // Activate manual control — stop all tasks for this device
+        btn.setAttribute('data-active', 'true');
+        btn.classList.add('manual-control-on');
+        card.classList.add('manual-mode');
+        _manualControlDevices[deviceId] = true;
+        // Stop all running tasks for this device
+        var stopUrl, stopBody;
+        if (IS_FRIEND_VIEW) {
+            stopUrl = API_PREFIX + '/tasks/stop-all' + API_SUFFIX;
+            stopBody = '';
+        } else {
+            stopUrl = RELAY_PREFIX + '/api/stop-device';
+            stopBody = JSON.stringify({device: deviceId});
+        }
+        fetch(stopUrl, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: stopBody || undefined
+        }).catch(function() {});
+        // Turn off all auto-mode toggles optimistically
+        card.querySelectorAll('.auto-row .toggle.on').forEach(function(t) {
+            t.classList.remove('on');
+            var row = t.closest('.auto-row');
+            if (row) {
+                var mode = row.getAttribute('data-mode');
+                _stoppingModes[deviceId + '_' + mode] = true;
+            }
+        });
+        // Activate live view at higher FPS
+        _activateLiveView(card, deviceId, 8);
+    }
+}
+
 function startPollingFallback(img, deviceId) {
     function poll() {
         var url;
@@ -927,93 +1048,89 @@ function startPollingFallback(img, deviceId) {
     _liveViewTimers[deviceId] = setInterval(poll, 3000);
 }
 
-function restartGame(btn, deviceId) {
-    var isStep = btn.classList.contains('emu-step-game');
-    if (isStep) {
-        btn.innerHTML = '<span class="emu-step-num">2</span> Restarting...';
-    } else {
-        btn.textContent = 'Restarting...';
+// --- Remote tap on live view stream ---
+(function() {
+    function getDeviceId(img) {
+        var card = img.closest('.device-card');
+        return card ? card.getAttribute('data-device') : null;
     }
-    btn.disabled = true;
-    var url;
-    if (IS_FRIEND_VIEW) {
-        url = API_PREFIX + '/api/restart-game' + API_SUFFIX;
-    } else {
-        url = RELAY_PREFIX + '/api/restart-game';
-    }
-    fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'device=' + encodeURIComponent(deviceId)
-    }).then(function(r) { return r.json(); })
-    .then(function(data) {
-        var label = data.ok ? 'Restarted!' : 'Failed';
-        if (isStep) btn.innerHTML = '<span class="emu-step-num">2</span> ' + label;
-        else btn.textContent = label;
-        setTimeout(function() {
-            if (isStep) btn.innerHTML = '<span class="emu-step-num">2</span> Restart Game';
-            else btn.textContent = 'Restart Game';
-            btn.disabled = false;
-        }, 2000);
-    })
-    .catch(function() {
-        if (isStep) btn.innerHTML = '<span class="emu-step-num">2</span> Error';
-        else btn.textContent = 'Error';
-        setTimeout(function() {
-            if (isStep) btn.innerHTML = '<span class="emu-step-num">2</span> Restart Game';
-            else btn.textContent = 'Restart Game';
-            btn.disabled = false;
-        }, 2000);
-    });
-}
-
-function startGame(btn, deviceId) {
-    btn.innerHTML = '<span class="emu-step-num">2</span> Starting...';
-    btn.disabled = true;
-    var url;
-    if (IS_FRIEND_VIEW) {
-        url = API_PREFIX + '/api/restart-game' + API_SUFFIX;
-    } else {
-        url = RELAY_PREFIX + '/api/restart-game';
-    }
-    fetch(url, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: 'device=' + encodeURIComponent(deviceId)
-    }).then(function(r) { return r.json(); })
-    .then(function(data) {
-        btn.innerHTML = '<span class="emu-step-num">2</span> ' + (data.ok ? 'Started!' : 'Failed');
-        btn.classList.remove('emu-step-game-ready');
-        // Add Live View button now that game is starting
-        var card = btn.closest('.device-card');
-        var container = card ? card.querySelector('.live-view-buttons') : null;
-        if (container && !container.querySelector('.live-view-toggle')) {
-            var lv = document.createElement('button');
-            lv.type = 'button';
-            lv.className = 'live-view-toggle';
-            lv.setAttribute('data-active', 'false');
-            lv.textContent = 'Live View';
-            lv.onclick = function() { toggleLiveView(lv, deviceId); };
-            container.insertBefore(lv, container.firstChild);
+    function handleTap(img, clientX, clientY) {
+        var deviceId = getDeviceId(img);
+        if (!deviceId || !_manualControlDevices[deviceId]) return;
+        var rect = img.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        var relX = clientX - rect.left;
+        var relY = clientY - rect.top;
+        var gameX = Math.round(relX / rect.width * 1080);
+        var gameY = Math.round(relY / rect.height * 1920);
+        if (gameX < 0 || gameX > 1080 || gameY < 0 || gameY > 1920) return;
+        // Visual ripple
+        var container = img.parentElement;
+        var dot = document.createElement('div');
+        dot.className = 'tap-ripple';
+        dot.style.left = relX + 'px';
+        dot.style.top = relY + 'px';
+        container.appendChild(dot);
+        setTimeout(function() { dot.remove(); }, 400);
+        // Send tap
+        var url, body;
+        if (IS_FRIEND_VIEW) {
+            url = API_PREFIX + '/api/tap' + API_SUFFIX;
+            body = JSON.stringify({x: gameX, y: gameY});
+        } else {
+            url = RELAY_PREFIX + '/api/tap';
+            body = JSON.stringify({device: deviceId, x: gameX, y: gameY});
         }
+        fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: body
+        });
+    }
+    document.addEventListener('click', function(e) {
+        if (!e.target.classList.contains('live-view-img')) return;
+        handleTap(e.target, e.clientX, e.clientY);
+    });
+    document.addEventListener('touchstart', function(e) {
+        if (!e.target.classList.contains('live-view-img')) return;
+        e.preventDefault();
+        var t = e.touches[0];
+        handleTap(e.target, t.clientX, t.clientY);
+    }, {passive: false});
+})();
+
+function restartGame(btn, deviceId) {
+    btn.textContent = 'Restarting...';
+    btn.disabled = true;
+    var url;
+    if (IS_FRIEND_VIEW) {
+        url = API_PREFIX + '/api/restart-game' + API_SUFFIX;
+    } else {
+        url = RELAY_PREFIX + '/api/restart-game';
+    }
+    fetch(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'device=' + encodeURIComponent(deviceId)
+    }).then(function(r) { return r.json(); })
+    .then(function(data) {
+        btn.textContent = data.ok ? 'Restarted!' : 'Failed';
         setTimeout(function() {
-            btn.innerHTML = '<span class="emu-step-num">2</span> Restart Game';
+            btn.textContent = 'Restart Game';
             btn.disabled = false;
-            btn.setAttribute('onclick', "restartGame(this, '" + deviceId + "')");
         }, 2000);
     })
     .catch(function() {
-        btn.innerHTML = '<span class="emu-step-num">2</span> Error';
+        btn.textContent = 'Error';
         setTimeout(function() {
-            btn.innerHTML = '<span class="emu-step-num">2</span> Start Game';
+            btn.textContent = 'Restart Game';
             btn.disabled = false;
-            btn.classList.add('emu-step-game-ready');
         }, 2000);
     });
 }
 
 function _emuBtnContent(label) {
-    return '<span class="emu-step-num">1</span> ' + label;
+    return label;
 }
 function startEmulator(btn, deviceId) {
     btn.innerHTML = _emuBtnContent('Starting...');

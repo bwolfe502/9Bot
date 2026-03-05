@@ -113,6 +113,7 @@ def validate_device_token(device_id, token):
 _device_protocol = {}
 _device_protocol_lock = threading.Lock()
 _FRIDA_BASE_PORT = 27042
+_stale_lineup_warned = {}  # {device: last_warn_time} — throttle "lineups stale (never)" logs
 
 
 def _allocate_port():
@@ -348,6 +349,44 @@ def get_protocol_chat_messages(device=None):
     return state.chat_messages  # thread-safe list copy
 
 
+def get_protocol_event_bus(device=None):
+    """Return the EventBus for *device*, or None if protocol is not active."""
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    return info["bus"] if info else None
+
+
+def set_protocol_ally_monitoring(device, enabled: bool) -> None:
+    """Enable or disable ally city tracking on the GameState for *device*."""
+    try:
+        state = _get_device_state(device)
+        if state is not None:
+            state.set_ally_monitoring(enabled)
+    except Exception:
+        pass
+
+
+def get_protocol_ally_cities(device=None):
+    """Return list of verified ally PLAYER_CITY entity dicts, or None if unavailable/stale.
+
+    Entities come from UnionEntitiesNtf (server-filtered to own alliance) and are
+    additionally validated against own unionID. Returns None when protocol is off or
+    entity data has not been received yet (no bail-out signal — unlike rallies, zero
+    ally cities on screen is normal). Callers use None as the signal to skip.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("entities", max_age_s=60.0):
+            return None
+        return state.ally_city_entities  # thread-safe list copy
+    except Exception:
+        return None
+
+
 def get_protocol_troop_snapshot(device):
     """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
     state = _get_device_state(device)
@@ -360,6 +399,15 @@ def get_protocol_troop_snapshot(device):
             age_s = f"{time.time() - age:.1f}s ago" if age else "never"
         except Exception:
             age_s = "unknown"
+        # Throttle "never" logs — only log once per 60s per device to avoid
+        # spamming when interceptor restarts mid-session and hasn't received
+        # LineupsNtf yet (which only arrives at login).
+        if age_s == "never":
+            now = time.time()
+            last = _stale_lineup_warned.get(device, 0)
+            if now - last < 60:
+                return None
+            _stale_lineup_warned[device] = now
         log.debug("proto_snapshot[%s]: lineups stale (%s)", device, age_s)
         return None
     lineups = state.lineups
@@ -421,7 +469,11 @@ def apply_settings(settings):
     set_min_troops(settings.get("min_troops", 0))
     set_eg_rally_own(settings.get("eg_rally_own", True))
     set_titan_rally_own(settings.get("titan_rally_own", True))
-    set_territory_config(settings.get("my_team", "yellow"))
+    enemy_teams = settings.get("enemy_teams", [])
+    # Migrate legacy single enemy_team to list
+    if not enemy_teams and settings.get("enemy_team"):
+        enemy_teams = [settings["enemy_team"]]
+    set_territory_config(settings.get("my_team", "yellow"), enemy_teams or None)
     config.MITHRIL_INTERVAL = settings.get("mithril_interval", 19)
     for dev_id, ts in settings.get("last_mithril_time", {}).items():
         try:
@@ -432,13 +484,30 @@ def apply_settings(settings):
     set_console_verbose(settings.get("verbose_logging", False))
     import training
     training.configure(settings.get("collect_training_data", False))
+    import chat_translate
+    chat_translate.configure(
+        settings.get("chat_translate_enabled", False),
+        settings.get("chat_translate_api_key", ""),
+    )
     set_gather_options(
         settings.get("gather_enabled", True),
         settings.get("gather_mine_level", 4),
         settings.get("gather_max_troops", 3),
     )
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
+    config.VARIATION = settings.get("variation", 0)
+    config.TITAN_INTERVAL = settings.get("titan_interval", 30)
+    config.GROOT_INTERVAL = settings.get("groot_interval", 30)
+    config.REINFORCE_INTERVAL = settings.get("reinforce_interval", 30)
+    config.PASS_INTERVAL = settings.get("pass_interval", 30)
+    config.PASS_MODE = settings.get("pass_mode", "Rally Joiner")
     set_protocol_enabled(settings.get("protocol_enabled", False))
+    # Territory passes & safe zones
+    config.TERRITORY_PASSES = settings.get("territory_passes", {})
+    config.TERRITORY_MUTUAL_ZONES = settings.get("territory_mutual_zones", {})
+    config.TERRITORY_SAFE_ZONES = settings.get("territory_safe_zones", {})
+    config.TERRITORY_HOME_ZONES = settings.get("territory_home_zones", {})
+    config.recompute_pass_blocked()
     # Per-device protocol reconciliation (after device_settings are applied below)
     # Deferred to end of function — see _reconcile_protocol() call.
     for dev_id, count in settings.get("device_troops", {}).items():
@@ -455,6 +524,114 @@ def apply_settings(settings):
     # Per-device protocol reconciliation — now that device_settings are applied,
     # start/stop interceptors to match the desired state.
     _reconcile_protocol()
+
+
+# ---------------------------------------------------------------------------
+# APK patching subprocess management
+# ---------------------------------------------------------------------------
+
+_patch_progress = {}   # {device_id: {phase, step, total, lines, error}}
+_patch_threads = {}    # {device_id: Thread}
+_patch_lock = threading.Lock()
+_ANSI_RE = None  # lazy-compiled regex
+
+
+def _strip_ansi(text):
+    """Remove ANSI escape codes from text."""
+    global _ANSI_RE
+    if _ANSI_RE is None:
+        import re
+        _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+    return _ANSI_RE.sub("", text)
+
+
+def start_apk_patch(device_id):
+    """Spawn a background thread to patch the APK for *device_id*.
+
+    Runs ``python -m protocol.patch_apk --device <id> --install`` as a
+    subprocess, streaming output line-by-line into ``_patch_progress``.
+    On success, auto-enables protocol for the device.
+    """
+    import re
+    step_re = re.compile(r"\[(\d+)/(\d+)\]")
+
+    with _patch_lock:
+        t = _patch_threads.get(device_id)
+        if t is not None and t.is_alive():
+            return False  # already running
+        _patch_progress[device_id] = {
+            "phase": "running", "step": 0, "total": 0,
+            "lines": [], "error": None,
+        }
+
+    def _run():
+        prog = _patch_progress[device_id]
+        try:
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "protocol.patch_apk",
+                 "--device", device_id, "--install"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=env,
+            )
+            for raw_line in proc.stdout:
+                line = _strip_ansi(raw_line.rstrip("\n"))
+                if not line:
+                    continue
+                lines = prog["lines"]
+                lines.append(line)
+                # Rolling cap: keep last 200 lines
+                if len(lines) > 200:
+                    del lines[:len(lines) - 200]
+                m = step_re.search(line)
+                if m:
+                    prog["step"] = int(m.group(1))
+                    prog["total"] = int(m.group(2))
+            proc.wait()
+            if proc.returncode == 0:
+                prog["phase"] = "done"
+                # Auto-enable protocol for this device
+                try:
+                    settings = load_settings()
+                    ds = settings.setdefault("device_settings", {})
+                    dev_s = ds.setdefault(device_id, {})
+                    dev_s["protocol_enabled"] = True
+                    from startup import apply_settings as _apply
+                    _apply(settings)
+                    save_settings(settings)
+                except Exception:
+                    pass
+            else:
+                prog["phase"] = "error"
+                # Include last few log lines so the user can see what failed
+                tail = [ln for ln in prog["lines"][-5:] if ln.strip()]
+                detail = "\n".join(tail) if tail else "(no output)"
+                prog["error"] = (f"Process exited with code {proc.returncode}"
+                                 f"\n{detail}")
+        except Exception as e:
+            prog = _patch_progress.get(device_id)
+            if prog:
+                prog["phase"] = "error"
+                prog["error"] = str(e)
+
+    t = threading.Thread(target=_run, daemon=True, name=f"patch-{device_id}")
+    with _patch_lock:
+        _patch_threads[device_id] = t
+    t.start()
+    return True
+
+
+def get_patch_progress(device_id):
+    """Return current patch progress dict for *device_id*."""
+    return dict(_patch_progress.get(device_id, {"phase": "idle"}))
+
+
+def is_patching(device_id):
+    """Return True if a patch thread is alive for *device_id*."""
+    with _patch_lock:
+        t = _patch_threads.get(device_id)
+    return t is not None and t.is_alive()
 
 
 def _reconcile_protocol():
@@ -517,24 +694,37 @@ def initialize():
     sys.stdout = _Tee(sys.stdout, _log_file)
     sys.stderr = _Tee(sys.stderr, _log_file)
 
-    # License check (skipped for git clones / dev mode)
-    if not os.path.isdir(os.path.join(script_dir, ".git")):
+    # License check
+    cloud_mode = os.environ.get("CLOUD_MODE") == "1"
+    if cloud_mode:
+        # Cloud mode: validate from env var, no interactive prompt
+        from license import validate_license
+        validate_license()
+        log.info("Cloud mode active (instance: %s)",
+                 os.environ.get("NINEBOT_INSTANCE_ID", "unknown"))
+    elif not os.path.isdir(os.path.join(script_dir, ".git")):
         from license import validate_license
         validate_license()
     else:
         log.info("Git repo detected — skipping license check (developer mode).")
 
-    # Auto-update check
-    from updater import check_and_update
-    if check_and_update():
-        log.info("Update installed — restarting...")
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except OSError as e:
-            log.error("Failed to restart after update: %s", e)
+    # Auto-update check (skipped in cloud mode — managed by VM agent)
+    if not cloud_mode:
+        from updater import check_and_update
+        if check_and_update():
+            log.info("Update installed — restarting...")
+            try:
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            except OSError as e:
+                log.error("Failed to restart after update: %s", e)
+    else:
+        log.info("Cloud mode — auto-update disabled (managed by VM agent)")
 
     # Load and apply settings
     settings = load_settings()
+    if cloud_mode:
+        from server.cloud_config import apply_cloud_defaults
+        settings = apply_cloud_defaults(settings)
     apply_settings(settings)
 
     # Connect emulators
@@ -558,7 +748,6 @@ def shutdown():
 
     # Stop all running tasks
     try:
-        config.auto_occupy_running = False
         config.MITHRIL_ENABLED_DEVICES.clear()
         config.MITHRIL_DEPLOY_TIME.clear()
         for key in list(running_tasks.keys()):
@@ -592,11 +781,19 @@ def shutdown():
     except Exception as e:
         print(f"Failed to save mithril timers: {e}")
 
-    # Save player name cache
+    # Save player name and power caches
     try:
-        from protocol.game_state import save_player_names_if_dirty
+        from protocol.game_state import save_player_names_if_dirty, save_player_powers_if_dirty
         save_player_names_if_dirty()
-        log.info("Player name cache saved")
+        save_player_powers_if_dirty()
+        log.info("Player name/power cache saved")
+    except Exception:
+        pass
+
+    # Stop chat translation worker
+    try:
+        import chat_translate
+        chat_translate.shutdown()
     except Exception:
         pass
 
@@ -701,7 +898,7 @@ def create_bug_report_zip(clear_debug=True, notes=None):
             try:
                 with open(settings_path, "r", encoding="utf-8") as sf:
                     safe_settings = json.load(sf)
-                for key in ("relay_secret",):
+                for key in ("relay_secret", "chat_translate_api_key"):
                     if key in safe_settings and safe_settings[key]:
                         safe_settings[key] = "***REDACTED***"
                 zf.writestr("settings.json", json.dumps(safe_settings, indent=2))

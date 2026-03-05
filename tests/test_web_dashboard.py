@@ -47,7 +47,6 @@ def clean_running_tasks():
     config.running_tasks.clear()
     config.DEVICE_STATUS.clear()
     config.EMULATOR_STARTING.clear()
-    config.EMULATOR_RECENTLY_STARTED.clear()
     yield
     # Stop all tasks and clean up
     for key, info in list(config.running_tasks.items()):
@@ -56,7 +55,6 @@ def clean_running_tasks():
     config.running_tasks.clear()
     config.DEVICE_STATUS.clear()
     config.EMULATOR_STARTING.clear()
-    config.EMULATOR_RECENTLY_STARTED.clear()
 
 
 @pytest.fixture(autouse=True)

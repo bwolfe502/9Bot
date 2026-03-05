@@ -1,0 +1,15 @@
+# Exclude dev-only files from release archives (git archive)
+.claude/ export-ignore
+CLAUDE.md export-ignore
+README.md export-ignore
+ROADMAP.md export-ignore
+TESTING.md export-ignore
+tests/ export-ignore
+relay/ export-ignore
+remote/ export-ignore
+pytest.ini export-ignore
+protocol/setup_frida.py export-ignore
+protocol/inject_gadget.py export-ignore
+protocol/patch_apk.py export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore

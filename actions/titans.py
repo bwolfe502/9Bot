@@ -17,7 +17,7 @@ from config import Screen
 from botlog import get_logger, timed_action, stats
 from vision import (tap_image, wait_for_image_and_tap, timed_wait,
                     load_screenshot, find_image,
-                    adb_tap, logged_tap,
+                    adb_tap, adb_keyevent, logged_tap,
                     save_failure_screenshot, read_ap,
                     TAP_OFFSETS, _save_click_trail)
 from navigation import navigate, check_screen, DEBUG_DIR
@@ -435,6 +435,11 @@ def rally_titan(device):
             log.warning("Low health troops — 'Depart Anyway' visible")
             if config.get_device_config(device, "auto_heal"):
                 log.info("Healing troops before titan rally")
+                # Dismiss the depart dialog first — BACK key closes it reliably
+                adb_keyevent(device, 4)  # KEYCODE_BACK
+                time.sleep(0.5)
+                adb_keyevent(device, 4)  # second BACK to exit rally detail
+                time.sleep(0.5)
                 navigate(Screen.MAP, device)
                 heal_all(device)
                 return False  # caller will retry

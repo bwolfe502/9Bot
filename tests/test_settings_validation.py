@@ -22,6 +22,7 @@ DEFAULTS = {
     "pass_mode": "Rally Joiner",
     "my_team": "yellow",
     "enemy_team": "green",
+    "enemy_teams": ["yellow"],
     "mode": "bl",
     "verbose_logging": False,
     "eg_rally_own": True,
@@ -37,7 +38,12 @@ DEFAULTS = {
     "upload_interval_hours": 24,
     "collect_training_data": False,
     "protocol_enabled": False,
+    "home_x": 0,
+    "home_z": 0,
+    "max_reinforce_distance": 55,
     "chat_mirror": True,
+    "chat_translate_enabled": False,
+    "chat_translate_api_key": "",
 }
 
 
