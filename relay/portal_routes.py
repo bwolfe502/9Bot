@@ -3117,15 +3117,15 @@ async def page_admin_user_detail(request: web.Request) -> web.Response:
                 f'<span class="up-dev-name">{dlabel}</span>'
                 f'</div>'
                 f'<button class="up-btn up-btn-primary up-btn-sm" '
-                f'onclick="assign({json.dumps(bot_name)},'
-                f'{json.dumps(d["device_hash"])})">Assign</button>'
+                f"onclick=\"assign({_html_escape(json.dumps(bot_name))},"
+                f"{_html_escape(json.dumps(d['device_hash']))})\">Assign</button>"
                 f'</div>'
             )
         assign_all_btn = ""
         if count > 1:
             assign_all_btn = (
                 f'<button class="up-btn up-btn-outline up-btn-xs" '
-                f'onclick="assignAll({json.dumps(bot_name)})">'
+                f"onclick=\"assignAll({_html_escape(json.dumps(bot_name))})\">"
                 f'Assign All</button>'
             )
         available_html += (
