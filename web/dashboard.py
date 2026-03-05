@@ -98,7 +98,6 @@ TASK_FUNCTIONS = {
 AUTO_MODES_BL = [
     {"group": "Combat", "modes": [
         {"key": "auto_pass",           "label": "Pass Battle"},
-        {"key": "auto_occupy",         "label": "Occupy Towers"},
         {"key": "frontline_occupy",    "label": "Frontline Occupy"},
         {"key": "auto_reinforce",      "label": "Reinforce Throne"},
         {"key": "auto_reinforce_ally", "label": "Reinforce Ally"},
@@ -137,10 +136,10 @@ ONESHOT_DEBUG = ["Check Screen", "Check Troops", "Diagnose Grid",
 # ---------------------------------------------------------------------------
 
 from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
-                     run_auto_pass, run_auto_occupy, run_auto_reinforce,
+                     run_auto_pass, run_auto_reinforce,
                      run_auto_reinforce_ally,
                      run_auto_mithril, run_auto_gold, run_auto_esb,
-                     run_frontline_occupy, run_debug_occupy,
+                     run_frontline_occupy,
                      run_once, run_repeat,
                      launch_task, stop_task, stop_all_tasks_matching,
                      force_stop_all)
@@ -155,14 +154,12 @@ AUTO_RUNNERS = {
     "auto_titan":     lambda dev, se, s: run_auto_titan(dev, se, s.get("titan_interval", 30), s.get("variation", 0)),
     "auto_groot":     lambda dev, se, s: run_auto_groot(dev, se, s.get("groot_interval", 30), s.get("variation", 0)),
     "auto_pass":      lambda dev, se, s: run_auto_pass(dev, se, s.get("pass_mode", "Rally Joiner"), s.get("pass_interval", 30), s.get("variation", 0)),
-    "auto_occupy":       lambda dev, se, s: run_auto_occupy(dev, se),
     "frontline_occupy":  lambda dev, se, s: run_frontline_occupy(dev, se),
     "auto_reinforce":      lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
     "auto_reinforce_ally": lambda dev, se, s: run_auto_reinforce_ally(dev, se),
     "auto_mithril":        lambda dev, se, s: run_auto_mithril(dev, se),
     "auto_gold":      lambda dev, se, s: run_auto_gold(dev, se),
     "auto_esb":       lambda dev, se, s: run_auto_esb(dev, se, 5, s.get("variation", 0)),
-    "debug_occupy":   lambda dev, se, s: run_debug_occupy(dev, se),
 }
 
 

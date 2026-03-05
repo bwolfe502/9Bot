@@ -1,8 +1,8 @@
-"""Tests for territory grid analysis and auto-occupy (territory.py).
+"""Tests for territory grid analysis (territory.py).
 
 Covers: _classify_square_team, _get_border_color, _has_flag,
 _is_adjacent_to_my_territory, _get_square_center, attack_territory,
-scan_targets, _pick_target, auto_occupy_loop, diagnose_grid, set_territory_config.
+scan_targets, _pick_target, diagnose_grid, set_territory_config.
 
 Focus on the red team vs yellow enemy color pair (current game config).
 All ADB and vision calls are mocked — no emulator needed.
@@ -23,7 +23,7 @@ from territory import (
     _classify_square_team, _get_border_color, _has_flag,
     _is_adjacent_to_my_territory, _get_square_center,
     attack_territory, scan_targets, _pick_target,
-    auto_occupy_loop, diagnose_grid,
+    diagnose_grid,
 )
 
 
@@ -712,107 +712,6 @@ class TestScanTargetsPickTarget:
             "friendly": [],
         }
         assert _pick_target(scan) is None
-
-
-# ============================================================
-# auto_occupy_loop — integration tests
-# ============================================================
-
-class TestAutoOccupyLoop:
-
-    def _make_stop_check(self, after_calls=1):
-        """Create a stop_check that returns True after N calls."""
-        state = {"count": 0, "stopped": False}
-        def stop_check():
-            state["count"] += 1
-            return state["stopped"]
-        def trigger_stop():
-            state["stopped"] = True
-        return stop_check, trigger_stop
-
-    @patch("territory.save_failure_screenshot")
-    @patch("territory.time.sleep")
-    @patch("territory.tap_image", return_value=False)
-    @patch("territory.heal_all")
-    @patch("territory.all_troops_home", return_value=False)
-    @patch("territory.navigate", return_value=True)
-    def test_waits_when_troops_not_home(
-        self, mock_nav, mock_troops_home, mock_heal, mock_tap,
-        mock_sleep, mock_save, mock_device
-    ):
-        """Troops not home → wait, then stop."""
-        stop_check, trigger = self._make_stop_check()
-        # Stop after first sleep
-        mock_sleep.side_effect = lambda s: trigger()
-
-        auto_occupy_loop(mock_device, stop_check=stop_check)
-
-        # Should have called navigate (to get to MAP) but not attack_territory
-
-    @patch("territory.save_failure_screenshot")
-    @patch("territory.time.sleep")
-    @patch("territory.tap_image", return_value=False)
-    @patch("territory.heal_all")
-    @patch("territory.all_troops_home", return_value=True)
-    @patch("territory.navigate", return_value=True)
-    @patch("territory.attack_territory", return_value=None)
-    def test_skips_cycle_when_no_targets(
-        self, mock_attack, mock_nav, mock_troops, mock_heal, mock_tap,
-        mock_sleep, mock_save, mock_device
-    ):
-        """attack_territory returns None → no targets, wait, stop."""
-        stop_check, trigger = self._make_stop_check()
-        call_count = [0]
-        def sleep_and_stop(s):
-            call_count[0] += 1
-            if call_count[0] >= 2:
-                trigger()
-        mock_sleep.side_effect = sleep_and_stop
-
-        auto_occupy_loop(mock_device, stop_check=stop_check)
-
-        mock_attack.assert_called_once()
-
-    @patch("territory.save_failure_screenshot")
-    @patch("territory.time.sleep")
-    @patch("territory.wait_for_image_and_tap", return_value=True)
-    @patch("territory.tap_image", return_value=False)
-    @patch("territory.find_image", return_value=(0.9, (100, 100), 50, 50))
-    @patch("territory.troops_avail", return_value=5)
-    @patch("territory.adb_tap")
-    @patch("territory.adb_keyevent")
-    @patch("territory.navigate", return_value=True)
-    @patch("territory.teleport", return_value=True)
-    @patch("territory.heal_all")
-    @patch("territory.all_troops_home", return_value=True)
-    @patch("territory.attack_territory", return_value=(5, 6, "attack"))
-    @patch("territory.load_screenshot")
-    def test_full_cycle_attack(
-        self, mock_screenshot, mock_attack, mock_troops_home, mock_heal,
-        mock_teleport, mock_nav, mock_keyevent, mock_adb_tap, mock_avail,
-        mock_find, mock_tap, mock_wait_tap, mock_sleep, mock_save,
-        mock_device
-    ):
-        """Full happy path: scan → teleport → attack → depart → stop."""
-        config.MIN_TROOPS_AVAILABLE = 0
-        mock_screenshot.return_value = np.zeros((1920, 1080, 3), dtype=np.uint8)
-        stop_check, trigger = self._make_stop_check()
-        call_count = [0]
-        def sleep_and_stop(s):
-            call_count[0] += 1
-            if call_count[0] >= 5:
-                trigger()
-        mock_sleep.side_effect = sleep_and_stop
-
-        auto_occupy_loop(mock_device, stop_check=stop_check)
-
-        mock_attack.assert_called_once()
-        mock_teleport.assert_called_once()
-
-    def test_stops_immediately_when_stop_check_true(self, mock_device):
-        """stop_check returns True from start → loop exits immediately."""
-        auto_occupy_loop(mock_device, stop_check=lambda: True)
-        # No crash, just returns
 
 
 # ============================================================

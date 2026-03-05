@@ -116,12 +116,12 @@
         </div>
     </div>
 
-    <!-- Auto Occupy -->
+    <!-- Frontline Occupy -->
     <div class="card settings-card">
-        <div class="settings-card-header">Auto Occupy</div>
+        <div class="settings-card-header">Frontline Occupy</div>
         <div class="settings-row settings-row-inline" data-key="my_team">
             <span class="settings-row-label">My Team</span>
-            <select class="settings-select" onchange="saveSetting('my_team', this.value); updateEnemyCheckboxes()">
+            <select class="settings-select" onchange="saveSetting('my_team', this.value); updateEnemyCheckboxes(); updateFrontlineEnemyCheckboxes()">
                 {% for color in ['yellow', 'red', 'blue', 'green'] %}
                 <option value="{{ color }}" {% if settings.my_team == color %}selected{% endif %}>{{ color|capitalize }}</option>
                 {% endfor %}
@@ -136,34 +136,6 @@
                 <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);">
                     <input type="checkbox" value="{{ color }}" {% if color in et or not et %}checked{% endif %}
                            onchange="saveEnemyTeams()">{{ color|capitalize }}
-                </label>
-                {% endif %}
-                {% endfor %}
-            </div>
-        </div>
-        <a href="/territory" class="btn btn-full btn-territory" style="margin:12px 16px;width:auto;">Territory Grid</a>
-    </div>
-
-    <!-- Frontline Occupy -->
-    <div class="card settings-card">
-        <div class="settings-card-header">Frontline Occupy</div>
-        <div class="settings-row settings-row-inline" data-key="my_team">
-            <span class="settings-row-label">My Team</span>
-            <select class="settings-select" onchange="saveSetting('my_team', this.value); updateEnemyCheckboxes(); updateFrontlineEnemyCheckboxes()">
-                {% for color in ['yellow', 'red', 'blue', 'green'] %}
-                <option value="{{ color }}" {% if settings.my_team == color %}selected{% endif %}>{{ color|capitalize }}</option>
-                {% endfor %}
-            </select>
-        </div>
-        <div class="settings-row" data-key="frontline_enemy_teams">
-            <span class="settings-row-label">Enemy Teams</span>
-            <div class="frontline-enemy-teams-checks" style="display:flex;gap:12px;flex-wrap:wrap;">
-                {% set fet = settings.get('frontline_enemy_teams', []) %}
-                {% for color in ['yellow', 'red', 'blue', 'green'] %}
-                {% if color != settings.my_team %}
-                <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);">
-                    <input type="checkbox" value="{{ color }}" {% if color in fet or not fet %}checked{% endif %}
-                           onchange="saveFrontlineEnemyTeams()">{{ color|capitalize }}
                 </label>
                 {% endif %}
                 {% endfor %}
