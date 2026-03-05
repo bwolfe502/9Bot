@@ -181,6 +181,8 @@ class ProtocolInterceptor:
         self._errors = 0
         self._last_message_time: Optional[float] = None
         self._msg_type_counts: Dict[str, int] = collections.defaultdict(int)
+        self._msg_type_counts_recv: Dict[str, int] = collections.defaultdict(int)
+        self._msg_type_counts_send: Dict[str, int] = collections.defaultdict(int)
 
         # Compressed message handling.
         self._compressed_msg_id: Optional[int] = None
@@ -302,6 +304,24 @@ class ProtocolInterceptor:
                 "top_message_types": top,
             }
 
+    @property
+    def message_type_counts(self) -> Dict[str, int]:
+        """Return a copy of full message-type counters."""
+        with self._stats_lock:
+            return dict(self._msg_type_counts)
+
+    @property
+    def message_type_counts_recv(self) -> Dict[str, int]:
+        """Return a copy of receive-direction message-type counters."""
+        with self._stats_lock:
+            return dict(self._msg_type_counts_recv)
+
+    @property
+    def message_type_counts_send(self) -> Dict[str, int]:
+        """Return a copy of send-direction message-type counters."""
+        with self._stats_lock:
+            return dict(self._msg_type_counts_send)
+
     def on_message(self, msg_name: str, handler: Callable[..., Any]) -> None:
         """Register *handler* for a specific decoded message type."""
         self._bus.on_message(msg_name, handler)
@@ -400,8 +420,13 @@ class ProtocolInterceptor:
                 msg_id,
                 len(payload),
             )
+            unknown = f"UNKNOWN:0x{msg_id:08X}"
             with self._stats_lock:
-                self._msg_type_counts[f"UNKNOWN:0x{msg_id:08X}"] += 1
+                self._msg_type_counts[unknown] += 1
+                if direction == "recv":
+                    self._msg_type_counts_recv[unknown] += 1
+                else:
+                    self._msg_type_counts_send[unknown] += 1
             return
 
         log.debug(
@@ -414,6 +439,10 @@ class ProtocolInterceptor:
 
         with self._stats_lock:
             self._msg_type_counts[msg_name] += 1
+            if direction == "recv":
+                self._msg_type_counts_recv[msg_name] += 1
+            else:
+                self._msg_type_counts_send[msg_name] += 1
 
         # Handle CompressedMessage: decompress and re-dispatch the inner message.
         if (
@@ -742,4 +771,25 @@ class InterceptorThread(threading.Thread):
         """Proxy to the underlying interceptor's stats, or ``None``."""
         if self._interceptor is not None:
             return self._interceptor.stats
+        return None
+
+    @property
+    def message_type_counts(self) -> Optional[Dict[str, int]]:
+        """Proxy full message-type counters, or ``None``."""
+        if self._interceptor is not None:
+            return self._interceptor.message_type_counts
+        return None
+
+    @property
+    def message_type_counts_recv(self) -> Optional[Dict[str, int]]:
+        """Proxy recv-direction message-type counters, or ``None``."""
+        if self._interceptor is not None:
+            return self._interceptor.message_type_counts_recv
+        return None
+
+    @property
+    def message_type_counts_send(self) -> Optional[Dict[str, int]]:
+        """Proxy send-direction message-type counters, or ``None``."""
+        if self._interceptor is not None:
+            return self._interceptor.message_type_counts_send
         return None
