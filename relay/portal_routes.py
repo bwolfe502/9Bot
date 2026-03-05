@@ -822,6 +822,20 @@ async def page_dashboard(request: web.Request) -> web.Response:
         if d["bot_name"] in _active_bots and not _active_bots[d["bot_name"]].closed
     )
 
+    # Source bot CSS so customer dashboard uses the same visual system as admin.
+    all_dash_devices = devices + shared_devices
+    css_bot = ""
+    if all_dash_devices:
+        online_bot = next(
+            (
+                d["bot_name"]
+                for d in all_dash_devices
+                if d["bot_name"] in _active_bots and not _active_bots[d["bot_name"]].closed
+            ),
+            None,
+        )
+        css_bot = online_bot or all_dash_devices[0]["bot_name"]
+
     body = f"""
     <style>
     .dash-tabs {{
@@ -942,7 +956,10 @@ async def page_dashboard(request: web.Request) -> web.Response:
     }}
     </script>
     """
-    return web.Response(text=_page("Dashboard", body, user, csrf), content_type="text/html")
+    return web.Response(
+        text=_page_dashboard_wrapper("Dashboard", body, user, csrf, css_bot=css_bot),
+        content_type="text/html",
+    )
 
 
 # ---------------------------------------------------------------------------
