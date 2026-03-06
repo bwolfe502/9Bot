@@ -747,6 +747,7 @@ class TestRallyTitan:
                  1000.0, 1000.5,  # depart poll
                  1012.0,  # timed_action exit
              ]), \
+             patch("actions.titans.tap_depart_anyway", return_value=True) as m_tap_da, \
              patch("actions.titans.config") as m_cfg:
             m_cfg.get_device_config.side_effect = lambda d, k: {
                 "auto_heal": False, "min_troops": 0,
@@ -754,7 +755,7 @@ class TestRallyTitan:
             m_cfg.AP_COST_RALLY_TITAN = 20
             result = rally_titan(mock_device)
         assert result is True
-        m_tap.assert_any_call("depart_anyway.png", mock_device)
+        m_tap_da.assert_called_once_with(mock_device)
 
     def test_all_search_attempts_fail(self, mock_device):
         """All search attempts fail to find depart → return False."""

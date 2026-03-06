@@ -19,7 +19,7 @@ from vision import (
 from navigation import navigate, check_screen
 from troops import troops_avail, heal_all
 
-from actions._helpers import _interruptible_sleep
+from actions._helpers import _interruptible_sleep, check_depart_anyway, tap_depart_anyway
 
 _log = get_logger("actions")
 
@@ -241,19 +241,17 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
         return True
 
     # Fallback: depart_anyway.png (troops at low health).
-    da_screen = load_screenshot(device)
-    if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.65) is not None:
+    if check_depart_anyway(device):
         log.warning("Low health troops — 'Depart Anyway' visible for %s", label)
         if config.get_device_config(device, "auto_heal"):
             log.info("Healing troops before retry for %s", label)
-            # Dismiss the depart dialog first — BACK key closes it reliably
-            adb_keyevent(device, 4)  # KEYCODE_BACK
+            adb_keyevent(device, 4)  # KEYCODE_BACK — dismiss depart dialog
             _interruptible_sleep(0.5, stop_check)
             navigate(Screen.MAP, device)
             heal_all(device)
             return False  # retry on next cycle (heal_all navigates to MAP)
         log.info("Auto heal off — tapping Depart Anyway for %s", label)
-        tap_image("depart_anyway.png", device, threshold=0.65)
+        tap_depart_anyway(device)
         navigate(Screen.MAP, device)
         return True
 

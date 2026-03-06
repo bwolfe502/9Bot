@@ -5,6 +5,7 @@ Leaf module — no dependencies on other action submodules.
 Key exports:
     _interruptible_sleep — cooperative sleep with stop_check
     _last_depart_slot    — mutable dict tracking which troop slot just departed
+    check_depart_anyway  — detect low-health "Depart Anyway" dialog
 """
 
 import time
@@ -28,3 +29,27 @@ def _interruptible_sleep(seconds, stop_check):
             return True
         time.sleep(min(0.5, max(0, end - time.time())))
     return False
+
+
+_DEPART_ANYWAY_THRESHOLD = 0.65
+
+
+def check_depart_anyway(device):
+    """Check if the 'Depart Anyway' dialog is visible (low health troops).
+
+    Returns True if detected, False otherwise. Callers handle recovery
+    (heal, dismiss, retry) according to their own context.
+    """
+    from vision import load_screenshot, find_image
+    screen = load_screenshot(device)
+    if screen is None:
+        return False
+    return find_image(screen, "depart_anyway.png",
+                      threshold=_DEPART_ANYWAY_THRESHOLD) is not None
+
+
+def tap_depart_anyway(device):
+    """Tap the 'Depart Anyway' button. Returns True if tapped."""
+    from vision import tap_image
+    return tap_image("depart_anyway.png", device,
+                     threshold=_DEPART_ANYWAY_THRESHOLD)
