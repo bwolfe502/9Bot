@@ -110,10 +110,10 @@ class TestFindGreenPixel:
         assert not _find_green_pixel(screen, (0, 255, 0), tolerance=20)
 
     def test_ignores_green_outside_scan_region(self):
-        """Green pixels below y=800 (UI area) should not trigger detection."""
+        """Green pixels outside the scan region (y<100 or y>=1800) should not trigger."""
         screen = np.zeros((1920, 1080, 3), dtype=np.uint8)
-        # Place large green block in the bottom UI area (below scan region)
-        screen[900:1000, 200:400] = [0, 255, 0]
+        # Place large green block below the scan region (y>=1800)
+        screen[1800:1900, 200:400] = [0, 255, 0]
 
         assert not _find_green_pixel(screen, (0, 255, 0))
 

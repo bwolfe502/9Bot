@@ -240,7 +240,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 log.debug("Protocol: %d joinable rallies (%d non-blacklisted)",
                           len(joinable), len(non_blacklisted))
         except Exception:
-            pass
+            log.debug("Protocol rally check failed — falling back to UI", exc_info=True)
 
     # Capture a tighter baseline right before entering the war screen.
     # The initial `troops` check above may be stale by the time we tap depart.

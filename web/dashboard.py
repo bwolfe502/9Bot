@@ -164,6 +164,13 @@ from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
 
 _task_start_lock = threading.Lock()  # prevent TOCTOU race on running_tasks
 
+# Modes that can't run simultaneously on the same device
+_EXCLUSIVE_MODES = {
+    "auto_quest": ["auto_gold", "auto_titan"],
+    "auto_titan": ["auto_gold", "auto_quest"],
+    "auto_gold":  ["auto_quest", "auto_titan"],
+}
+
 
 # Map auto-mode keys to their runner functions
 AUTO_RUNNERS = {
@@ -716,12 +723,7 @@ def create_app():
                         continue
 
                 # Exclusivity: stop conflicting modes before starting
-                EXCLUSIVE = {
-                    "auto_quest": ["auto_gold", "auto_titan"],
-                    "auto_titan": ["auto_gold", "auto_quest"],
-                    "auto_gold":  ["auto_quest", "auto_titan"],
-                }
-                for conflict in EXCLUSIVE.get(mode_key, []):
+                for conflict in _EXCLUSIVE_MODES.get(mode_key, []):
                     ckey = f"{device}_{conflict}"
                     if ckey in running_tasks:
                         stop_task(ckey)
@@ -1909,12 +1911,7 @@ def create_app():
                 if isinstance(info, dict) and info.get("thread") and info["thread"].is_alive():
                     return redirect(f"/d/{dhash}?token={token}")
 
-            EXCLUSIVE = {
-                "auto_quest": ["auto_gold", "auto_titan"],
-                "auto_titan": ["auto_gold", "auto_quest"],
-                "auto_gold":  ["auto_quest", "auto_titan"],
-            }
-            for conflict in EXCLUSIVE.get(mode_key, []):
+            for conflict in _EXCLUSIVE_MODES.get(mode_key, []):
                 ckey = f"{device}_{conflict}"
                 if ckey in running_tasks:
                     stop_task(ckey)
@@ -2447,12 +2444,7 @@ def create_app():
                 if isinstance(info, dict) and info.get("thread") and info["thread"].is_alive():
                     return  # Already running
             # Exclusivity
-            EXCLUSIVE = {
-                "auto_quest": ["auto_gold", "auto_titan"],
-                "auto_titan": ["auto_gold", "auto_quest"],
-                "auto_gold":  ["auto_quest", "auto_titan"],
-            }
-            for conflict in EXCLUSIVE.get(mode_key, []):
+            for conflict in _EXCLUSIVE_MODES.get(mode_key, []):
                 ckey = f"{device_id}_{conflict}"
                 if ckey in running_tasks:
                     stop_task(ckey)
