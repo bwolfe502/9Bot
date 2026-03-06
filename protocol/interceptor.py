@@ -77,6 +77,11 @@ _GADGET_PORT = 27042
 _RECONNECT_DELAY_FAILED = 10.0
 _RECONNECT_DELAY_LOST = 5.0
 
+# Watchdog: if no messages arrive for this many seconds while connected,
+# force a reconnect.  Game heartbeats arrive every ~10s, so 60s silence
+# means the hook is dead.
+_WATCHDOG_TIMEOUT = 10.0
+
 # CompressedMessage msg_id (BKDR hash of bare "CompressedMessage").
 _COMPRESSED_MSG_NAME = "CompressedMessage"
 
@@ -728,13 +733,28 @@ class InterceptorThread(threading.Thread):
                     break
                 continue
 
-            # Connected — wait until disconnect or stop signal.
+            # Connected — wait until disconnect, stop signal, or watchdog timeout.
             while (
                 not self._stop_event.is_set()
                 and self._interceptor is not None
                 and self._interceptor.is_connected()
             ):
                 self._stop_event.wait(timeout=1.0)
+                # Watchdog: force reconnect if no messages for _WATCHDOG_TIMEOUT
+                if (
+                    self._interceptor is not None
+                    and self._interceptor.is_connected()
+                    and self._interceptor._last_message_time is not None
+                ):
+                    silence = time.time() - self._interceptor._last_message_time
+                    if silence > _WATCHDOG_TIMEOUT:
+                        log.warning(
+                            "Watchdog: no messages for %.0fs — forcing reconnect",
+                            silence,
+                        )
+                        self._interceptor.stop()
+                        self._interceptor = None
+                        break
 
             # If we get here without a stop signal, the session was lost.
             if not self._stop_event.is_set():
