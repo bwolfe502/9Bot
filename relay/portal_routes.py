@@ -46,12 +46,16 @@ log = logging.getLogger("portal")
 
 # Reference to _bots dict from relay_server (injected at setup time)
 _active_bots: dict = {}
+_bot_device_status: dict = {}  # {bot_name: [{"hash", "name", "online"}, ...]}
 
 
-def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
+def setup_portal_routes(app: web.Application, active_bots: dict,
+                        bot_devices: dict | None = None) -> None:
     """Register all portal routes on the aiohttp app."""
-    global _active_bots
+    global _active_bots, _bot_device_status
     _active_bots = active_bots
+    if bot_devices is not None:
+        _bot_device_status = bot_devices
 
     # Pages
     app.router.add_get("/portal", _redirect_portal_slash)
@@ -61,6 +65,7 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_get("/portal/community", page_community)
     app.router.add_get("/portal/bot/{bot_name}", page_bot_detail)
     app.router.add_get("/portal/admin", page_admin)
+    app.router.add_get("/portal/admin/user/{user_id}", page_admin_user_detail)
     app.router.add_get("/portal/account", page_account)
     app.router.add_get("/portal/guide", page_guide)
 
@@ -85,6 +90,8 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_post("/portal/api/admin/reset-password", api_admin_reset_password)
     app.router.add_post("/portal/api/admin/grant-subscription", api_admin_grant_subscription)
     app.router.add_post("/portal/api/admin/revoke-subscription", api_admin_revoke_subscription)
+    app.router.add_post("/portal/api/admin/users/{user_id}/assign-device", api_admin_assign_device)
+    app.router.add_post("/portal/api/admin/users/{user_id}/unassign-device", api_admin_unassign_device)
     app.router.add_post("/portal/api/account/password", api_change_password)
     app.router.add_post("/portal/api/account/email", api_change_email)
     app.router.add_put("/portal/api/devices/{bot_name}/{device_hash}/label", api_set_device_label)
@@ -574,6 +581,71 @@ body {
 }
 """
 
+# Minimal CSS for device cards when the bot's style.css can't be loaded.
+# The bot's stylesheet overrides these when available.
+_DASHBOARD_FALLBACK_CSS = """
+main { max-width: 600px; margin: 0 auto; padding: 12px; }
+.device-grid { display: flex; flex-direction: column; gap: 12px; }
+.card, .device-card {
+    background: #1a1a2e; border-radius: 12px; padding: 16px;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+.device-card-offline { opacity: 0.6; }
+.device-top { margin-bottom: 8px; }
+.device-name-row { display: flex; align-items: center; justify-content: space-between; }
+.device-name-row strong { font-size: 15px; }
+.device-troops { font-size: 12px; color: #889; }
+.device-status-bar { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.status-text { font-size: 12px; color: #889; }
+.status-offline { color: #666; }
+.status-active { color: #64d8ff; }
+.status-stopping { color: #ff6b6b; }
+.status-waiting { color: #ffb74d; }
+.section-label { font-size: 11px; color: #556; font-weight: 600; margin: 8px 0 4px; }
+.troop-slots, .quest-tracking { min-height: 20px; }
+.troop-summary { display: inline-block; font-size: 11px; padding: 2px 8px;
+    border-radius: 6px; margin: 2px; background: rgba(255,255,255,0.05); }
+.controls-header, .events-header { display: flex; align-items: center;
+    justify-content: space-between; padding: 8px 0; cursor: pointer;
+    font-size: 12px; font-weight: 600; color: #889; }
+.auto-columns { display: flex; gap: 12px; }
+.auto-column { flex: 1; }
+.auto-subheader { font-size: 10px; color: #556; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px; }
+.auto-row { display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 0; }
+.auto-label { font-size: 12px; color: #aab; }
+.toggle { width: 36px; height: 20px; border-radius: 10px; border: none;
+    background: #333; cursor: pointer; position: relative; transition: background 0.2s; }
+.toggle.on { background: #2196f3; }
+.toggle::after { content: ''; position: absolute; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; top: 2px; left: 2px; transition: left 0.2s; }
+.toggle.on::after { left: 18px; }
+.control-pill { display: inline-block; font-size: 10px; padding: 3px 8px;
+    border-radius: 6px; margin: 2px; background: rgba(255,255,255,0.04);
+    color: #667; cursor: pointer; }
+.control-pill.pill-on { background: rgba(33,150,243,0.15); color: #64d8ff; }
+.bottom-bar { display: flex; gap: 8px; }
+.bottom-btn { padding: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+    background: #1a1a2e; color: #aab; font-size: 12px; font-weight: 600; cursor: pointer; }
+.bottom-btn-danger { background: rgba(255,80,80,0.08); color: #ff6b6b;
+    border-color: rgba(255,80,80,0.15); }
+.live-view-section { margin-top: 8px; }
+.live-view-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.live-view-toggle, .manual-control-toggle, .chat-view-toggle, .restart-game-btn,
+.emu-step-btn { padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+    background: #1a1a2e; color: #889; font-size: 11px; cursor: pointer; }
+.actions-section { margin-top: 16px; }
+.offline-section-header { display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0; cursor: pointer; color: #556; font-size: 12px; }
+.muted { color: #556; font-size: 12px; }
+.btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; text-decoration: none; display: inline-block; }
+.btn-primary { background: rgba(100,216,255,0.12); color: #64d8ff; }
+.btn-outline { background: transparent; border: 1px solid rgba(255,255,255,0.1); color: #aab; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+"""
+
 
 def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csrf: str = "",
                             css_bot: str = "") -> str:
@@ -606,7 +678,8 @@ def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csr
         '</div></a>'
     )
 
-    css_link = f'<link rel="stylesheet" href="/{css_bot}/static/style.css?v=96">' if css_bot else ""
+    bot_online = css_bot and css_bot in _active_bots and not _active_bots[css_bot].closed
+    css_link = f'<link rel="stylesheet" href="/{css_bot}/static/style.css?v=96">' if bot_online else ""
 
     return (
         f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -615,6 +688,7 @@ def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csr
         f"<meta name='apple-mobile-web-app-capable' content='yes'>"
         f"<title>{title} — 9Bot Portal</title>"
         f"<style>{_PORTAL_NAV_CSS}</style>"
+        f"<style>{_DASHBOARD_FALLBACK_CSS}</style>"
         f"{css_link}"
         f"</head><body>"
         f'<div class="portal-nav">{logo}{nav_links}</div>'
@@ -712,60 +786,9 @@ async def page_dashboard(request: web.Request) -> web.Response:
     if user["is_admin"]:
         return await _page_dashboard_admin(request, user, csrf)
 
-    # Customer view: tabbed (My Devices / Community) with inline dashboards
+    # Customer view: full device cards (same visual as admin dashboard)
     devices = await asyncio.to_thread(db.get_user_devices, user["user_id"])
     shared_devices = await asyncio.to_thread(db.list_shared_devices)
-
-    # My device rows
-    dev_html = ""
-    for d in devices:
-        bot_name = d["bot_name"]
-        online = bot_name in _active_bots and not _active_bots[bot_name].closed
-        dot = "dot-online" if online else "dot-offline"
-        status = "Online" if online else "Offline"
-        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
-        open_url = f"/{bot_name}/d/{d['device_hash']}"
-
-        dev_html += (
-            f'<div class="bot-row dev-row" data-url="{open_url}" onclick="openDevice(this)">'
-            f'<div class="bot-info">'
-            f'<div class="bot-name"><span class="dot {dot}"></span>{label}</div>'
-            f'<div class="bot-meta">{status}</div>'
-            f'</div>'
-            f'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="opacity:0.3;flex-shrink:0">'
-            f'<path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
-            f'</div>'
-        )
-
-    if not dev_html:
-        dev_html = (
-            '<p class="muted" style="padding:8px 0">No devices yet. '
-            'Ask an admin to grant you access, or check the Community tab.</p>'
-        )
-
-    # Community device rows
-    community_html = ""
-    for d in shared_devices:
-        sd_bot = d["bot_name"]
-        online = sd_bot in _active_bots and not _active_bots[sd_bot].closed
-        dot = "dot-online" if online else "dot-offline"
-        status = "Online" if online else "Offline"
-        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
-        open_url = f"/{sd_bot}/d/{d['device_hash']}"
-
-        community_html += (
-            f'<div class="bot-row dev-row" data-url="{open_url}" onclick="openDevice(this)">'
-            f'<div class="bot-info">'
-            f'<div class="bot-name"><span class="dot {dot}"></span>{label}</div>'
-            f'<div class="bot-meta">{status}</div>'
-            f'</div>'
-            f'<svg width="16" height="16" viewBox="0 0 16 16" fill="none" style="opacity:0.3;flex-shrink:0">'
-            f'<path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>'
-            f'</div>'
-        )
-
-    if not community_html:
-        community_html = '<p class="muted" style="padding:8px 0">No community accounts available yet.</p>'
 
     # Subscription status
     sub_html = ""
@@ -810,132 +833,60 @@ async def page_dashboard(request: web.Request) -> web.Response:
                 '</div>'
             )
 
-    online_shared = sum(
-        1 for d in shared_devices
-        if d["bot_name"] in _active_bots and not _active_bots[d["bot_name"]].closed
+    # Build unified device list with state
+    all_devices = []  # (bot_name, dhash, label, state)
+    for d in devices:
+        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
+        all_devices.append((d["bot_name"], d["device_hash"], label, _device_state(d)))
+    for d in shared_devices:
+        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
+        all_devices.append((d["bot_name"], d["device_hash"], label, _device_state(d)))
+
+    if not all_devices:
+        body = (
+            getting_started + sub_html
+            + '<p style="padding:24px;text-align:center;color:#556">No devices yet. '
+            'Ask an admin to grant you access.</p>'
+        )
+        return web.Response(
+            text=_page_dashboard_wrapper("Dashboard", body, user, csrf),
+            content_type="text/html",
+        )
+
+    css_bot = next((n for n, _, _, s in all_devices if s == "online"), all_devices[0][0])
+
+    # Build device cards using shared helpers
+    pills, toggles, events = _build_card_controls()
+    cards_html = ""
+    offline_cards = ""
+    for bot_name, dhash, label, state in all_devices:
+        api_base = f"/{bot_name}/d/{dhash}"
+        if state == "disconnected":
+            offline_cards += _device_card_disconnected(dhash, label, "")
+        elif state == "offline":
+            # Render full card so JS can populate sections when device comes online
+            offline_cards += _device_card_online(
+                dhash, api_base, label, "", pills, toggles, events, offline=True)
+        else:
+            cards_html += _device_card_online(dhash, api_base, label, "", pills, toggles, events)
+
+    offline_section = _offline_section_html(
+        [(s,) for _, _, _, s in all_devices],
+        offline_cards,
     )
 
-    body = f"""
-    <style>
-    .dash-tabs {{
-        display: flex; gap: 2px; margin-bottom: 12px;
-        background: #141428; border-radius: 10px; padding: 3px;
-        border: 1px solid rgba(255,255,255,0.04);
-    }}
-    .dash-tab {{
-        flex: 1; padding: 10px 0; text-align: center;
-        font-size: 12px; font-weight: 600; color: #556;
-        border: none; background: transparent; cursor: pointer;
-        border-radius: 8px; transition: all 0.2s ease;
-    }}
-    .dash-tab:hover {{ color: #99a; }}
-    .dash-tab.active {{
-        background: rgba(100,216,255,0.08); color: #64d8ff;
-    }}
-    .dash-panel {{ display: none; }}
-    .dash-panel.active {{ display: block; }}
-    .dev-row {{ cursor: pointer; transition: background 0.15s ease; }}
-    .dev-row:hover {{ background: rgba(100,216,255,0.04); }}
-    #dash-embed {{
-        display: none; margin-top: 12px;
-    }}
-    #dash-embed.active {{ display: block; }}
-    #dash-embed-header {{
-        display: flex; align-items: center; gap: 10px;
-        padding: 10px 12px;
-        background: #181830; border-radius: 10px 10px 0 0;
-        border: 1px solid rgba(255,255,255,0.06);
-        border-bottom: none;
-    }}
-    #dash-embed-header .back-btn {{
-        background: none; border: none; color: #64d8ff;
-        cursor: pointer; font-size: 13px; font-weight: 600;
-        display: flex; align-items: center; gap: 4px;
-        padding: 4px 8px; border-radius: 6px;
-        transition: background 0.15s;
-    }}
-    #dash-embed-header .back-btn:hover {{ background: rgba(100,216,255,0.1); }}
-    #dash-embed-header .dev-label {{
-        font-size: 13px; color: #aab; font-weight: 500;
-    }}
-    #dash-embed-frame {{
-        width: 100%; border: none;
-        border: 1px solid rgba(255,255,255,0.06);
-        border-top: none;
-        border-radius: 0 0 10px 10px;
-        background: #0c0c18;
-        min-height: 600px;
-        height: calc(100vh - 180px);
-    }}
-    </style>
-
-    {getting_started}
-
-    <div class="dash-tabs" id="dash-tabs-bar">
-        <button class="dash-tab active" onclick="dashTab('mine',this)">My Devices ({len(devices)})</button>
-        <button class="dash-tab" onclick="dashTab('community',this)">Community ({online_shared} online)</button>
-    </div>
-
-    <div id="dp-mine" class="dash-panel active">
-        <div class="card device-list-card">{dev_html}</div>
-    </div>
-
-    <div id="dp-community" class="dash-panel">
-        <div class="card device-list-card">{community_html}</div>
-    </div>
-
-    <div id="dash-embed">
-        <div id="dash-embed-header">
-            <button class="back-btn" onclick="closeDevice()">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-                <path d="M10 3l-5 5 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                Back
-            </button>
-            <span class="dev-label" id="embed-label"></span>
-        </div>
-        <iframe id="dash-embed-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups"></iframe>
-    </div>
-
-    {sub_html}
-
-    <script>
-    function dashTab(name, el) {{
-        var tabs = document.querySelectorAll('.dash-tab');
-        var panels = document.querySelectorAll('.dash-panel');
-        for (var i = 0; i < tabs.length; i++) tabs[i].classList.remove('active');
-        for (var i = 0; i < panels.length; i++) panels[i].classList.remove('active');
-        el.classList.add('active');
-        var p = document.getElementById('dp-' + name);
-        if (p) p.classList.add('active');
-    }}
-    function openDevice(row) {{
-        var url = row.getAttribute('data-url');
-        var label = row.querySelector('.bot-name').textContent.trim();
-        // Hide tabs and device lists
-        document.getElementById('dash-tabs-bar').style.display = 'none';
-        var lists = document.querySelectorAll('.device-list-card');
-        for (var i = 0; i < lists.length; i++) lists[i].closest('.dash-panel').style.display = 'none';
-        // Show embed
-        document.getElementById('dash-embed').classList.add('active');
-        document.getElementById('embed-label').textContent = label;
-        document.getElementById('dash-embed-frame').src = url;
-    }}
-    function closeDevice() {{
-        document.getElementById('dash-embed').classList.remove('active');
-        document.getElementById('dash-embed-frame').src = '';
-        document.getElementById('dash-tabs-bar').style.display = '';
-        // Restore active panel
-        var panels = document.querySelectorAll('.dash-panel');
-        for (var i = 0; i < panels.length; i++) {{
-            if (panels[i].querySelector('.dash-tab-active-marker')) panels[i].style.display = '';
-        }}
-        // Just show the active one
-        var activeTab = document.querySelector('.dash-tab.active');
-        if (activeTab) activeTab.click();
-    }}
-    </script>
-    """
-    return web.Response(text=_page("Dashboard", body, user, csrf), content_type="text/html")
+    body = (
+        getting_started
+        + sub_html
+        + f'<div class="device-grid">{cards_html}</div>'
+        + offline_section
+        + _CHAT_MODAL_HTML
+        + "\n<script>\n" + _PORTAL_DASHBOARD_JS + "\n</script>"
+    )
+    return web.Response(
+        text=_page_dashboard_wrapper("Dashboard", body, user, csrf, css_bot=css_bot),
+        content_type="text/html",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1102,7 +1053,10 @@ function refreshAllDevices() {
         var apiBase = card.getAttribute('data-api');
         var dh = card.getAttribute('data-dhash');
         fetch(apiBase + '/api/status', {credentials:'include'})
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error(r.status);
+                return r.json();
+            })
             .then(function(data) {
                 if (!data.devices || !data.devices[0]) return;
                 var dev = data.devices[0];
@@ -1117,8 +1071,17 @@ function refreshAllDevices() {
                             st.classList.add('status-waiting');
                         else if (dev.status === 'Offline') st.classList.add('status-offline');
                     }
-                    // Update emu button
+                    // Show Start Emulator button (create if needed)
                     var emuBtn = card.querySelector('.emu-step-emu');
+                    if (!emuBtn) {
+                        var wrap = document.createElement('div');
+                        wrap.className = 'emu-steps';
+                        wrap.innerHTML = '<button type="button" class="emu-step-btn emu-step-emu" onclick="startEmulator(this)">Start Emulator</button>';
+                        // Insert after device-top
+                        var top = card.querySelector('.device-top');
+                        if (top) top.after(wrap);
+                        emuBtn = wrap.querySelector('.emu-step-emu');
+                    }
                     if (emuBtn) {
                         if (dev.emu_starting) {
                             emuBtn.textContent = 'Starting...';
@@ -1130,9 +1093,20 @@ function refreshAllDevices() {
                             emuBtn.classList.remove('emu-starting');
                         }
                     }
+                    // Hide controls/events/live-view for offline devices
+                    card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = 'none'; });
+                    _moveToOffline(card);
                     return;
                 }
                 card.classList.remove('device-card-offline');
+                // Restore sections hidden by offline state
+                card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = ''; });
+                _moveToOnline(card);
+                // Remove Start Emulator if device came online
+                var emuWrap = card.querySelector('.emu-steps');
+                if (emuWrap && !card.querySelector('.emu-steps-compact')) { /* don't remove the compact emu bar */ }
+                var offlineEmu = card.querySelector('.emu-steps:not(.emu-steps-compact)');
+                if (offlineEmu) offlineEmu.remove();
 
                 // Status text + indicator
                 var st = card.querySelector('.status-text');
@@ -1149,6 +1123,12 @@ function refreshAllDevices() {
                 var dot = card.querySelector('.status-indicator');
                 if (dot) { if (dev.status !== 'Idle') dot.classList.add('active'); else dot.classList.remove('active'); }
 
+                // Troop count in header
+                var troopCount = card.querySelector('.device-troops');
+                if (troopCount && dev.troops) {
+                    var home = dev.troops.filter(function(t){ return t.action === 'Home'; }).length;
+                    troopCount.innerHTML = '&#9876; ' + home + '/' + dev.troops.length;
+                }
                 // Troops
                 var troopEl = card.querySelector('.troop-slots');
                 if (troopEl) {
@@ -1201,7 +1181,14 @@ function refreshAllDevices() {
                     else { if (running) pill.classList.add('pill-on'); else pill.classList.remove('pill-on'); }
                 });
             })
-            .catch(function() {});
+            .catch(function() {
+                // Device unreachable (404/502/network error) — show as offline
+                card.classList.add('device-card-offline');
+                var st = card.querySelector('.status-text');
+                if (st) { st.textContent = 'Offline'; st.className = 'status-text status-offline'; }
+                card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = 'none'; });
+                _moveToOffline(card);
+            });
     });
 }
 refreshAllDevices();
@@ -1335,6 +1322,99 @@ function startPollingFallback(img, dh) {
     }
     poll();
     _liveViewTimers[dh] = setInterval(poll, 3000);
+}
+
+/* ---------- Offline section toggle ---------- */
+function toggleOffline(header) {
+    var section = header.closest('.actions-section');
+    var grid = section.querySelector('.device-grid');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = grid.style.display !== 'none';
+    grid.style.display = isOpen ? 'none' : '';
+    arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
+}
+
+/* ---------- Move card between online/offline grids ---------- */
+function _getOfflineGrid() {
+    var section = document.querySelector('.actions-section');
+    if (section) return section.querySelector('.device-grid');
+    return null;
+}
+function _getOnlineGrid() {
+    // The main grid is the first .device-grid that is NOT inside .actions-section
+    var grids = document.querySelectorAll('.device-grid');
+    for (var i = 0; i < grids.length; i++) {
+        if (!grids[i].closest('.actions-section')) return grids[i];
+    }
+    return null;
+}
+function _ensureOfflineSection() {
+    var section = document.querySelector('.actions-section');
+    if (section) return section.querySelector('.device-grid');
+    // Create the offline section
+    var onlineGrid = _getOnlineGrid();
+    if (!onlineGrid) return null;
+    section = document.createElement('div');
+    section.className = 'actions-section';
+    section.style.marginTop = '16px';
+    section.innerHTML =
+        '<div class="actions-header" onclick="toggleOffline(this)" ' +
+        'style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">' +
+        '<span style="font-size:13px;font-weight:600;color:#667" class="offline-section-label">' +
+        'Offline (0) &middot; Disconnected (0)</span>' +
+        '<span class="controls-arrow" style="color:#667">&#9660;</span></div>' +
+        '<div class="device-grid"></div>';
+    onlineGrid.after(section);
+    return section.querySelector('.device-grid');
+}
+function _updateOfflineCounts() {
+    var offGrid = _getOfflineGrid();
+    if (!offGrid) return;
+    var cards = offGrid.querySelectorAll('.device-card');
+    var offline = 0, disconnected = 0;
+    cards.forEach(function(c) {
+        var st = c.querySelector('.status-text');
+        if (st && st.textContent === 'Disconnected') disconnected++;
+        else offline++;
+    });
+    var label = offGrid.closest('.actions-section').querySelector('.offline-section-label');
+    if (label) label.textContent = 'Offline (' + offline + ') \\u00b7 Disconnected (' + disconnected + ')';
+    // Hide section if empty
+    var section = offGrid.closest('.actions-section');
+    if (section) section.style.display = cards.length ? '' : 'none';
+}
+function _moveToOffline(card) {
+    var offGrid = _ensureOfflineSection();
+    if (!offGrid || card.parentNode === offGrid) return;
+    offGrid.appendChild(card);
+    _updateOfflineCounts();
+}
+function _moveToOnline(card) {
+    var onGrid = _getOnlineGrid();
+    if (!onGrid || card.parentNode === onGrid) return;
+    onGrid.appendChild(card);
+    _updateOfflineCounts();
+}
+
+/* ---------- Stop All per device ---------- */
+function stopAllDevice(btn) {
+    if (!confirm('Stop all tasks on this device?')) return;
+    var apiBase = _apiOf(btn);
+    btn.textContent = 'Stopping...'; btn.disabled = true;
+    fetch(apiBase + '/tasks/stop-all', {method:'POST', credentials:'include'})
+        .then(function() {
+            btn.textContent = 'Stopped!';
+            // Clear all toggles on this card
+            var card = btn.closest('.device-card');
+            if (card) {
+                card.querySelectorAll('.toggle.on').forEach(function(t) { t.classList.remove('on'); });
+                card.querySelectorAll('.control-pill.pill-on').forEach(function(p) { p.classList.remove('pill-on'); });
+            }
+            setTimeout(function() { btn.textContent = 'Stop All'; btn.disabled = false; }, 2000);
+        }).catch(function() {
+            btn.textContent = 'Error';
+            setTimeout(function() { btn.textContent = 'Stop All'; btn.disabled = false; }, 2000);
+        });
 }
 
 /* ---------- Remote tap ---------- */
@@ -1564,6 +1644,251 @@ function _renderChatModal(messages) {
 """
 
 
+# ------------------------------------------------------------------
+# Shared device-card builders (used by both admin and customer dashboards)
+# ------------------------------------------------------------------
+
+_AUTO_MODE_GROUPS = [
+    {"group": "Combat", "modes": [
+        ("auto_pass", "Pass Battle"), ("auto_occupy", "Occupy Towers"),
+        ("auto_reinforce", "Reinforce Throne"), ("auto_reinforce_ally", "Reinforce Ally"),
+    ]},
+    {"group": "Farming", "modes": [
+        ("auto_quest", "Auto Quest"), ("auto_titan", "Rally Titans"),
+        ("auto_gold", "Gather Gold"), ("auto_mithril", "Mine Mithril"),
+    ]},
+]
+
+
+def _build_card_controls() -> tuple[str, str, str]:
+    """Build pills, toggles, and events HTML (identical for every device card)."""
+    pills = ""
+    toggles = ""
+    for grp in _AUTO_MODE_GROUPS:
+        toggles += (
+            f'<div class="auto-column">'
+            f'<div class="auto-subheader">{grp["group"]}</div>'
+            f'<div class="auto-list">'
+        )
+        for key, mlabel in grp["modes"]:
+            pills += f'<span class="control-pill" data-mode="{key}">{mlabel}</span>'
+            toggles += (
+                f'<div class="auto-row" data-mode="{key}">'
+                f'<span class="auto-label">{mlabel}</span>'
+                f'<button type="button" class="toggle" '
+                f"""onclick="toggleAutoMode('{key}',this)"></button>"""
+                f'</div>'
+            )
+        toggles += '</div></div>'
+
+    events = (
+        f'<div class="device-events-section">'
+        f'<div class="events-header" onclick="toggleEvents(this)">'
+        f'<span class="events-label">Events</span>'
+        f'<span class="controls-arrow">&#9660;</span>'
+        f'</div>'
+        f'<div class="events-body" style="display:none">'
+        f'<div class="auto-row" data-mode="auto_groot">'
+        f'<span class="auto-label">Join Groot</span>'
+        f'<button type="button" class="toggle" '
+        f"""onclick="toggleAutoMode('auto_groot',this)"></button>"""
+        f'</div>'
+        f'<div class="auto-row" data-mode="auto_esb">'
+        f'<span class="auto-label">Phantom Clash</span>'
+        f'<button type="button" class="toggle" '
+        f"""onclick="toggleAutoMode('auto_esb',this)"></button>"""
+        f'</div>'
+        f'</div></div>'
+    )
+    return pills, toggles, events
+
+
+def _device_card_online(
+    dhash: str, api_base: str, label: str, bot_label: str,
+    pills: str, toggles: str, events: str,
+    offline: bool = False,
+) -> str:
+    bot_label_html = (
+        f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
+        if bot_label else ""
+    )
+    offline_cls = " device-card-offline" if offline else ""
+    return (
+        f'<div class="card device-card{offline_cls}" data-dhash="{dhash}" data-api="{api_base}">'
+        f'<div class="device-top">'
+        f'<div class="device-name-row">'
+        f'<strong>{label}</strong>'
+        f'<span class="device-troops" title="Troops">&#9876; ?</span>'
+        f'</div>'
+        f'<div class="device-header-right">{bot_label_html}</div>'
+        f'<div class="device-status-bar">'
+        f'<span class="status-indicator"></span>'
+        f'<span class="status-text">Loading...</span>'
+        f'</div>'
+        f'<span class="mithril-timer" style="display:none">'
+        f'&#9935; <span class="mithril-time"></span></span>'
+        f'</div>'
+        # Troops
+        f'<div class="section-label troop-label">Troops '
+        f'<span class="troop-source"></span><span class="troop-age"></span></div>'
+        f'<div class="troop-slots"></div>'
+        # Quests
+        f'<div class="section-label quest-label quest-header" style="display:none">'
+        f'Quests <span class="quest-age"></span></div>'
+        f'<div class="quest-tracking"></div>'
+        # Chat feed
+        f'<div class="chat-feed" data-dhash="{dhash}" style="display:none"'
+        f""" onclick="openDeviceChat('{dhash}')">"""
+        f'<div class="chat-feed-well">'
+        f'<div class="chat-feed-messages"></div>'
+        f'<div class="chat-feed-fade"></div>'
+        f'</div></div>'
+        # Controls
+        f'<div class="device-auto-modes">'
+        f'<div class="controls-header" onclick="toggleControls(this)">'
+        f'<span class="controls-label">Controls</span>'
+        f'<span class="controls-arrow">&#9660;</span>'
+        f'</div>'
+        f'<div class="controls-pills" style="display:none">{pills}</div>'
+        f'<div class="controls-body"><div class="auto-columns">{toggles}</div></div>'
+        f'</div>'
+        # Events
+        + events +
+        # Live view + emulator buttons
+        f'<div class="live-view-section">'
+        f'<div class="live-view-buttons">'
+        f'<button type="button" class="live-view-toggle" '
+        f'onclick="toggleLiveView(this)" data-active="false">Live View</button>'
+        f'<button type="button" class="manual-control-toggle" '
+        f'onclick="toggleManualControl(this)" data-active="false">Manual Control</button>'
+        f'<button type="button" class="chat-view-toggle" '
+        f"""data-dhash="{dhash}" onclick="openDeviceChat('{dhash}')" """
+        f'style="display:none">Chat</button>'
+        f'<button type="button" class="restart-game-btn" '
+        f'onclick="restartGame(this)">Restart Game</button>'
+        f'</div>'
+        f'<div class="emu-steps emu-steps-compact">'
+        f'<button type="button" class="emu-step-btn emu-step-stop" '
+        f'onclick="stopEmulator(this)">Stop Emulator</button>'
+        f'<button type="button" class="emu-step-btn emu-step-game" '
+        f'onclick="restartGame(this)">Restart Game</button>'
+        f'</div>'
+        f'<div class="live-view-container" style="display:none">'
+        f'<img class="live-view-img" alt="Screenshot">'
+        f'</div></div>'
+        # Bottom bar (Settings + Stop All)
+        f'<div class="bottom-bar" style="margin-top:8px">'
+        f'<button type="button" class="bottom-btn bottom-btn-danger" style="flex:1" '
+        f'onclick="stopAllDevice(this)">Stop All</button>'
+        f'<a href="{api_base}/settings" class="bottom-btn" '
+        f'style="flex:1;text-align:center;text-decoration:none">Settings</a>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _device_card_offline(
+    dhash: str, api_base: str, label: str, bot_label: str,
+) -> str:
+    bot_label_html = (
+        f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
+        if bot_label else ""
+    )
+    return (
+        f'<div class="card device-card device-card-offline" data-dhash="{dhash}" data-api="{api_base}">'
+        f'<div class="device-top">'
+        f'<div class="device-name-row"><strong>{label}</strong></div>'
+        f'<div class="device-header-right">{bot_label_html}</div>'
+        f'<div class="device-status-bar">'
+        f'<span class="status-indicator"></span>'
+        f'<span class="status-text status-offline">Offline</span>'
+        f'</div></div>'
+        f'<div class="emu-steps">'
+        f'<button type="button" class="emu-step-btn emu-step-emu" '
+        f'onclick="startEmulator(this)">Start Emulator</button>'
+        f'</div></div>'
+    )
+
+
+def _device_card_disconnected(dhash: str, label: str, bot_label: str) -> str:
+    bot_label_html = (
+        f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
+        if bot_label else ""
+    )
+    return (
+        f'<div class="card device-card device-card-offline" data-dhash="{dhash}">'
+        f'<div class="device-top">'
+        f'<div class="device-name-row"><strong>{label}</strong></div>'
+        f'<div class="device-header-right">{bot_label_html}</div>'
+        f'<div class="device-status-bar">'
+        f'<span class="status-indicator"></span>'
+        f'<span class="status-text status-offline">Disconnected</span>'
+        f'</div></div></div>'
+    )
+
+
+def _offline_section_html(all_devices: list, offline_cards: str) -> str:
+    """Collapsible section for offline + disconnected devices."""
+    if not offline_cards:
+        return ""
+    offline_count = sum(1 for d in all_devices if d[-1] == "offline")
+    disconnected_count = sum(1 for d in all_devices if d[-1] == "disconnected")
+    return (
+        f'<div class="actions-section" style="margin-top:16px">'
+        f'<div class="actions-header" onclick="toggleOffline(this)" '
+        f'style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">'
+        f'<span style="font-size:13px;font-weight:600;color:#667">'
+        f'Offline ({offline_count}) &middot; Disconnected ({disconnected_count})'
+        f'</span>'
+        f'<span class="controls-arrow" style="color:#667">&#9654;</span>'
+        f'</div>'
+        f'<div class="device-grid" style="display:none">{offline_cards}</div>'
+        f'</div>'
+    )
+
+
+_CHAT_MODAL_HTML = (
+    '<div class="chat-overlay" id="chat-overlay" onclick="closeChatModal()">'
+    '<div class="chat-modal" onclick="event.stopPropagation()">'
+    '<div class="chat-modal-header">'
+    '<div><span class="chat-modal-title">Chat</span>'
+    '<span class="chat-modal-device" id="chat-modal-device"></span></div>'
+    '<button type="button" class="chat-modal-close" onclick="closeChatModal()">&times;</button>'
+    '</div>'
+    '<div class="chat-tabs" id="chat-modal-tabs">'
+    '<button class="chat-tab active" data-channel="" onclick="setChatChannel(this, \'\')">All</button>'
+    '<button class="chat-tab" data-channel="SERVER" onclick="setChatChannel(this, \'SERVER\')">Kingdom</button>'
+    '<button class="chat-tab" data-channel="UNION" onclick="setChatChannel(this, \'UNION\')">Alliance</button>'
+    '<button class="chat-tab" data-channel="FACTION" onclick="setChatChannel(this, \'FACTION\')">Faction</button>'
+    '<button class="chat-tab" data-channel="WORLD" onclick="setChatChannel(this, \'WORLD\')">World</button>'
+    '<button class="chat-tab" data-channel="PRIVATE" onclick="setChatChannel(this, \'PRIVATE\')">Private</button>'
+    '</div>'
+    '<div class="chat-messages" id="chat-modal-messages">'
+    '<div class="chat-messages-empty">'
+    '<div class="chat-messages-empty-icon">&#128172;</div>'
+    '<div class="chat-messages-empty-text">Loading chat messages...</div>'
+    '</div></div>'
+    '<div class="chat-modal-footer">'
+    '<button type="button" class="chat-system-toggle" id="chat-system-toggle" onclick="toggleChatSystem(this)">System</button>'
+    '<span class="chat-system-count" id="chat-system-count"></span>'
+    '<span class="chat-status-text" id="chat-status-text"></span>'
+    '</div></div></div>'
+)
+
+
+def _device_state(d: dict) -> str:
+    """Return 'online', 'offline', or 'disconnected' for a device dict."""
+    bot_name = d["bot_name"]
+    bot_online = bot_name in _active_bots and not _active_bots[bot_name].closed
+    if not bot_online:
+        return "disconnected"
+    dev_online_map = {
+        bd["hash"]: bd.get("online", True)
+        for bd in _bot_device_status.get(bot_name, [])
+    }
+    return "online" if dev_online_map.get(d["device_hash"], True) else "offline"
+
+
 async def _page_dashboard_admin(
     request: web.Request, user: dict, csrf: str,
 ) -> web.Response:
@@ -1571,17 +1896,30 @@ async def _page_dashboard_admin(
     bots = await asyncio.to_thread(db.list_bots)
 
     # Collect all devices across all bots
+    # Each entry: (bot_name, bot_label, dhash, label, device_state)
+    # device_state: "online" | "offline" (emu stopped, startable) | "disconnected" (server off)
     all_devices = []
     for b in bots:
         name = b["bot_name"]
-        online = name in _active_bots and not _active_bots[name].closed
+        bot_online = name in _active_bots and not _active_bots[name].closed
         bot_label = _html_escape(b.get("label") or name)
         devices = await asyncio.to_thread(db.list_devices, name)
+        # Build lookup of per-device online status from bot's last report
+        dev_online_map = {}
+        for bd in _bot_device_status.get(name, []):
+            dev_online_map[bd["hash"]] = bd.get("online", True)
         for d in devices:
             label = _html_escape(
                 d.get("label") or d.get("device_name") or d["device_hash"][:8]
             )
-            all_devices.append((name, bot_label, d["device_hash"], label, online))
+            dh = d["device_hash"]
+            if not bot_online:
+                state = "disconnected"
+            elif dev_online_map.get(dh, True):
+                state = "online"
+            else:
+                state = "offline"
+            all_devices.append((name, bot_label, dh, label, state))
 
     if not all_devices:
         body = '<p class="muted" style="padding:24px;text-align:center">No devices registered.</p>'
@@ -1591,190 +1929,32 @@ async def _page_dashboard_admin(
         )
 
     # Pick the first online bot to source style.css from
-    css_bot = next((n for n, _, _, _, o in all_devices if o), all_devices[0][0])
+    css_bot = next((n for n, _, _, _, s in all_devices if s == "online"), all_devices[0][0])
 
-    # Auto mode groups
-    auto_modes = [
-        {"group": "Combat", "modes": [
-            ("auto_pass", "Pass Battle"), ("auto_occupy", "Occupy Towers"),
-            ("auto_reinforce", "Reinforce Throne"), ("auto_reinforce_ally", "Reinforce Ally"),
-        ]},
-        {"group": "Farming", "modes": [
-            ("auto_quest", "Auto Quest"), ("auto_titan", "Rally Titans"),
-            ("auto_gold", "Gather Gold"), ("auto_mithril", "Mine Mithril"),
-        ]},
-    ]
-
-    # Build device cards — SAME HTML structure as the bot's index.html
+    # Build device cards using shared helpers
+    pills, toggles, events = _build_card_controls()
     cards_html = ""
-    for bot_name, bot_label, dhash, label, online in all_devices:
+    offline_cards = ""
+    for bot_name, bot_label, dhash, label, state in all_devices:
         api_base = f"/{bot_name}/d/{dhash}"
-
-        # Pills + toggles
-        pills_html = ""
-        toggles_html = ""
-        for grp in auto_modes:
-            toggles_html += (
-                f'<div class="auto-column">'
-                f'<div class="auto-subheader">{grp["group"]}</div>'
-                f'<div class="auto-list">'
-            )
-            for key, mlabel in grp["modes"]:
-                pills_html += (
-                    f'<span class="control-pill" data-mode="{key}">'
-                    f'{mlabel}</span>'
-                )
-                toggles_html += (
-                    f'<div class="auto-row" data-mode="{key}">'
-                    f'<span class="auto-label">{mlabel}</span>'
-                    f'<button type="button" class="toggle" '
-                    f"""onclick="toggleAutoMode('{key}',this)"></button>"""
-                    f'</div>'
-                )
-            toggles_html += '</div></div>'
-
-        # Events section (Groot + Phantom Clash)
-        events_html = (
-            f'<div class="device-events-section">'
-            f'<div class="events-header" onclick="toggleEvents(this)">'
-            f'<span class="events-label">Events</span>'
-            f'<span class="controls-arrow">&#9660;</span>'
-            f'</div>'
-            f'<div class="events-body" style="display:none">'
-            f'<div class="auto-row" data-mode="auto_groot">'
-            f'<span class="auto-label">Join Groot</span>'
-            f'<button type="button" class="toggle" '
-            f"""onclick="toggleAutoMode('auto_groot',this)"></button>"""
-            f'</div>'
-            f'<div class="auto-row" data-mode="auto_esb">'
-            f'<span class="auto-label">Phantom Clash</span>'
-            f'<button type="button" class="toggle" '
-            f"""onclick="toggleAutoMode('auto_esb',this)"></button>"""
-            f'</div>'
-            f'</div></div>'
-        )
-
-        if online:
-            # Online device card — full controls
-            cards_html += (
-                f'<div class="card device-card" data-dhash="{dhash}" data-api="{api_base}">'
-                f'<div class="device-top">'
-                f'<div class="device-name-row">'
-                f'<strong>{label}</strong>'
-                f'<span class="device-troops" title="Troops">&#9876; ?</span>'
-                f'</div>'
-                f'<div class="device-header-right">'
-                f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
-                f'</div>'
-                f'<div class="device-status-bar">'
-                f'<span class="status-indicator"></span>'
-                f'<span class="status-text">Loading...</span>'
-                f'</div>'
-                f'<span class="mithril-timer" style="display:none">'
-                f'&#9935; <span class="mithril-time"></span></span>'
-                f'</div>'
-                # Troops
-                f'<div class="section-label troop-label">Troops '
-                f'<span class="troop-source"></span><span class="troop-age"></span></div>'
-                f'<div class="troop-slots"></div>'
-                # Quests
-                f'<div class="section-label quest-label quest-header" style="display:none">'
-                f'Quests <span class="quest-age"></span></div>'
-                f'<div class="quest-tracking"></div>'
-                # Chat feed
-                f'<div class="chat-feed" data-dhash="{dhash}" style="display:none"'
-                f""" onclick="openDeviceChat('{dhash}')">"""
-                f'<div class="chat-feed-well">'
-                f'<div class="chat-feed-messages"></div>'
-                f'<div class="chat-feed-fade"></div>'
-                f'</div></div>'
-                # Controls
-                f'<div class="device-auto-modes">'
-                f'<div class="controls-header" onclick="toggleControls(this)">'
-                f'<span class="controls-label">Controls</span>'
-                f'<span class="controls-arrow">&#9660;</span>'
-                f'</div>'
-                f'<div class="controls-pills" style="display:none">{pills_html}</div>'
-                f'<div class="controls-body"><div class="auto-columns">{toggles_html}</div></div>'
-                f'</div>'
-                # Events
-                + events_html +
-                # Live view + emulator buttons
-                f'<div class="live-view-section">'
-                f'<div class="live-view-buttons">'
-                f'<button type="button" class="live-view-toggle" '
-                f'onclick="toggleLiveView(this)" data-active="false">Live View</button>'
-                f'<button type="button" class="manual-control-toggle" '
-                f'onclick="toggleManualControl(this)" data-active="false">Manual Control</button>'
-                f'<button type="button" class="chat-view-toggle" '
-                f"""data-dhash="{dhash}" onclick="openDeviceChat('{dhash}')" """
-                f'style="display:none">Chat</button>'
-                f'<button type="button" class="restart-game-btn" '
-                f'onclick="restartGame(this)">Restart Game</button>'
-                f'</div>'
-                f'<div class="emu-steps emu-steps-compact">'
-                f'<button type="button" class="emu-step-btn emu-step-stop" '
-                f'onclick="stopEmulator(this)">Stop Emulator</button>'
-                f'<button type="button" class="emu-step-btn emu-step-game" '
-                f'onclick="restartGame(this)">Restart Game</button>'
-                f'</div>'
-                f'<div class="live-view-container" style="display:none">'
-                f'<img class="live-view-img" alt="Screenshot">'
-                f'</div></div>'
-                f'</div>'
-            )
+        if state == "disconnected":
+            offline_cards += _device_card_disconnected(dhash, label, bot_label)
+        elif state == "offline":
+            # Render full card so JS can populate sections when device comes online
+            offline_cards += _device_card_online(
+                dhash, api_base, label, bot_label, pills, toggles, events, offline=True)
         else:
-            # Offline device card
-            cards_html += (
-                f'<div class="card device-card device-card-offline" data-dhash="{dhash}">'
-                f'<div class="device-top">'
-                f'<div class="device-name-row">'
-                f'<strong>{label}</strong>'
-                f'</div>'
-                f'<div class="device-header-right">'
-                f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
-                f'</div>'
-                f'<div class="device-status-bar">'
-                f'<span class="status-indicator"></span>'
-                f'<span class="status-text status-offline">Server Offline</span>'
-                f'</div>'
-                f'</div>'
-                f'</div>'
-            )
+            cards_html += _device_card_online(dhash, api_base, label, bot_label, pills, toggles, events)
 
-    # Chat modal HTML (one copy for the whole page)
-    chat_modal = (
-        '<div class="chat-overlay" id="chat-overlay" onclick="closeChatModal()">'
-        '<div class="chat-modal" onclick="event.stopPropagation()">'
-        '<div class="chat-modal-header">'
-        '<div><span class="chat-modal-title">Chat</span>'
-        '<span class="chat-modal-device" id="chat-modal-device"></span></div>'
-        '<button type="button" class="chat-modal-close" onclick="closeChatModal()">&times;</button>'
-        '</div>'
-        '<div class="chat-tabs" id="chat-modal-tabs">'
-        '<button class="chat-tab active" data-channel="" onclick="setChatChannel(this, \'\')">All</button>'
-        '<button class="chat-tab" data-channel="SERVER" onclick="setChatChannel(this, \'SERVER\')">Kingdom</button>'
-        '<button class="chat-tab" data-channel="UNION" onclick="setChatChannel(this, \'UNION\')">Alliance</button>'
-        '<button class="chat-tab" data-channel="FACTION" onclick="setChatChannel(this, \'FACTION\')">Faction</button>'
-        '<button class="chat-tab" data-channel="WORLD" onclick="setChatChannel(this, \'WORLD\')">World</button>'
-        '<button class="chat-tab" data-channel="PRIVATE" onclick="setChatChannel(this, \'PRIVATE\')">Private</button>'
-        '</div>'
-        '<div class="chat-messages" id="chat-modal-messages">'
-        '<div class="chat-messages-empty">'
-        '<div class="chat-messages-empty-icon">&#128172;</div>'
-        '<div class="chat-messages-empty-text">Loading chat messages...</div>'
-        '</div></div>'
-        '<div class="chat-modal-footer">'
-        '<button type="button" class="chat-system-toggle" id="chat-system-toggle" onclick="toggleChatSystem(this)">System</button>'
-        '<span class="chat-system-count" id="chat-system-count"></span>'
-        '<span class="chat-status-text" id="chat-status-text"></span>'
-        '</div></div></div>'
+    offline_section = _offline_section_html(
+        [(s,) for _, _, _, _, s in all_devices],  # just need state as last element
+        offline_cards,
     )
 
-    # Build page — use dashboard wrapper (portal nav CSS only + bot's style.css)
     body = (
         f'<div class="device-grid">{cards_html}</div>'
-        + chat_modal
+        + offline_section
+        + _CHAT_MODAL_HTML
         + "\n<script>\n" + _PORTAL_DASHBOARD_JS + "\n</script>"
     )
     return web.Response(
@@ -2119,7 +2299,7 @@ async def page_admin(request: web.Request) -> web.Response:
             f'<div class="adm-row-main">'
             f'<div class="adm-row-title">'
             f'{role_badge}'
-            f'<strong>{_html_escape(u["username"])}</strong>'
+            f'<a href="/portal/admin/user/{u["id"]}" class="adm-link"><strong>{_html_escape(u["username"])}</strong></a>'
             f'<span class="adm-id">#{u["id"]}</span>'
             f'</div>'
             f'<div class="adm-row-meta">'
@@ -2170,8 +2350,8 @@ async def page_admin(request: web.Request) -> web.Response:
     for s in subs:
         uname = _html_escape(s.get("username", "?"))
         is_admin_grant = s.get("stripe_customer_id") == "admin_grant"
-        src_cls = "adm-src-admin" if is_admin_grant else "adm-src-stripe"
-        src_label = "Admin" if is_admin_grant else "Stripe"
+        src_cls = "adm-src-granted" if is_admin_grant else "adm-src-stripe"
+        src_label = "Granted" if is_admin_grant else "Stripe"
         status_cls = "adm-sub-active" if s["status"] == "active" else ("adm-sub-warn" if s["status"] == "past_due" else "adm-sub-expired")
         period = s.get("current_period_end", "—")
         if period and period != "—":
@@ -2407,7 +2587,7 @@ async def page_admin(request: web.Request) -> web.Response:
         font-size: 9px; font-weight: 700; text-transform: uppercase;
         padding: 2px 7px; border-radius: 5px; letter-spacing: 0.5px;
     }}
-    .adm-src-admin {{ color: #ab47bc; background: rgba(171,71,188,0.1); }}
+    .adm-src-granted {{ color: #ab47bc; background: rgba(171,71,188,0.1); }}
     .adm-src-stripe {{ color: #64d8ff; background: rgba(100,216,255,0.1); }}
     .adm-sub-dot {{
         width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
@@ -2734,6 +2914,696 @@ async def page_admin(request: web.Request) -> web.Response:
     </script>
     """
     return web.Response(text=_page("Admin", body, user, csrf), content_type="text/html")
+
+
+async def page_admin_user_detail(request: web.Request) -> web.Response:
+    """Admin user detail — manage device assignments for a specific user."""
+    admin = await _require_admin(request)
+    csrf = _get_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    target = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not target:
+        raise web.HTTPNotFound(text="User not found")
+
+    # Subscription
+    sub = await asyncio.to_thread(db.get_subscription, user_id)
+
+    # All bots + pre-fetch devices
+    all_bots = await asyncio.to_thread(db.list_bots)
+    bot_map = {b["bot_name"]: b for b in all_bots}
+    devices_by_bot: dict[str, list] = {}
+    for b in all_bots:
+        devices_by_bot[b["bot_name"]] = await asyncio.to_thread(
+            db.list_devices, b["bot_name"]
+        )
+
+    # User's grants
+    user_grants = await asyncio.to_thread(db.list_grants_for_user, user_id)
+
+    # Online status helper
+    def _dev_state(bot_name, device_hash=None):
+        bot_on = (
+            bot_name in _active_bots
+            and not _active_bots[bot_name].closed
+        )
+        if not bot_on:
+            return "disconnected"
+        if device_hash:
+            dev_map = {
+                d["hash"]: d.get("online", True)
+                for d in _bot_device_status.get(bot_name, [])
+            }
+            return "online" if dev_map.get(device_hash, True) else "offline"
+        return "online"
+
+    # --- Build assigned devices list ---
+    assigned = []
+    assigned_keys: set[tuple] = set()
+
+    # From bot ownership
+    for b in all_bots:
+        if b.get("owner_id") == user_id:
+            for d in devices_by_bot.get(b["bot_name"], []):
+                key = (d["bot_name"], d["device_hash"])
+                assigned.append({
+                    "bot_name": d["bot_name"],
+                    "device_hash": d["device_hash"],
+                    "label": (
+                        d.get("label") or d.get("device_name")
+                        or d["device_hash"][:8]
+                    ),
+                    "bot_label": b.get("label") or b["bot_name"],
+                    "source": "owner",
+                    "grant_id": None,
+                    "access_level": "full",
+                    "state": _dev_state(d["bot_name"], d["device_hash"]),
+                })
+                assigned_keys.add(key)
+
+    # From grants
+    for g in user_grants:
+        bot = bot_map.get(g["bot_name"], {})
+        bot_label = bot.get("label") or g["bot_name"]
+        if g["device_hash"]:
+            key = (g["bot_name"], g["device_hash"])
+            if key not in assigned_keys:
+                dev_info = None
+                for d in devices_by_bot.get(g["bot_name"], []):
+                    if d["device_hash"] == g["device_hash"]:
+                        dev_info = d
+                        break
+                if dev_info:
+                    assigned.append({
+                        "bot_name": g["bot_name"],
+                        "device_hash": g["device_hash"],
+                        "label": (
+                            dev_info.get("label") or dev_info.get("device_name")
+                            or g["device_hash"][:8]
+                        ),
+                        "bot_label": bot_label,
+                        "source": "grant",
+                        "grant_id": g["id"],
+                        "access_level": g["access_level"],
+                        "state": _dev_state(g["bot_name"], g["device_hash"]),
+                    })
+                    assigned_keys.add(key)
+        else:
+            # Wildcard grant — all devices on this bot
+            for d in devices_by_bot.get(g["bot_name"], []):
+                key = (d["bot_name"], d["device_hash"])
+                if key not in assigned_keys:
+                    assigned.append({
+                        "bot_name": d["bot_name"],
+                        "device_hash": d["device_hash"],
+                        "label": (
+                            d.get("label") or d.get("device_name")
+                            or d["device_hash"][:8]
+                        ),
+                        "bot_label": bot_label,
+                        "source": "grant",
+                        "grant_id": g["id"],
+                        "access_level": g["access_level"],
+                        "state": _dev_state(d["bot_name"], d["device_hash"]),
+                    })
+                    assigned_keys.add(key)
+
+    # --- Build available devices grouped by server ---
+    available_servers: dict[str, dict] = {}
+    total_available = 0
+    for b in all_bots:
+        for d in devices_by_bot.get(b["bot_name"], []):
+            key = (d["bot_name"], d["device_hash"])
+            if key not in assigned_keys:
+                if b["bot_name"] not in available_servers:
+                    available_servers[b["bot_name"]] = {
+                        "bot_label": b.get("label") or b["bot_name"],
+                        "state": _dev_state(b["bot_name"]),
+                        "devices": [],
+                    }
+                available_servers[b["bot_name"]]["devices"].append({
+                    "device_hash": d["device_hash"],
+                    "label": (
+                        d.get("label") or d.get("device_name")
+                        or d["device_hash"][:8]
+                    ),
+                    "state": _dev_state(b["bot_name"], d["device_hash"]),
+                })
+                total_available += 1
+
+    # --- Render HTML ---
+    initial = _html_escape(target["username"][0].upper())
+    username = _html_escape(target["username"])
+    email = _html_escape(target.get("email") or "")
+    joined = target.get("created_at", "—")
+    last_login = target.get("last_login") or "never"
+
+    role_badge = (
+        '<span class="up-pill up-pill-admin">Admin</span>'
+        if target["is_admin"]
+        else '<span class="up-pill up-pill-user">User</span>'
+    )
+
+    # Subscription section
+    sub_section = ""
+    if sub and sub.get("status") in ("active", "past_due"):
+        is_admin_grant = sub.get("stripe_customer_id") == "admin_grant"
+        plan = sub.get("plan", "none").title()
+        limit = sub.get("device_limit", 0)
+        limit_text = "Unlimited" if limit >= 999 else str(limit)
+        status_cls = "up-sub-active" if sub["status"] == "active" else "up-sub-warn"
+        period = sub.get("current_period_end", "—")
+        try:
+            from datetime import datetime as dt
+            pe = dt.fromisoformat(period)
+            period = pe.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        src = "Granted" if is_admin_grant else "Stripe"
+        revoke_btn = ""
+        if is_admin_grant:
+            revoke_btn = (
+                '<button class="up-btn up-btn-danger" '
+                'onclick="revokeSub()">Revoke</button>'
+            )
+        sub_section = (
+            f'<div class="up-sub">'
+            f'<div class="up-sub-left">'
+            f'<span class="up-sub-dot {status_cls}"></span>'
+            f'<div>'
+            f'<div class="up-sub-plan">{plan}</div>'
+            f'<div class="up-sub-detail">{src} &middot; '
+            f'{limit_text} device{"s" if limit != 1 else ""}'
+            f' &middot; exp {period}</div>'
+            f'</div></div>'
+            f'{revoke_btn}'
+            f'</div>'
+        )
+    else:
+        sub_section = (
+            f'<div class="up-sub up-sub-empty">'
+            f'<span class="up-sub-none-text">No subscription</span>'
+            f'<div class="up-sub-grant-form">'
+            f'<select id="subDur" class="up-select">'
+            f'<option value="30">1 Month</option>'
+            f'<option value="90">3 Months</option>'
+            f'<option value="">Permanent</option>'
+            f'</select>'
+            f'<button class="up-btn up-btn-primary" onclick="grantSub()">'
+            f'Grant</button>'
+            f'</div></div>'
+        )
+
+    # Assigned device rows
+    assigned_rows = ""
+    for a in assigned:
+        state_cls = f"up-dot-{a['state']}"
+        label = _html_escape(a["label"])
+        bot_label = _html_escape(a["bot_label"])
+        source_html = ""
+        action_html = ""
+        if a["source"] == "owner":
+            source_html = '<span class="up-tag up-tag-owner">Owner</span>'
+        else:
+            tag_cls = (
+                "up-tag-full" if a["access_level"] == "full"
+                else "up-tag-ro"
+            )
+            source_html = (
+                f'<span class="up-tag {tag_cls}">{a["access_level"]}</span>'
+            )
+            action_html = (
+                f'<button class="up-btn up-btn-danger up-btn-sm" '
+                f'onclick="unassign({a["grant_id"]})">Unassign</button>'
+            )
+        assigned_rows += (
+            f'<div class="up-dev">'
+            f'<div class="up-dev-info">'
+            f'<span class="up-dot {state_cls}"></span>'
+            f'<div class="up-dev-text">'
+            f'<span class="up-dev-name">{label}</span>'
+            f'<span class="up-dev-server">{bot_label}</span>'
+            f'{source_html}'
+            f'</div></div>'
+            f'{action_html}'
+            f'</div>'
+        )
+    if not assigned_rows:
+        assigned_rows = (
+            '<div class="up-empty">No devices assigned</div>'
+        )
+
+    # Available device rows grouped by server
+    available_html = ""
+    for bot_name, server in available_servers.items():
+        state_cls = f"up-dot-{server['state']}"
+        bot_label = _html_escape(server["bot_label"])
+        count = len(server["devices"])
+        devs_html = ""
+        for d in server["devices"]:
+            dev_state = f"up-dot-{d['state']}"
+            dlabel = _html_escape(d["label"])
+            devs_html += (
+                f'<div class="up-dev up-dev-avail">'
+                f'<div class="up-dev-info">'
+                f'<span class="up-dot {dev_state}"></span>'
+                f'<span class="up-dev-name">{dlabel}</span>'
+                f'</div>'
+                f'<button class="up-btn up-btn-primary up-btn-sm" '
+                f"onclick=\"assign({_html_escape(json.dumps(bot_name))},"
+                f"{_html_escape(json.dumps(d['device_hash']))})\">Assign</button>"
+                f'</div>'
+            )
+        assign_all_btn = ""
+        if count > 1:
+            assign_all_btn = (
+                f'<button class="up-btn up-btn-outline up-btn-xs" '
+                f"onclick=\"assignAll({_html_escape(json.dumps(bot_name))})\">"
+                f'Assign All</button>'
+            )
+        available_html += (
+            f'<div class="up-group">'
+            f'<div class="up-group-header">'
+            f'<span class="up-dot {state_cls}"></span>'
+            f'<span class="up-group-name">{bot_label}</span>'
+            f'<span class="up-group-count">{count}</span>'
+            f'{assign_all_btn}'
+            f'</div>'
+            f'{devs_html}'
+            f'</div>'
+        )
+    if not available_html:
+        available_html = (
+            '<div class="up-empty">All devices assigned</div>'
+        )
+
+    email_html = (
+        f'<span>{email}</span><span class="up-sep"></span>'
+        if email else ""
+    )
+    delete_btn = (
+        "" if user_id == 1 else
+        '<button class="up-btn up-btn-danger" '
+        'onclick="deleteUser()">Delete</button>'
+    )
+
+    body = f"""
+    <style>
+    .up-back {{
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 13px; font-weight: 600; color: #667;
+        text-decoration: none; margin-bottom: 16px;
+        transition: color 0.15s;
+    }}
+    .up-back:hover {{ color: #64d8ff; text-decoration: none; }}
+    .up-back svg {{ transition: transform 0.15s; }}
+    .up-back:hover svg {{ transform: translateX(-2px); }}
+
+    .up-header {{
+        background: #141428; border-radius: 16px;
+        border: 1px solid rgba(255,255,255,0.04);
+        padding: 24px; margin-bottom: 20px;
+        position: relative; overflow: hidden;
+    }}
+    .up-header::before {{
+        content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+        background: linear-gradient(90deg, #64d8ff, rgba(100,216,255,0.05));
+    }}
+    .up-top {{ display: flex; align-items: flex-start; gap: 18px; }}
+    .up-avatar {{
+        width: 56px; height: 56px; border-radius: 50%; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 22px; font-weight: 700; color: #64d8ff;
+        background: radial-gradient(circle at 30% 30%,
+            rgba(100,216,255,0.12), rgba(100,216,255,0.03));
+        border: 2px solid rgba(100,216,255,0.2);
+        box-shadow: 0 0 20px rgba(100,216,255,0.08);
+    }}
+    .up-name {{ font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }}
+    .up-uid {{
+        font-family: "SF Mono","Consolas",monospace; font-size: 11px;
+        color: #445; margin-left: 8px;
+    }}
+    .up-meta {{
+        font-size: 12px; color: #556; margin-top: 4px;
+        display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    }}
+    .up-sep {{
+        display: inline-block; width: 3px; height: 3px; border-radius: 50%;
+        background: #334;
+    }}
+    .up-badges {{ display: flex; gap: 6px; margin-top: 8px; }}
+    .up-pill {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.8px; padding: 3px 9px; border-radius: 6px;
+    }}
+    .up-pill-admin {{
+        color: #ab47bc; background: rgba(171,71,188,0.1);
+        border: 1px solid rgba(171,71,188,0.2);
+    }}
+    .up-pill-user {{
+        color: #667; background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+    }}
+
+    .up-sub {{
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; margin-top: 16px; padding: 12px 14px;
+        background: #0e0e1e; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.04);
+    }}
+    .up-sub-left {{ display: flex; align-items: center; gap: 10px; }}
+    .up-sub-dot {{
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .up-sub-active {{
+        background: #4caf50; box-shadow: 0 0 6px rgba(76,175,80,0.4);
+    }}
+    .up-sub-warn {{ background: #ffb74d; }}
+    .up-sub-plan {{ font-size: 13px; font-weight: 600; }}
+    .up-sub-detail {{ font-size: 11px; color: #556; }}
+    .up-sub-empty {{ justify-content: space-between; }}
+    .up-sub-none-text {{ font-size: 12px; color: #556; }}
+    .up-sub-grant-form {{
+        display: flex; gap: 8px; align-items: center;
+    }}
+    .up-select {{
+        background: #141428; color: #e0e0f0;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 7px; padding: 6px 10px; font-size: 12px; outline: none;
+    }}
+
+    .up-actions {{
+        display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap;
+    }}
+
+    .up-btn {{
+        padding: 7px 14px; border-radius: 8px; border: none;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+        transition: all 0.15s; white-space: nowrap;
+    }}
+    .up-btn:active {{ transform: scale(0.96); }}
+    .up-btn-primary {{
+        background: rgba(100,216,255,0.1); color: #64d8ff;
+        border: 1px solid rgba(100,216,255,0.15);
+    }}
+    .up-btn-primary:hover {{ background: rgba(100,216,255,0.18); }}
+    .up-btn-danger {{
+        background: rgba(239,83,80,0.08); color: #ef5350;
+        border: 1px solid rgba(239,83,80,0.12);
+    }}
+    .up-btn-danger:hover {{ background: rgba(239,83,80,0.15); }}
+    .up-btn-outline {{
+        background: transparent; color: #889;
+        border: 1px solid rgba(255,255,255,0.08);
+    }}
+    .up-btn-outline:hover {{ border-color: rgba(255,255,255,0.2); color: #e0e0f0; }}
+    .up-btn-sm {{ padding: 5px 12px; font-size: 11px; }}
+    .up-btn-xs {{ padding: 3px 9px; font-size: 10px; }}
+
+    .up-section {{ margin-bottom: 20px; }}
+    .up-section-header {{
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 10px; padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+    }}
+    .up-section-title {{
+        font-size: 10px; font-weight: 700; color: #778;
+        text-transform: uppercase; letter-spacing: 1px;
+    }}
+    .up-section-count {{
+        font-size: 10px; font-weight: 700; color: #445;
+        background: rgba(255,255,255,0.04); border-radius: 10px;
+        padding: 2px 8px;
+    }}
+
+    .up-dev {{
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px; margin-bottom: 4px;
+        background: #141428; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.03);
+        transition: border-color 0.15s; gap: 10px;
+        animation: upFadeIn 0.2s ease both;
+    }}
+    .up-dev:hover {{ border-color: rgba(255,255,255,0.08); }}
+    .up-dev-info {{
+        display: flex; align-items: center; gap: 10px; min-width: 0;
+    }}
+    .up-dev-text {{
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }}
+    .up-dev-name {{ font-size: 13px; font-weight: 600; }}
+    .up-dev-server {{ font-size: 11px; color: #556; }}
+    @keyframes upFadeIn {{
+        from {{ opacity: 0; transform: translateY(4px); }}
+        to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .up-dev:nth-child(1) {{ animation-delay: 0s; }}
+    .up-dev:nth-child(2) {{ animation-delay: 0.03s; }}
+    .up-dev:nth-child(3) {{ animation-delay: 0.06s; }}
+    .up-dev:nth-child(4) {{ animation-delay: 0.09s; }}
+    .up-dev:nth-child(5) {{ animation-delay: 0.12s; }}
+    .up-dev:nth-child(6) {{ animation-delay: 0.15s; }}
+
+    .up-dot {{
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .up-dot-online {{
+        background: #4caf50;
+        box-shadow: 0 0 6px rgba(76,175,80,0.5);
+    }}
+    .up-dot-offline {{ background: #555; }}
+    .up-dot-disconnected {{ background: #333; }}
+
+    .up-tag {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.5px; padding: 2px 7px; border-radius: 5px;
+    }}
+    .up-tag-owner {{
+        color: #64d8ff; background: rgba(100,216,255,0.08);
+        border: 1px solid rgba(100,216,255,0.12);
+    }}
+    .up-tag-full {{
+        color: #4caf50; background: rgba(76,175,80,0.08);
+        border: 1px solid rgba(76,175,80,0.12);
+    }}
+    .up-tag-ro {{
+        color: #ffb74d; background: rgba(255,183,77,0.08);
+        border: 1px solid rgba(255,183,77,0.12);
+    }}
+
+    .up-group {{ margin-bottom: 12px; }}
+    .up-group-header {{
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 0; font-size: 12px;
+    }}
+    .up-group-name {{ font-weight: 600; color: #aab; }}
+    .up-group-count {{
+        font-size: 10px; color: #445;
+        background: rgba(255,255,255,0.04);
+        border-radius: 8px; padding: 1px 7px;
+    }}
+
+    .up-empty {{
+        padding: 28px; text-align: center; color: #445;
+        font-size: 13px; font-weight: 500;
+    }}
+
+    .up-toast {{
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        padding: 10px 20px; border-radius: 10px;
+        font-size: 13px; font-weight: 600; z-index: 1000;
+        pointer-events: none;
+        animation: upToastIn 0.2s ease, upToastOut 0.3s ease 1.7s forwards;
+        background: rgba(76,175,80,0.15); color: #66bb6a;
+        border: 1px solid rgba(76,175,80,0.3);
+    }}
+    @keyframes upToastIn {{
+        from {{ opacity: 0; transform: translateX(-50%) translateY(8px); }}
+    }}
+    @keyframes upToastOut {{
+        to {{ opacity: 0; transform: translateX(-50%) translateY(-8px); }}
+    }}
+
+    @media (max-width: 500px) {{
+        .up-top {{ gap: 14px; }}
+        .up-avatar {{ width: 46px; height: 46px; font-size: 18px; }}
+        .up-name {{ font-size: 17px; }}
+        .up-dev {{ padding: 8px 10px; }}
+        .up-sub {{ flex-direction: column; align-items: flex-start; gap: 10px; }}
+        .up-sub-grant-form {{ width: 100%; }}
+    }}
+    </style>
+
+    <a href="/portal/admin" class="up-back">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <path d="M10 3l-5 5 5 5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round"/></svg>
+        Admin
+    </a>
+
+    <div class="up-header">
+        <div class="up-top">
+            <div class="up-avatar">{initial}</div>
+            <div>
+                <div>
+                    <span class="up-name">{username}</span>
+                    <span class="up-uid">#{user_id}</span>
+                </div>
+                <div class="up-meta">
+                    {email_html}
+                    <span>joined {joined}</span>
+                    <span class="up-sep"></span>
+                    <span>last login {last_login}</span>
+                </div>
+                <div class="up-badges">{role_badge}</div>
+            </div>
+        </div>
+        {sub_section}
+        <div class="up-actions">
+            <button class="up-btn up-btn-outline"
+                onclick="resetPw()">Reset Password</button>
+            {delete_btn}
+        </div>
+    </div>
+
+    <div class="up-section">
+        <div class="up-section-header">
+            <span class="up-section-title">Assigned Devices</span>
+            <span class="up-section-count">{len(assigned)}</span>
+        </div>
+        {assigned_rows}
+    </div>
+
+    <div class="up-section">
+        <div class="up-section-header">
+            <span class="up-section-title">Available Devices</span>
+            <span class="up-section-count">{total_available}</span>
+        </div>
+        {available_html}
+    </div>
+
+    <script>
+    var csrf = "{csrf}";
+    var userId = {user_id};
+    var userName = {json.dumps(target["username"])};
+
+    function upToast(msg) {{
+        var t = document.createElement('div');
+        t.className = 'up-toast';
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(function() {{ t.remove(); }}, 2200);
+    }}
+
+    function assign(botName, deviceHash) {{
+        fetch("/portal/api/admin/users/" + userId + "/assign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                bot_name: botName,
+                device_hash: deviceHash,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Device assigned"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function assignAll(botName) {{
+        if (!confirm("Assign all devices on this server?")) return;
+        fetch("/portal/api/admin/users/" + userId + "/assign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                bot_name: botName,
+                device_hash: null,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("All devices assigned"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function unassign(grantId) {{
+        if (!confirm("Remove this device access?")) return;
+        fetch("/portal/api/admin/users/" + userId + "/unassign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, grant_id: grantId}})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Device unassigned"); location.reload(); }}
+            else alert("Failed to unassign");
+        }});
+    }}
+
+    function grantSub() {{
+        var dur = document.getElementById('subDur');
+        var days = dur ? dur.value : "30";
+        fetch("/portal/api/admin/grant-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                user_id: userId,
+                duration_days: days ? parseInt(days) : null,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Subscription granted"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function revokeSub() {{
+        if (!confirm("Revoke subscription for " + userName + "?")) return;
+        fetch("/portal/api/admin/revoke-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, user_id: userId}})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Subscription revoked"); location.reload(); }}
+            else alert("Failed to revoke");
+        }});
+    }}
+
+    function resetPw() {{
+        var pw = prompt("Set new password for " + userName + ":");
+        if (!pw) return;
+        if (pw.length < 6) {{ alert("Min 6 characters"); return; }}
+        fetch("/portal/api/admin/reset-password", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                user_id: userId,
+                new_password: pw,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) upToast("Password reset");
+            else alert("Failed");
+        }});
+    }}
+
+    function deleteUser() {{
+        if (!confirm("Delete " + userName + "? This revokes all access."))
+            return;
+        fetch("/portal/api/admin/users/" + userId + "/delete", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }}).then(function(resp) {{
+            if (resp.ok) window.location.href = "/portal/admin";
+            else alert("Failed to delete user");
+        }});
+    }}
+    </script>
+    """
+    return web.Response(
+        text=_page(f"User: {username}", body, admin, csrf),
+        content_type="text/html",
+    )
 
 
 async def page_account(request: web.Request) -> web.Response:
@@ -3479,6 +4349,47 @@ async def api_admin_revoke_subscription(request: web.Request) -> web.Response:
     revoked = await asyncio.to_thread(db.revoke_admin_subscription, int(user_id))
     if not revoked:
         return web.json_response({"error": "No admin-granted subscription found"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_assign_device(request: web.Request) -> web.Response:
+    """Admin assigns a device to a user (creates a grant)."""
+    admin = await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+    data = await request.json()
+    bot_name = data.get("bot_name", "").strip()
+    device_hash = data.get("device_hash")  # None for wildcard
+    if not bot_name:
+        return web.json_response({"error": "bot_name required"}, status=400)
+
+    target = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not target:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    bot = await asyncio.to_thread(db.get_bot, bot_name)
+    if not bot:
+        return web.json_response({"error": "Server not found"}, status=404)
+
+    grant_id = await asyncio.to_thread(
+        db.create_grant, user_id, bot_name, device_hash,
+        "full", admin["user_id"],
+    )
+    return web.json_response({"status": "ok", "grant_id": grant_id})
+
+
+async def api_admin_unassign_device(request: web.Request) -> web.Response:
+    """Admin removes a device grant from a user."""
+    await _require_admin(request)
+    await _check_csrf(request)
+    data = await request.json()
+    grant_id = data.get("grant_id")
+    if not grant_id:
+        return web.json_response({"error": "grant_id required"}, status=400)
+
+    deleted = await asyncio.to_thread(db.delete_grant, int(grant_id))
+    if not deleted:
+        return web.json_response({"error": "Grant not found"}, status=404)
     return web.json_response({"status": "ok"})
 
 

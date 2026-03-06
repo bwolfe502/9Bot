@@ -257,6 +257,36 @@ def get_protocol_stats(device=None):
     return info["thread"].stats
 
 
+def get_protocol_message_type_counts(device=None):
+    """Return full protocol message-type counters for *device*, or None."""
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return None
+    return info["thread"].message_type_counts
+
+
+def get_protocol_message_type_counts_by_direction(device=None, direction: str = "both"):
+    """Return protocol message-type counters by direction for *device*.
+
+    *direction* can be ``"recv"``, ``"send"``, or ``"both"``.
+    """
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return None
+    thread = info["thread"]
+    if direction == "recv":
+        return thread.message_type_counts_recv
+    if direction == "send":
+        return thread.message_type_counts_send
+    return thread.message_type_counts
+
+
 def get_protocol_ap(device=None):
     """Return (current, max) AP from protocol, or None if unavailable/stale."""
     state = _get_device_state(device)

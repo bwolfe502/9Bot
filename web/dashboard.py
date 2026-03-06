@@ -481,8 +481,6 @@ def create_app():
                                task_count=len(active_tasks),
                                auto_groups=auto_groups,
                                mode=mode,
-                               oneshot_farm=ONESHOT_FARM,
-                               oneshot_war=ONESHOT_WAR,
                                active_tasks=active_tasks,
                                local_ip=get_local_ip(),
                                relay_url=relay_url,
@@ -543,6 +541,8 @@ def create_app():
                                devices=device_info,
                                tasks=active_tasks,
                                debug_actions=ONESHOT_DEBUG,
+                               oneshot_farm=ONESHOT_FARM,
+                               oneshot_war=ONESHOT_WAR,
                                log_lines=lines,
                                training_stats=training_stats,
                                protocol_enabled=settings.get("protocol_enabled", False),
@@ -1155,10 +1155,54 @@ def create_app():
                 "device_id": dev,
                 "enabled": enabled,
                 "active": active,
-                "connected": stats is not None and stats.get("uptime_s", 0) > 0,
+                "connected": bool(
+                    stats is not None
+                    and (stats.get("connected") or stats.get("uptime_seconds", 0) > 0)
+                ),
                 "stats": stats,
             })
         return jsonify({"devices": devices_status})
+
+    @app.route("/api/protocol-message-counts")
+    def api_protocol_message_counts():
+        """Return full protocol message-type counters for a specific device."""
+        device_id = request.args.get("device_id")
+        if not device_id:
+            return jsonify({"error": "device_id required"}), 400
+
+        try:
+            top_n = int(request.args.get("top_n", "100"))
+        except ValueError:
+            top_n = 100
+        top_n = max(1, min(top_n, 1000))
+
+        direction = (request.args.get("direction") or "both").lower()
+        if direction not in {"both", "recv", "send"}:
+            return jsonify({"error": "direction must be one of: both, recv, send"}), 400
+
+        from startup import get_protocol_message_type_counts_by_direction
+        counts = get_protocol_message_type_counts_by_direction(device_id, direction=direction)
+        if counts is None:
+            return jsonify({
+                "device_id": device_id,
+                "active": False,
+                "direction": direction,
+                "total_types": 0,
+                "total_messages": 0,
+                "top": [],
+                "counts": {},
+            })
+
+        ordered = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+        return jsonify({
+            "device_id": device_id,
+            "active": True,
+            "direction": direction,
+            "total_types": len(counts),
+            "total_messages": int(sum(counts.values())),
+            "top": ordered[:top_n],
+            "counts": counts,
+        })
 
     @app.route("/api/patch-apk", methods=["POST"])
     def api_patch_apk():
@@ -1750,7 +1794,6 @@ def create_app():
         # Filter by shared permissions
         dev_settings = settings.get("device_settings", {}).get(device, {})
         allowed_modes = dev_settings.get("shared_modes")  # None = all
-        allowed_actions = dev_settings.get("shared_actions")  # None = all
 
         if allowed_modes is not None:
             allowed_set = set(allowed_modes)
@@ -1760,21 +1803,12 @@ def create_app():
                 if filtered:
                     auto_groups.append({"group": grp["group"], "modes": filtered})
 
-        farm = list(ONESHOT_FARM)
-        war = list(ONESHOT_WAR)
-        if allowed_actions is not None:
-            allowed_act = set(allowed_actions)
-            farm = [a for a in farm if a in allowed_act]
-            war = [a for a in war if a in allowed_act]
-
         return render_template("index.html",
                                devices=device_info,
                                tasks=active_tasks,
                                task_count=len(active_tasks),
                                auto_groups=auto_groups,
                                mode=mode,
-                               oneshot_farm=farm,
-                               oneshot_war=war,
                                active_tasks=active_tasks,
                                local_ip=get_local_ip(),
                                relay_url=None,

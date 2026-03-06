@@ -216,7 +216,7 @@ async def _handle_request(ws, msg: dict, executor: ThreadPoolExecutor) -> None:
 async def _send_device_list(ws) -> None:
     """Send the current device list to the relay for portal registration."""
     try:
-        from devices import get_emulator_instances
+        from devices import get_emulator_instances, get_offline_instances
         from startup import device_hash
         instances = get_emulator_instances()
         devices = []
@@ -224,7 +224,17 @@ async def _send_device_list(ws) -> None:
             devices.append({
                 "hash": device_hash(device_id),
                 "name": display_name or device_id,
+                "online": True,
             })
+        # Include offline BlueStacks instances so portal can show Start Emulator
+        for inst in get_offline_instances():
+            dh = device_hash(inst["device_id"])
+            if dh:
+                devices.append({
+                    "hash": dh,
+                    "name": inst["display_name"],
+                    "online": False,
+                })
         if devices:
             await ws.send(json.dumps({
                 "type": "device_list",
@@ -273,14 +283,23 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
                 await _send_device_list(ws)
 
                 # Explicit recv loop for better error diagnostics
+                # Rely on ping_interval/ping_timeout for dead connection
+                # detection — no recv timeout needed (was causing spurious
+                # disconnects every 90s when nobody was browsing)
+                _device_list_interval = 120  # re-send device list periodically
+                _last_device_list = asyncio.get_event_loop().time()
                 while not _stop_event.is_set():
                     try:
                         raw_msg = await asyncio.wait_for(
-                            ws.recv(), timeout=90,
+                            ws.recv(), timeout=30,
                         )
                     except asyncio.TimeoutError:
-                        _log.warning("Tunnel: no data in 90s, reconnecting")
-                        break
+                        # No data — send updated device list if due
+                        now = asyncio.get_event_loop().time()
+                        if now - _last_device_list >= _device_list_interval:
+                            await _send_device_list(ws)
+                            _last_device_list = now
+                        continue
                     except websockets.exceptions.ConnectionClosedOK as e:
                         uptime = asyncio.get_event_loop().time() - connected_at
                         _log.warning(

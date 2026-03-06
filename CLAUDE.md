@@ -13,17 +13,17 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | File | Purpose | Key exports |
 |------|---------|-------------|
 | `run_web.py` | Web-only entry point (primary) | `main` (pywebview + browser fallback) |
-| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap`, `get_protocol_rallies`, `get_protocol_troops_home`, `get_protocol_troop_snapshot`, `start_protocol_for_device`, `stop_protocol_for_device`, `get_protocol_chat_messages`, `get_protocol_stats` |
-| `main.py` | Legacy GUI entry point (deprecated) | Tkinter app, `create_gui()` |
-| `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
+| `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap`, `get_protocol_rallies`, `get_protocol_troops_home`, `get_protocol_troop_snapshot`, `start_protocol_for_device`, `stop_protocol_for_device`, `get_protocol_chat_messages`, `get_protocol_stats`, `start_apk_patch`, `is_patching`, `get_patch_progress`, `set_protocol_ally_monitoring` |
+| `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_esb`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_reinforce_ally`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
 | `settings.py` | Settings persistence | `DEFAULTS`, `load_settings`, `save_settings`, `SETTINGS_FILE` |
-| `actions/` | Game actions package (7 submodules) | Re-exports all public functions via `__init__.py` |
+| `actions/` | Game actions package (8 submodules) | Re-exports all public functions via `__init__.py` |
 | `actions/quests.py` | Quest system + tower quest + PVP attack | `check_quests`, `get_quest_tracking_state`, `get_quest_last_checked`, `reset_quest_tracking`, `occupy_tower`, `recall_tower_troop` |
 | `actions/rallies.py` | Rally joining + blacklist | `join_rally`, `join_war_rallies`, `reset_rally_blacklist` |
 | `actions/combat.py` | Attacks, targeting, teleport | `attack`, `phantom_clash_attack`, `reinforce_throne`, `target`, `teleport`, `teleport_benchmark` |
 | `actions/titans.py` | Titan rally + AP restore | `rally_titan`, `restore_ap`, `_restore_ap_from_open_menu`, `_close_ap_menu`, `_MAX_TITAN_SEARCH_ATTEMPTS` |
 | `actions/evil_guard.py` | Evil Guard attack sequence | `rally_eg`, `search_eg_reset`, `test_eg_positions`, `_handle_ap_popup` |
 | `actions/farming.py` | Gold + mithril gathering | `mine_mithril`, `mine_mithril_if_due`, `gather_gold`, `gather_gold_loop` |
+| `actions/reinforce_ally.py` | Reinforce ally castles via protocol | `reinforce_ally_castle`, `navigate_to_coord` |
 | `actions/_helpers.py` | Shared state + utilities | `_interruptible_sleep`, `_last_depart_slot` |
 | `vision.py` | Screenshots, template matching, OCR, ADB input | `load_screenshot`, `find_image`, `find_all_matches`, `tap_image`, `wait_for_image_and_tap`, `read_text`, `read_number`, `read_ap`, `adb_tap`, `adb_swipe`, `adb_keyevent`, `timed_wait`, `tap`, `logged_tap`, `get_last_best`, `save_failure_screenshot`, `tap_tower_until_attack_menu`, `warmup_ocr` |
 | `navigation.py` | Screen detection + state-machine navigation | `check_screen`, `navigate` |
@@ -39,6 +39,8 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `protocol/game_state.py` | Per-device reactive game state | `GameState`, `GameStateRegistry`, `get_game_state` |
 | `protocol/registry.py` | BKDR hash ↔ message name mapping | `bkdr_hash`, `msg_id`, `wire_id`, `get_wire_registry` |
 | `protocol/patch_apk.py` | APK patching + pure Python signing | Pull splits from device, LIEF inject, v1 sign, install |
+| `chat_translate.py` | Chat auto-translation via Claude Haiku | `configure`, `shutdown`, `translate_message`, `translate_batch` |
+| `remote/` | Cloud deployment guide (Docker + shell scripts) | `docker-compose.yml`, `setup.sh`, `start.sh`, `stop.sh` |
 | `config.py` | Global mutable state, enums, constants | `QuestType`, `RallyType`, `Screen`, ADB path, thresholds, team colors, `alert_queue`, `recompute_pass_blocked` |
 | `devices.py` | ADB device detection + emulator window mapping | `auto_connect_emulators`, `get_devices`, `get_emulator_instances` |
 | `botlog.py` | Logging, metrics, timing | `setup_logging`, `get_logger`, `set_console_verbose`, `StatsTracker`, `timed_action`, `stats`, `BOT_VERSION` |
@@ -55,29 +57,20 @@ run_web.py (primary entry point)
   ├─ web/dashboard (create_app)
   └─ tunnel (optional relay)
 
-main.py (legacy GUI — deprecated)
-  ├─ config, settings, runners
-  ├─ devices
-  ├─ navigation ──┬─ vision ── config, botlog
-  ├─ vision       │
-  ├─ troops ──────┤
-  ├─ actions ─────┘
-  ├─ territory ── actions (teleport)
-  └─ botlog (standalone)
-
 runners.py (shared task runners)
   ├─ config, settings
   ├─ actions (public API)
   └─ troops, navigation, territory
 
 actions/ package (internal deps — no cycles)
-  _helpers   → (leaf — no deps)
-  farming    → (leaf — no action deps)
-  combat     → _helpers
-  titans     → _helpers
-  rallies    → _helpers
-  evil_guard → titans, combat, _helpers
-  quests     → (lazy) rallies, combat, titans, evil_guard, farming, _helpers
+  _helpers        → (leaf — no deps)
+  farming         → (leaf — no action deps)
+  reinforce_ally  → (leaf — no action deps)
+  combat          → _helpers
+  titans          → _helpers
+  rallies         → _helpers
+  evil_guard      → titans, combat, _helpers
+  quests          → (lazy) rallies, combat, titans, evil_guard, farming, _helpers
 
 web/dashboard.py (Flask)
   ├─ config, devices, navigation, vision, troops, actions, territory, botlog
@@ -138,8 +131,8 @@ All session-scoped, reset on restart:
 - `AUTO_HEAL_ENABLED`, `AUTO_RESTORE_AP_ENABLED` — Feature toggles
 - `DEVICE_STATUS[device]` — Current status message shown in GUI
 - `MY_TEAM_COLOR`, `ENEMY_TEAMS` — Territory team config (`set_territory_config(my_team)` auto-derives enemies from `ALL_TEAMS`)
-- `running_tasks` — Dict of active task_key → threading.Event (stop signals)
-- `auto_occupy_running`, `auto_occupy_thread` — Territory auto-occupy state
+- `running_tasks` — Dict of active task_key → `{"thread": Thread, "stop_event": Event}` dicts
+- `EMULATOR_STARTING`, `EMULATOR_RECENTLY_STARTED` — Emulator boot tracking dicts
 - `MITHRIL_ENABLED_DEVICES` — Set of device IDs with mithril mining active (per-device toggle)
 - `MITHRIL_INTERVAL`, `LAST_MITHRIL_TIME`, `MITHRIL_DEPLOY_TIME` — Mithril mining timing state
 - `EG_RALLY_OWN_ENABLED`, `TITAN_RALLY_OWN_ENABLED` — If False, only join rallies — never start own
@@ -152,9 +145,8 @@ All session-scoped, reset on restart:
 
 ## Architecture Patterns
 
-### Threading & Task Launching (runners.py + main.py)
+### Threading & Task Launching (runners.py)
 - `run_web.py` uses werkzeug `make_server` in a daemon thread, with pywebview blocking the main thread (or browser fallback with infinite sleep loop)
-- Legacy `main.py`: Main thread runs Tkinter event loop (GUI)
 - Worker threads: Daemon threads per action, launched on button click
 - `launch_task(device, task_name, target_func, stop_event, args)` — Spawns daemon thread (in `runners.py`)
 - `stop_task(task_key)` — Sets the stop event and immediately sets device status to `"Stopping {label}..."` (in `runners.py`). `_MODE_LABELS` dict maps mode keys to human-readable names (e.g. `"auto_quest"` → `"Auto Quest"`). `stop_all_tasks_matching(suffix)` for bulk stop.
@@ -163,7 +155,7 @@ All session-scoped, reset on restart:
 - Stop signals: `threading.Event()` stored in `config.running_tasks[task_key]`
 - `TASK_FUNCTIONS` dict maps GUI labels → callable functions
 - Looping is managed by `runners.py` task runners (`run_once` / `run_repeat`), not by actions. Actions accept a `stop_check` callback for cooperative cancellation
-- `runners.py` is shared by both `main.py` (GUI) and `web/dashboard.py` (Flask) — no duplication
+- `runners.py` is shared by `web/dashboard.py` (Flask) — no duplication
 - Thread-local storage in vision.py for `get_last_best()` template scores
 - **Error recovery**: Auto runners wrap their main loop in try/except, logging errors and continuing. Navigation failures retry after a short delay.
 - **Smart idle status**: `_deployed_status(device)` in `run_auto_quest` reads the troop snapshot and shows "Gathering/Defending..." instead of generic "Waiting for Troops..." when all troops are deployed.
@@ -341,6 +333,25 @@ Maps grid squares to world coordinates via `scan_territory_coordinates(device)` 
 OCR-reads coordinates, saves to `data/territory_coordinates.json`). `scan_test_squares(device)` scans
 only 4 corners for calibration.
 
+### Auto Reinforce Ally (actions/reinforce_ally.py + runners.py)
+Protocol-driven: subscribes to `EVT_ALLY_CITY_SPOTTED` from `GameState` when ally PLAYER_CITY
+entities enter the map viewport. Runner (`run_auto_reinforce_ally`) queues spotted allies, navigates
+to their coordinates via map search UI, taps reinforce. 30-minute cooldown per entity ID prevents
+repeat sends. Requires protocol enabled — fails gracefully with error status if off.
+`set_protocol_ally_monitoring(device, True)` activates the detection in `GameState`.
+
+### Phantom Clash (actions/combat.py + runners.py)
+`phantom_clash_attack(device, stop_check)`: heal → check troops → tap king (550, 450) → wait for
+attack window → tap attack → depart. Two-phase king tap: retap every 3s during menu-open phase,
+stop retapping once menu confirmed open. Runner: `run_auto_esb` with 5-minute interval.
+
+### Chat Translation (chat_translate.py + protocol/game_state.py)
+Uses Claude Haiku API for auto-translating non-English chat messages. Language detection via
+Unicode script heuristic (CJK, Cyrillic, Arabic, etc. — >15% non-ASCII threshold). Background
+worker thread batches up to 10 messages per API call (0.5s accumulation window). Integrates into
+`GameState.request_translation()`. Settings: `chat_translate_enabled` (bool), `chat_translate_api_key`
+(str). `/api/chat` returns messages with `"translated"` field.
+
 ### Rally Owner Blacklist (actions/rallies.py)
 - **UI-based OCR disabled** — owner name OCR was too slow (500-2000ms per rally candidate),
   causing multi-device contention. The blacklist infrastructure remains but is only populated
@@ -388,7 +399,7 @@ AP via `_restore_ap_from_open_menu`, and single-closes the popup. Used in `click
 `settings.json` stores user preferences (auto-heal, AP options, intervals, territory teams,
 `remote_access` toggle, `device_settings` per-device overrides). Loaded on startup, saved on
 quit/restart. `DEFAULTS` dict provides fallback values. `DEVICE_OVERRIDABLE_KEYS` defines which
-settings can be overridden per device (includes `protocol_enabled`). Shared by both `main.py` (GUI) and
+settings can be overridden per device (includes `protocol_enabled`). Shared by
 `web/dashboard.py` (Flask). `updater.py` preserves `settings.json` across auto-updates
 (`PRESERVE_FILES`).
 
@@ -409,8 +420,9 @@ Thread safety: `_task_start_lock` prevents TOCTOU race. XSS: `textContent` only 
 
 **API**: See `web/dashboard.py` for full route list. Key endpoints: `/api/status` (polled 3s),
 `/tasks/start|stop|stop-all`, `/api/stream` (MJPEG), `/api/chat` (chat messages),
-`/api/protocol-status` (per-device protocol state), `/d/<dhash>` (per-device scoped routes).
-Per-device settings: `GET|POST /settings/device/<id>`.
+`/api/protocol-status` (per-device protocol state), `/api/patch-apk` + `/api/patch-progress`
+(APK patching), `/api/emulator/start|stop` (BlueStacks control), `/api/restart-game`,
+`/d/<dhash>` (per-device scoped routes). Per-device settings: `GET|POST /settings/device/<id>`.
 
 ### Relay Tunnel (tunnel.py + relay/)
 WebSocket relay for remote access — lets users control 9Bot from outside the LAN.
@@ -463,6 +475,10 @@ Data files: `wire_registry.json`, `proto_field_map.json`, `registry.json`.
 **Lifecycle** (startup.py): Per-device model — each device gets EventBus + GameState +
 InterceptorThread. `start/stop_protocol_for_device(device)`. Active devices in
 `config.PROTOCOL_ACTIVE_DEVICES`. Port: base 27042, incrementing per device via `adb forward`.
+
+**APK Patch from dashboard**: `start_apk_patch(device)` in startup.py spawns `python -m protocol.patch_apk
+--device <id> --install` as a subprocess with streaming progress. On success, auto-enables protocol
+for the device. Dashboard: `POST /api/patch-apk` starts, `GET /api/patch-progress` polls status.
 
 **Fast paths** (all try/except, fall through to vision on `None` or error):
 - AP: `read_ap()` → `get_protocol_ap(device)` (≤10s freshness) → OCR fallback
