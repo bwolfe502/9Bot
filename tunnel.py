@@ -283,14 +283,23 @@ async def _run_tunnel(relay_url: str, relay_secret: str, bot_name: str) -> None:
                 await _send_device_list(ws)
 
                 # Explicit recv loop for better error diagnostics
+                # Rely on ping_interval/ping_timeout for dead connection
+                # detection — no recv timeout needed (was causing spurious
+                # disconnects every 90s when nobody was browsing)
+                _device_list_interval = 120  # re-send device list periodically
+                _last_device_list = asyncio.get_event_loop().time()
                 while not _stop_event.is_set():
                     try:
                         raw_msg = await asyncio.wait_for(
-                            ws.recv(), timeout=90,
+                            ws.recv(), timeout=30,
                         )
                     except asyncio.TimeoutError:
-                        _log.warning("Tunnel: no data in 90s, reconnecting")
-                        break
+                        # No data — send updated device list if due
+                        now = asyncio.get_event_loop().time()
+                        if now - _last_device_list >= _device_list_interval:
+                            await _send_device_list(ws)
+                            _last_device_list = now
+                        continue
                     except websockets.exceptions.ConnectionClosedOK as e:
                         uptime = asyncio.get_event_loop().time() - connected_at
                         _log.warning(
