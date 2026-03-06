@@ -782,18 +782,14 @@ def frontline_occupy_loop(device, stop_check):
             enemy_teams = config.get_device_enemy_teams(device)
 
             # --- Protocol path: derive coords directly, skip territory screen ---
+            proto_target = None
             try:
                 proto_target = _pick_frontline_target_from_protocol(
                     device, mode, my_team, enemy_teams)
             except _ProtocolDataPending:
-                # No grid data — arrives on game login and is cached to disk.
-                # If missing, game may not have been restarted with protocol active.
-                log.warning("Territory data not available — waiting for game to send it "
-                            "(restart game if this persists)")
-                config.set_device_status(device, "Waiting for Territory Data...")
-                if _interruptible_sleep(10, stop_check):
-                    break
-                continue
+                log.warning("Protocol data pending — falling back to grid scan")
+            except Exception as e:
+                log.warning("Protocol target error: %s — falling back to grid scan", e)
 
             if proto_target is not None:
                 target_row, target_col, action_type, world_x, world_z = proto_target
@@ -811,8 +807,6 @@ def frontline_occupy_loop(device, stop_check):
                     continue
 
                 # Wait briefly for the game to send entity data for the now-visible tower.
-                # KvkBuilding.troops is the authoritative troop list — more reliable than
-                # LandInfo.legionId for allied troops.  Give the server ~2s to push entities.
                 if _interruptible_sleep(2, stop_check):
                     break
                 import startup as _startup
@@ -829,17 +823,12 @@ def frontline_occupy_loop(device, stop_check):
                         log.debug("Tower (%d,%d) not yet seen in entity feed — proceeding",
                                   target_row, target_col)
 
-            elif device in config.PROTOCOL_ACTIVE_DEVICES:
-                # Protocol active, data is fresh, but no matching targets right now
-                log.info("No frontline targets (%s mode) via protocol — waiting 30s", mode)
-                config.set_device_status(device, "No Targets...")
-                if _interruptible_sleep(30, stop_check):
-                    break
-                continue
-
             else:
-                # --- Vision fallback (protocol disabled): territory grid scan + tap ---
-                log.info("Protocol disabled — using territory grid scan")
+                # --- Vision fallback: territory grid scan + tap ---
+                # Used when protocol is disabled, data pending, or no targets found
+                log.info("Using territory grid scan (protocol %s)",
+                         "had no targets" if device in config.PROTOCOL_ACTIVE_DEVICES
+                         else "unavailable")
                 config.set_device_status(device, "Scanning Territory...")
                 target_result = attack_territory(
                     device,
