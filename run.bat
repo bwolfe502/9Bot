@@ -32,15 +32,42 @@ py -3.13 -V >nul 2>&1
 if errorlevel 1 (
   echo.
   echo Python 3.13 not found. Installing...
-  winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements
+  winget --version >nul 2>&1
   if errorlevel 1 (
     echo.
-    echo ERROR: Failed to install Python 3.13.
-    echo Install manually from https://python.org and make sure "Python Launcher" is checked.
+    echo ERROR: winget is not available on this system.
+    echo Install Python 3.13 manually from https://python.org
+    echo Make sure "Add Python to PATH" and "py launcher" are both checked.
     pause
     exit /b 1
   )
-  echo Python 3.13 installed successfully.
+  winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements --scope user
+  if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to install Python 3.13 via winget.
+    echo Install manually from https://python.org
+    echo Make sure "Add Python to PATH" and "py launcher" are both checked.
+    pause
+    exit /b 1
+  )
+  echo Python 3.13 installed. Refreshing environment...
+  REM Refresh PATH from registry — installer updated PATH but this session is stale
+  set "SYS_PATH="
+  set "USR_PATH="
+  for /f "tokens=2,*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul ^| findstr /i "REG_"') do set "SYS_PATH=%%B"
+  for /f "tokens=2,*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul ^| findstr /i "REG_"') do set "USR_PATH=%%B"
+  if defined SYS_PATH set "PATH=!SYS_PATH!"
+  if defined USR_PATH set "PATH=!PATH!;!USR_PATH!"
+  REM Verify py launcher is now accessible
+  py -3.13 -V >nul 2>&1
+  if errorlevel 1 (
+    echo.
+    echo Python 3.13 was installed but is not available in this session.
+    echo Please close this window and double-click run.bat again.
+    pause
+    exit /b 0
+  )
+  echo Done!
 )
 
 REM Verify venv uses Python 3.13 — rebuild if it was created with a different version
