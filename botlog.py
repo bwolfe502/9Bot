@@ -132,9 +132,9 @@ def setup_logging(verbose=False):
     root.addHandler(file_handler)
 
     # Suppress noisy third-party loggers
-    logging.getLogger("easyocr").setLevel(logging.ERROR)
+    logging.getLogger("ppocr").setLevel(logging.ERROR)
+    logging.getLogger("paddle").setLevel(logging.ERROR)
     logging.getLogger("PIL").setLevel(logging.WARNING)
-    logging.getLogger("torch").setLevel(logging.WARNING)
     # Protocol interceptor: per-message debug lines are very noisy
     logging.getLogger("protocol.interceptor").setLevel(logging.INFO)
 

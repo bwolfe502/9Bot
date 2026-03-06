@@ -761,6 +761,10 @@ def initialize():
     from devices import auto_connect_emulators
     auto_connect_emulators()
 
+    # Reconcile protocol interceptors now that devices are connected.
+    # The earlier call in apply_settings() may have found no devices yet.
+    _reconcile_protocol()
+
     # Pre-initialize OCR engine in background thread
     from vision import warmup_ocr
     threading.Thread(target=warmup_ocr, daemon=True).start()

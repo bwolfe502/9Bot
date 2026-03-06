@@ -1023,16 +1023,47 @@ def create_app():
 
         def _do_restart():
             time.sleep(0.5)  # let the HTTP response flush
-            os.environ["NINEBOT_RESTART"] = "1"  # skip opening new window
-            # Close pywebview window first so the new process can open one
+            # Mark as restarting so _on_exit skips shutdown (which would
+            # tear down ADB connections the new process needs).
+            config._restarting = True
+            # Spawn the new process BEFORE closing the window, because
+            # closing pywebview triggers os._exit(0) which kills daemon
+            # threads (including this one) before os.execv can run.
+            env = os.environ.copy()
+            env["NINEBOT_RESTART"] = "1"  # skip opening new window
+            # Save window position/size so the new process can restore it.
+            # pywebview reports physical pixels; we need logical pixels
+            # for create_window, so divide by the DPI scale factor.
+            win = getattr(config, '_webview_window', None)
+            if win:
+                try:
+                    scale = 1.0
+                    if sys.platform == "win32":
+                        import ctypes
+                        ctypes.windll.user32.SetProcessDPIAware()
+                        dpi = ctypes.windll.user32.GetDpiForSystem()
+                        scale = dpi / 96.0
+                    env["NINEBOT_WIN_X"] = str(int(win.x / scale))
+                    env["NINEBOT_WIN_Y"] = str(int(win.y / scale))
+                    env["NINEBOT_WIN_W"] = str(int(win.width / scale))
+                    env["NINEBOT_WIN_H"] = str(int(win.height / scale))
+                except Exception:
+                    pass
+            import subprocess as _sp
+            # Use the project directory as cwd so relative paths (e.g.
+            # platform-tools/adb.exe) resolve correctly in the new process.
+            project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            _sp.Popen([sys.executable] + sys.argv, env=env, cwd=project_dir)
+            # Now close pywebview window (triggers os._exit in main thread)
             cb = config._quit_callback
             if cb:
                 try:
                     cb()
-                    time.sleep(1)
                 except Exception:
                     pass
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # Fallback if no pywebview — force exit the old process
+            time.sleep(1)
+            os._exit(0)
 
         threading.Thread(target=_do_restart, daemon=True).start()
         return jsonify({"ok": True, "message": "Restarting..."})

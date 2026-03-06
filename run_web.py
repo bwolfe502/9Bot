@@ -151,7 +151,12 @@ def main():
             _shutting_down.set()
             from startup import stop_auto_upload
             stop_auto_upload()
-            shutdown()
+            # Skip full shutdown on restart — the new process handles
+            # its own ADB connections and protocol setup. Running
+            # shutdown() here would tear down ADB port forwards that
+            # the new process has already established.
+            if not getattr(config, '_restarting', False):
+                shutdown()
 
     atexit.register(_on_exit)
 
@@ -231,10 +236,19 @@ def main():
                 except Exception:
                     pass
 
+            # Restore window position/size from previous session (restart)
+            win_x = os.environ.pop("NINEBOT_WIN_X", None)
+            win_y = os.environ.pop("NINEBOT_WIN_Y", None)
+            win_w = int(os.environ.pop("NINEBOT_WIN_W", "520"))
+            win_h = int(os.environ.pop("NINEBOT_WIN_H", "900"))
+
             window = webview.create_window(title, url,
-                                           width=520, height=900,
+                                           width=win_w, height=win_h,
+                                           x=int(win_x) if win_x else None,
+                                           y=int(win_y) if win_y else None,
                                            min_size=(400, 600))
             config._quit_callback = window.destroy
+            config._webview_window = window
             log.info("Opening native window...")
             print(f"\n  Dashboard: http://{local_ip}:8080  (phone access)\n")
             webview.start(func=_set_icon)  # blocks until window closed

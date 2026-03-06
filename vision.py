@@ -30,10 +30,10 @@ _thread_local = threading.local()
 #            - No model downloads needed — ships with macOS
 #            - Requires: pyobjc-framework-Vision (installed automatically on macOS)
 #
-#   Windows: EasyOCR (deep learning, PyTorch-based)
-#            - Uses a neural network OCR model (~100MB download on first run)
-#            - ~500-2000ms per call on CPU
-#            - Requires: easyocr, torch (installed via requirements.txt)
+#   Windows: PaddleOCR (PaddlePaddle-based)
+#            - Uses PP-OCRv3 models (~10MB download on first run)
+#            - ~30-50ms per call on CPU (15-60x faster than EasyOCR)
+#            - Requires: paddlepaddle, paddleocr (installed via requirements.txt)
 #
 # Both backends expose the same interface through ocr_read().
 # When modifying OCR behavior, update BOTH backends to keep them in sync.
@@ -42,50 +42,37 @@ _thread_local = threading.local()
 
 _USE_APPLE_VISION = platform.system() == "Darwin"
 
-# --- BACKEND: EasyOCR (Windows) ---
-# EasyOCR reader is initialized lazily and cached globally.
-# Thread-safe via double-checked locking.
-# _ocr_infer_lock serializes readtext() calls across device threads to prevent
-# per-thread MKL/MKLDNN scratch buffer accumulation (PyTorch issue #64412).
-_ocr_reader = None
-_ocr_lock = threading.Lock()
-_ocr_infer_lock = threading.Lock()
+# --- BACKEND: PaddleOCR (Windows) ---
+# PaddlePaddle's native inference engine is not thread-safe — concurrent calls
+# crash with "could not execute a primitive" (oneDNN bug). We use per-thread
+# instances via threading.local() to avoid this. Each device thread gets its
+# own PaddleOCR reader. Memory is much lower than EasyOCR (~200MB vs 1-2GB
+# per instance) so this is acceptable.
+_ocr_local = threading.local()
+_ocr_warmup_done = False
+_ocr_warmup_lock = threading.Lock()
 
 def _get_ocr_reader():
-    """Get the EasyOCR reader instance (Windows only).
+    """Get the per-thread PaddleOCR reader instance (Windows only).
 
-    Lazy-initialized on first call. Downloads OCR models on first run.
+    Each thread gets its own instance to avoid PaddlePaddle thread-safety bugs.
+    Downloads OCR models on first run (shared across threads).
     On macOS, this is never called — Apple Vision is used instead.
     """
-    global _ocr_reader
-    if _ocr_reader is None:
-        with _ocr_lock:
-            if _ocr_reader is None:
-                # Cap oneDNN/MKLDNN primitive cache BEFORE importing torch.
-                # Default is 1024 entries — each unique input shape compiles a
-                # new kernel (~MB each). EasyOCR feeds variable-size crops, so
-                # the cache fills with stale kernels and bloats to multi-GB.
-                import os as _os
-                _os.environ.setdefault("ONEDNN_PRIMITIVE_CACHE_CAPACITY", "8")
-                # Legacy name (PyTorch < 1.8)
-                _os.environ.setdefault("LRU_CACHE_CAPACITY", "8")
-
-                import warnings
-                warnings.filterwarnings("ignore", message=".*pin_memory.*")
-                warnings.filterwarnings("ignore", message=".*GPU.*")
-                import torch
-                import easyocr
-
-                # Limit PyTorch intra-op parallelism. Multiple device threads
-                # already provide inter-op parallelism; letting each also spawn
-                # N_cores intra-op threads causes oversubscription and bloat.
-                torch.set_num_threads(2)
-
-                _log = get_logger("vision")
-                _log.info("Initializing EasyOCR (first run may download models)...")
-                _ocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-                _log.info("EasyOCR ready (MKLDNN cache cap=8, threads=2).")
-    return _ocr_reader
+    reader = getattr(_ocr_local, 'reader', None)
+    if reader is None:
+        from paddleocr import PaddleOCR
+        _log = get_logger("vision")
+        _log.info("Initializing PaddleOCR for thread %s...", threading.current_thread().name)
+        reader = PaddleOCR(
+            use_angle_cls=False,
+            lang='en',
+            show_log=False,
+            enable_mkldnn=False,
+        )
+        _ocr_local.reader = reader
+        _log.info("PaddleOCR ready for thread %s.", threading.current_thread().name)
+    return reader
 
 # --- BACKEND: Apple Vision (macOS) ---
 
@@ -136,7 +123,7 @@ def _apple_vision_ocr(image, allowlist=None):
 def warmup_ocr():
     """Pre-initialize the OCR engine in the background so the first real call is fast.
 
-    On Windows: loads EasyOCR + downloads models (can take 10-30s on first run).
+    On Windows: loads PaddleOCR + downloads models (~5-10s on first run).
     On macOS: triggers Apple Vision framework initialization (~5-7s first call,
               then ~50ms per call). Without this, the first quest check would stall.
 
@@ -151,19 +138,22 @@ def warmup_ocr():
         _apple_vision_ocr(dummy)
         _log.info("Apple Vision OCR ready.")
     else:
-        _log.info("Warming up EasyOCR engine in background...")
+        _log.info("Warming up PaddleOCR engine in background...")
+        # Trigger model download and first inference on warmup thread.
+        # Each device thread will create its own instance later, but
+        # models are cached on disk so subsequent inits are fast.
         _get_ocr_reader()
-        _log.info("EasyOCR ready.")
+        _log.info("PaddleOCR ready.")
 
 
 def ocr_read(image, allowlist=None, detail=0):
-    """Unified OCR interface — works on both macOS (Apple Vision) and Windows (EasyOCR).
+    """Unified OCR interface — works on both macOS (Apple Vision) and Windows (PaddleOCR).
 
     Args:
         image: Preprocessed image (grayscale numpy array, already upscaled).
         allowlist: Optional string of allowed characters (e.g. "0123456789/").
         detail: 0 = return list of text strings only.
-                1 = return list of (bbox, text, confidence) tuples (EasyOCR format).
+                1 = return list of (bbox, text, confidence) tuples.
 
     Returns:
         detail=0: List of recognized text strings.
@@ -177,20 +167,30 @@ def ocr_read(image, allowlist=None, detail=0):
         if detail == 0:
             return [text for text, conf in results]
         else:
-            # Return EasyOCR-compatible format: (bbox, text, confidence)
-            # bbox is set to None since Apple Vision uses different coordinate systems
-            # and no caller currently uses bbox from detail=1 results.
             return [(None, text, conf) for text, conf in results]
     else:
-        # --- BACKEND: EasyOCR (Windows) ---
-        # Serialize inference to prevent concurrent MKL thread-local state
-        # accumulation across device threads (PyTorch issue #64412).
+        # --- BACKEND: PaddleOCR (Windows) ---
         reader = _get_ocr_reader()
-        with _ocr_infer_lock:
-            if detail == 0:
-                return reader.readtext(image, allowlist=allowlist, detail=0)
-            else:
-                return reader.readtext(image, allowlist=allowlist, detail=1)
+        # PaddleOCR needs BGR or grayscale input; convert single-channel to 3-channel
+        if len(image.shape) == 2:
+            ocr_img = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+        else:
+            ocr_img = image
+        raw = reader.ocr(ocr_img, cls=False)
+        # raw format: [[[bbox, (text, confidence)], ...]] (list of pages)
+        if not raw or not raw[0]:
+            return []
+        entries = raw[0]
+        # Apply allowlist filter if specified
+        if allowlist:
+            allowset = set(allowlist)
+            entries = [(bbox, ("".join(c for c in text if c in allowset), conf))
+                       for bbox, (text, conf) in entries]
+            entries = [(bbox, (text, conf)) for bbox, (text, conf) in entries if text]
+        if detail == 0:
+            return [text for _bbox, (text, _conf) in entries]
+        else:
+            return [(_bbox, text, conf) for _bbox, (text, conf) in entries]
 
 # ============================================================
 # CLICK TRAIL (debug tap logging)
