@@ -23,7 +23,7 @@ from actions.quests import (
     _track_quest_progress, _record_rally_started, _effective_remaining,
     _quest_rallies_pending, _quest_last_seen, _quest_target,
     _quest_pending_since, _quest_rally_slots, _tower_quest_state,
-    _is_troop_defending, _is_troop_defending_relaxed,
+    _is_troop_in_building, _is_troop_in_building_relaxed,
     _navigate_to_tower, _run_tower_quest,
     _wait_for_rallies, _ocr_quest_rows, _claim_quest_rewards,
     _eg_troops_available, _recall_stray_stationed,
@@ -52,7 +52,8 @@ from actions.titans import restore_ap, rally_titan
 
 # -- evil guard --
 from actions.evil_guard import (
-    rally_eg, search_eg_reset, test_eg_positions,
+    rally_eg, rally_eg_resume, search_eg_reset, test_eg_positions,
+    get_eg_rally_state, clear_eg_rally_state,
     EG_PRIEST_POSITIONS,
 )
 

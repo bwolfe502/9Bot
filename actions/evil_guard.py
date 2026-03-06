@@ -80,10 +80,57 @@ EG_PRIEST_POSITIONS = [
 ]
 
 
-def _search_eg_center(device):
+_MAX_EG_SEARCH_ATTEMPTS = 5  # max times to cycle through EGs looking for unclaimed
+
+# Minimum march time (seconds) before yielding to other tasks.
+# Shorter marches aren't worth the overhead of saving state + navigating back.
+_EG_YIELD_THRESHOLD_S = 30
+
+# Per-device EG rally state for async march waiting.
+# When rally_eg dispatches a troop with a long march, it saves state here
+# and returns "marching".  The quest runner resumes via rally_eg_resume().
+_eg_rally_state = {}  # device -> dict
+
+
+def get_eg_rally_state(device):
+    """Return active EG rally state for device, or None."""
+    return _eg_rally_state.get(device)
+
+
+def clear_eg_rally_state(device):
+    """Clear any saved EG rally state for device."""
+    _eg_rally_state.pop(device, None)
+
+
+def _capture_eg_coords(device):
+    """Capture EG centroid from protocol entity data.  Returns (X, Z) or None."""
+    try:
+        from startup import get_protocol_eg_coords
+        return get_protocol_eg_coords(device)
+    except ImportError:
+        return None
+
+
+def _get_march_eta_seconds(device):
+    """Get seconds until the soonest marching troop arrives.  Returns float or None."""
+    try:
+        from startup import get_protocol_march_eta
+        return get_protocol_march_eta(device)
+    except ImportError:
+        return None
+
+
+def _search_eg_center(device, skip_claimed=True):
     """Navigate to map → open search → rally tab → select EG → search.
-    Centers the camera on the nearest Evil Guard. Does NOT close the overlay.
-    Returns True if search succeeded, False otherwise."""
+    Centers the camera on the nearest Evil Guard.
+
+    If skip_claimed=True and protocol is active, checks entity data after
+    each search.  If an alliance troop is already targeting this EG (boss
+    or any of its 5 priests), taps search again to cycle to the next
+    closest EG.  Gives up after _MAX_EG_SEARCH_ATTEMPTS.
+
+    Returns True if search succeeded (centered on unclaimed EG), False otherwise.
+    """
     log = get_logger("actions", device)
 
     if not navigate(Screen.MAP, device):
@@ -120,6 +167,45 @@ def _search_eg_center(device):
     timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                1, "eg_search_complete")
 
+    # --- Protocol-based claimed check with search cycling ---
+    if skip_claimed:
+        try:
+            from startup import get_protocol_eg_claimed
+        except ImportError:
+            get_protocol_eg_claimed = None
+
+        if get_protocol_eg_claimed is not None:
+            for attempt in range(_MAX_EG_SEARCH_ATTEMPTS):
+                # Wait for entity data to arrive after camera settles
+                time.sleep(1.0)
+                claimed = get_protocol_eg_claimed(device)
+                if claimed is None:
+                    log.debug("EG search: protocol unavailable, skipping claimed check")
+                    break  # no protocol data — proceed with this EG
+                if not claimed:
+                    log.info("EG search: EG #%d is unclaimed — proceeding", attempt + 1)
+                    break  # this EG is free
+                log.warning("EG search: EG #%d claimed by alliance — searching next",
+                            attempt + 1)
+                save_failure_screenshot(device, f"eg_claimed_skip_{attempt + 1}")
+                # Re-open search and tap search again to cycle to next EG
+                logged_tap(device, 900, 1800, "eg_search_btn_retry")
+                timed_wait(
+                    device,
+                    lambda: find_image(load_screenshot(device), "search.png",
+                                       threshold=0.6) is not None,
+                    2, "eg_retry_search_menu")
+                if not wait_for_image_and_tap("search.png", device, timeout=3,
+                                              threshold=0.65):
+                    log.warning("EG search: could not find search button for retry")
+                    break
+                timed_wait(device, lambda: check_screen(device) == Screen.MAP,
+                           1, "eg_retry_search_complete")
+            else:
+                log.warning("EG search: all %d EGs claimed — aborting",
+                            _MAX_EG_SEARCH_ATTEMPTS)
+                return False
+
     return True
 
 
@@ -129,7 +215,7 @@ def search_eg_reset(device):
     log = get_logger("actions", device)
     log.info("Searching EG to reset titan distance...")
 
-    if not _search_eg_center(device):
+    if not _search_eg_center(device, skip_claimed=False):
         return False
 
     # Close out — tap X twice (EG view + search menu)
@@ -218,8 +304,26 @@ def _probe_priest(device, x, y, label):
     return False
 
 
+def rally_eg_resume(device, stop_check=None):
+    """Resume an EG rally after yielding for a long march.
+
+    Pops saved state, navigates back to the EG using saved coordinates,
+    and restarts the priest attack sequence.  Dead priests are re-probed
+    (fast misses), remaining live priests are attacked normally.
+    """
+    state = _eg_rally_state.pop(device, None)
+    if not state:
+        return False
+    log = get_logger("actions", device)
+    log.info("Resuming EG rally at coords (%d, %d) — %d priests dead, %d attacked",
+             state["eg_coords"][0], state["eg_coords"][1],
+             state["priests_dead"], state["attacks_completed"])
+    return rally_eg(device, stop_check=stop_check,
+                    _eg_coords_override=state["eg_coords"])
+
+
 @timed_action("rally_eg")
-def rally_eg(device, stop_check=None):
+def rally_eg(device, stop_check=None, _eg_coords_override=None):
     """Start an evil guard rally attacking dark priests around an EG.
 
     Uses probe-and-verify: taps each candidate position, checks if the attack
@@ -228,10 +332,15 @@ def rally_eg(device, stop_check=None):
     of aborting on the first miss.
 
     stop_check: optional callable returning True if we should abort early.
+    _eg_coords_override: (X, Z) tuple to navigate to instead of searching
+        (used by rally_eg_resume after a march yield).
     Persistent screenshots saved to debug/failures/ at every probe and failure.
     """
     log = get_logger("actions", device)
-    log.debug("rally_eg() called")
+    log.debug("rally_eg() called%s", " (resume)" if _eg_coords_override else "")
+    # Clear any orphaned state from a previous incomplete rally
+    if not _eg_coords_override:
+        _eg_rally_state.pop(device, None)
     if config.get_device_config(device, "auto_heal"):
         heal_all(device)
 
@@ -252,15 +361,38 @@ def rally_eg(device, stop_check=None):
             log.warning("Not enough AP for evil guard rally (have %d, need %d)", ap[0], config.AP_COST_EVIL_GUARD)
             return False
 
-    # Search EG once — centers camera, stays centered for all priests
-    config.set_device_status(device, "Searching for Evil Guard...")
-    if not _search_eg_center(device):
-        save_failure_screenshot(device, "eg_search_failed")
-        return False
+    eg_coords = None
+
+    if _eg_coords_override:
+        # Resume path — navigate to saved EG coords instead of searching
+        from actions.reinforce_ally import navigate_to_coord
+        config.set_device_status(device, "Returning to Evil Guard...")
+        if not navigate_to_coord(device, _eg_coords_override[0],
+                                 _eg_coords_override[1], stop_check):
+            log.warning("Failed to navigate back to EG coords")
+            save_failure_screenshot(device, "eg_resume_nav_failed")
+            return False
+        eg_coords = _eg_coords_override
+        time.sleep(1)
+    else:
+        # Normal path — search for nearest unclaimed EG
+        config.set_device_status(device, "Searching for Evil Guard...")
+        if not _search_eg_center(device):
+            save_failure_screenshot(device, "eg_search_failed")
+            return False
 
     # Wait for search overlay to fully close and camera to settle
     timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                1.5, "eg_search_overlay_close")
+
+    # Capture EG world coordinates from protocol entity data (for async resume)
+    if not eg_coords:
+        time.sleep(0.5)  # allow entity data to arrive
+        eg_coords = _capture_eg_coords(device)
+    if eg_coords:
+        log.info("EG coords: (%d, %d)", eg_coords[0], eg_coords[1])
+    else:
+        log.debug("EG coords not available from protocol — will poll synchronously")
     # Verify we're back on map_screen (search overlay dismissed)
     if check_screen(device) != Screen.MAP:
         log.debug("EG: search overlay may still be open, waiting...")
@@ -581,6 +713,21 @@ def rally_eg(device, stop_check=None):
         if not click_depart_with_fallback(1):
             return False
         config.set_device_status(device, "Marching to Dark Priest (1/5)...")
+        # Check march ETA — yield to other tasks if march is long
+        march_eta = _get_march_eta_seconds(device)
+        if eg_coords and march_eta is not None and march_eta > _EG_YIELD_THRESHOLD_S:
+            log.info("P1: march ETA %.0fs — yielding to other tasks (coords %d,%d)",
+                     march_eta, eg_coords[0], eg_coords[1])
+            _eg_rally_state[device] = {
+                "eg_coords": eg_coords,
+                "march_arrival": time.time() + march_eta,
+                "attacks_completed": 1,
+                "priests_dead": 1,
+                "next_priest_idx": 1,  # next index into EG_PRIEST_POSITIONS (P2)
+                "phase": "priests",
+                "p1_hit": True,
+            }
+            return "marching"
         if not poll_troop_ready(300, 1):
             return False
         log.info("P1: rally completed")
@@ -620,6 +767,22 @@ def rally_eg(device, stop_check=None):
                 continue
             timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                        1, "eg_depart_to_map")
+            # Check march ETA — yield to other tasks if march is long
+            march_eta = _get_march_eta_seconds(device)
+            if eg_coords and march_eta is not None and march_eta > _EG_YIELD_THRESHOLD_S:
+                log.info("P%d: march ETA %.0fs — yielding to other tasks",
+                         pnum, march_eta)
+                _eg_rally_state[device] = {
+                    "eg_coords": eg_coords,
+                    "march_arrival": time.time() + march_eta,
+                    "attacks_completed": attacks_completed + 1,
+                    "priests_dead": priests_dead + 1,
+                    "next_priest_idx": i + 1,  # next index into EG_PRIEST_POSITIONS
+                    "phase": "priests" if i + 1 < 5 else "boss",
+                    "p1_hit": p1_hit,
+                    "missed_priests": list(missed_priests),
+                }
+                return "marching"
             # First priest we attack gets the long-march budget (240s) since
             # dead priests shift the long march to whichever is first alive.
             march_budget = 300 if attacks_completed == 0 else 60

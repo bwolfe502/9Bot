@@ -371,6 +371,33 @@ def get_protocol_troops_home(device=None):
     return home_count
 
 
+def get_protocol_troop_in_building(device=None):
+    """Check if any of our troops is in a building (tower/fortress).
+
+    Returns True if any lineup has state BUILDING_OCCUPY (11) or
+    BUILDING_DEFEND (12).  Returns False if protocol confirms no troop
+    in a building.  Returns None if protocol is unavailable or stale.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("lineups", max_age_s=30.0):
+            return None
+        lineups = state.lineups
+        lineup_states = state.lineup_states
+        if not lineups:
+            return None
+        for lid, lu in lineups.items():
+            ls = lineup_states.get(lid)
+            effective_state = ls.state if ls is not None else lu.state
+            if effective_state in (11, 12):  # BUILDING_OCCUPY / BUILDING_DEFEND
+                return True
+        return False
+    except Exception:
+        return None
+
+
 def get_protocol_chat_messages(device=None):
     """Return recent chat messages for *device*, or empty list."""
     state = _get_device_state(device)
@@ -433,6 +460,71 @@ def get_protocol_kvk_tower_troops(device=None):
             return None
         troops = state.kvk_tower_troops
         return troops if troops is not None else None
+    except Exception:
+        return None
+
+
+def get_protocol_eg_coords(device=None):
+    """Return centroid (X, Z) of visible EVIL entities, or None.
+
+    Should be called while the camera is centered on an Evil Guard so that
+    EVIL entities are in the viewport.  Returns None when protocol is off
+    or no EVIL entities are visible.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("entities", max_age_s=10.0):
+            return None
+        return state.get_evil_entity_centroid()
+    except Exception:
+        return None
+
+
+def get_protocol_march_eta(device=None):
+    """Return seconds until the soonest marching (OUT_CITY) troop arrives.
+
+    Returns None when protocol is off, stale, or no troop is marching.
+    Returns 0 if the troop has already arrived (stateEndTs in the past).
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("lineups", max_age_s=30.0):
+            return None
+        lineup_states = state.lineup_states
+        if not lineup_states:
+            return None
+        server_ts = state.server_time
+        now_ms = int(time.time() * 1000)
+        ref_ms = server_ts if server_ts else now_ms
+        soonest_remaining = None
+        for lid, ls in lineup_states.items():
+            if ls.state == 2 and ls.stateEndTs > 0:  # OUT_CITY
+                remaining_s = max(0, (ls.stateEndTs - ref_ms) / 1000.0)
+                if soonest_remaining is None or remaining_s < soonest_remaining:
+                    soonest_remaining = remaining_s
+        return soonest_remaining
+    except Exception:
+        return None
+
+
+def get_protocol_eg_claimed(device=None):
+    """Check if an alliance troop is targeting a visible Evil Guard.
+
+    Returns None when protocol is off or entity data is stale (caller
+    should fall through to vision-based detection).
+    Returns True/False when protocol has fresh entity data.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("entities", max_age_s=10.0):
+            return None
+        return state.is_eg_claimed_by_ally()
     except Exception:
         return None
 

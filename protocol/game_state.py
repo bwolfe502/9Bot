@@ -395,6 +395,112 @@ class GameState:
         with self._lock:
             return dict(self._kvk_tower_troops)
 
+    def is_eg_claimed_by_ally(self) -> bool:
+        """Check if any visible EVIL entities are targeted by an alliance troop.
+
+        Scans _entities for:
+        1. All EVIL entities (MapUnitType=27) — the EG boss + up to 5 priests
+        2. All PLAYER_TROOP entities (MapUnitType=1) from own alliance
+        3. Match: does any ally troop's AttackInfo.ID or BattleInfo.target
+           point at one of the EVIL entity IDs?
+
+        Returns True if any alliance troop is marching to or fighting
+        a specific EVIL entity currently in the viewport.
+        """
+        with self._lock:
+            # 1. Collect all EVIL entity IDs and coords in viewport
+            evil_ids = set()
+            evil_coords = []
+            for eid, ent in self._entities.items():
+                etype = ent.get("field_2", ent.get("type", -1))
+                if etype == 27:  # MapUnitType.EVIL
+                    evil_ids.add(eid)
+                    x, z = self._entity_coords(ent)
+                    if x or z:
+                        evil_coords.append((x, z))
+
+            if not evil_ids:
+                return False  # no EVIL entities visible
+
+            # 2. Check each PLAYER_TROOP for targeting one of these EVILs
+            own_uid = self._own_union_id
+            for eid, ent in self._entities.items():
+                etype = ent.get("field_2", ent.get("type", -1))
+                if etype != 1:  # not PLAYER_TROOP
+                    continue
+
+                # Must be alliance member
+                owner = ent.get("field_3") or ent.get("owner")
+                if not isinstance(owner, dict):
+                    continue
+                entity_uid = owner.get("unionID", 0)
+                if own_uid and entity_uid and entity_uid != own_uid:
+                    continue
+                if not entity_uid:
+                    continue
+
+                # Extract TroopInfo from PropertyUnion
+                prop = ent.get("field_5")
+                if not isinstance(prop, dict):
+                    continue
+                troop_info = prop.get("field_1")  # PropertyUnion.field_1 = TroopInfo
+                if not isinstance(troop_info, dict):
+                    continue
+
+                # Check BattleInfo.target (TroopInfo.field_2 = BattleInfo)
+                battle_info = troop_info.get("field_2")
+                if isinstance(battle_info, dict):
+                    target_id = battle_info.get("field_2") or battle_info.get("target", 0)
+                    if target_id and target_id in evil_ids:
+                        log.info("EG claimed: ally troop %s BattleInfo.target=%s matches EVIL",
+                                 eid, target_id)
+                        return True
+
+                # Check AttackInfo (TroopInfo.field_17 = AttackInfo, sequential=true)
+                attack_info = troop_info.get("field_17")
+                if isinstance(attack_info, dict):
+                    atk_typ = attack_info.get("typ") or attack_info.get("field_1", 0)
+                    atk_id = attack_info.get("ID") or attack_info.get("field_2", 0)
+                    if atk_typ == 27 and atk_id and atk_id in evil_ids:
+                        log.info("EG claimed: ally troop %s AttackInfo.ID=%s matches EVIL",
+                                 eid, atk_id)
+                        return True
+                    # Coordinate proximity fallback
+                    atk_coord = attack_info.get("Coord") or attack_info.get("field_3")
+                    if isinstance(atk_coord, dict) and evil_coords:
+                        ax = atk_coord.get("X") or atk_coord.get("1", 0)
+                        az = atk_coord.get("Z") or atk_coord.get("2", 0)
+                        if ax or az:
+                            for ex, ez in evil_coords:
+                                if abs(ax - ex) < 500000 and abs(az - ez) < 500000:
+                                    log.info("EG claimed: ally troop %s AttackInfo.Coord "
+                                             "(%s,%s) near EVIL (%s,%s)",
+                                             eid, ax, az, ex, ez)
+                                    return True
+
+            return False
+
+    def get_evil_entity_centroid(self):
+        """Return centroid (X, Z) of all EVIL (type=27) entities in viewport.
+
+        Returns None if no EVIL entities are visible.  The centroid
+        approximates the EG boss position (boss is at center of the
+        priest ring).
+        """
+        with self._lock:
+            coords = []
+            for eid, ent in self._entities.items():
+                etype = ent.get("field_2", ent.get("type", -1))
+                if etype == 27:
+                    x, z = self._entity_coords(ent)
+                    if x or z:
+                        coords.append((x, z))
+            if not coords:
+                return None
+            avg_x = sum(c[0] for c in coords) // len(coords)
+            avg_z = sum(c[1] for c in coords) // len(coords)
+            return (avg_x, avg_z)
+
     def set_ally_monitoring(self, enabled: bool) -> None:
         """Enable or disable ally city tracking.  Called by run_auto_reinforce_ally."""
         with self._lock:
