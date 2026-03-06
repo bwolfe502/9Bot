@@ -16,6 +16,9 @@ easyocr==1.7.2; sys_platform == "win32"
 pyobjc-framework-Vision; sys_platform == "darwin"
 pywin32==311; sys_platform == "win32"
 websockets==16.0
+frida>=16.0.0; sys_platform == "win32"
+frida-tools>=12.0.0; sys_platform == "win32"
+lief>=0.16.0; sys_platform == "win32"
 qrcode==8.2
 anthropic>=0.49.0
 # pywebview is optional — provides native desktop window instead of browser tab.
