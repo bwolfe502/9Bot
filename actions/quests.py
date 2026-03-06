@@ -486,7 +486,7 @@ def _all_quests_visually_complete(device, quests):
             continue
         if qt in (QuestType.TOWER, QuestType.FORTRESS):
             # Tower is OK as long as a troop is defending
-            if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+            if device in _tower_quest_state or _is_troop_in_building_relaxed(device):
                 continue
             return False
         if qt == QuestType.PVP:
@@ -606,7 +606,12 @@ def _run_rally_loop(device, actionable, stop_check=None):
                 if navigate(Screen.MAP, device) and _eg_troops_available(device):
                     log.info("Starting own EG rally (2+ non-gathering/defending)")
                     config.set_device_status(device, "Rallying Evil Guard...")
-                    if rally_eg(device, stop_check=stop_check):
+                    result = rally_eg(device, stop_check=stop_check)
+                    if result == "marching":
+                        _record_rally_started(device, QuestType.EVIL_GUARD)
+                        log.info("EG rally troop marching — yielding to other tasks")
+                        return False  # exit loop so other tasks can run
+                    if result:
                         _record_rally_started(device, QuestType.EVIL_GUARD)
                         started = True
                 else:
@@ -853,6 +858,27 @@ def check_quests(device, stop_check=None):
             if dev == device and qt in (QuestType.TITAN, QuestType.EVIL_GUARD)
         )
 
+        # Check for active EG march — resume when arrival time has passed
+        from actions.evil_guard import get_eg_rally_state, rally_eg_resume
+        eg_state = get_eg_rally_state(device)
+        if eg_state:
+            if time.time() >= eg_state["march_arrival"]:
+                log.info("EG march arrived — resuming rally")
+                config.set_device_status(device, "Resuming Evil Guard Rally...")
+                result = rally_eg_resume(device, stop_check)
+                if result == "marching":
+                    log.info("EG rally still marching — will resume later")
+                    return True
+                # Rally completed or failed — continue with other quests
+                return True
+            else:
+                remaining = eg_state["march_arrival"] - time.time()
+                log.info("EG troop marching (%.0fs remaining) — doing other tasks",
+                         remaining)
+                # Fall through to other tasks (PVP, gather, tower, etc.)
+                # but skip starting new EG/Titan rallies
+                has_eg = False  # don't start another EG rally
+
         if has_eg or has_titan:
             if _run_rally_loop(device, actionable, stop_check):
                 return True  # stop_check triggered
@@ -1005,30 +1031,49 @@ def _attack_pvp_tower(device, stop_check=None):
 # TOWER QUEST — occupy a tower for alliance quest
 # ============================================================
 
-def _is_troop_defending(device):
-    """Check if any troop is currently defending (for tower quest).
-    Uses cached snapshot if fresh (<30s), otherwise reads panel."""
+def _is_troop_in_building(device):
+    """Check if any of our troops is in a building (tower/fortress).
+
+    Uses protocol fast path (LineupState 11=BUILDING_OCCUPY, 12=BUILDING_DEFEND)
+    which is more precise than generic DEFENDING (which also matches state 5
+    REINFORCE — reinforcing an ally's castle, not a tower).
+
+    Falls through to snapshot-based DEFENDING check when protocol unavailable.
+    """
+    try:
+        from startup import get_protocol_troop_in_building
+        result = get_protocol_troop_in_building(device)
+        if result is not None:
+            return result
+    except ImportError:
+        pass
+    # Protocol unavailable — fall back to snapshot DEFENDING check
     snapshot = get_troop_status(device)
     if snapshot is not None and snapshot.age_seconds < 30:
         return snapshot.any_doing(TroopAction.DEFENDING)
-    # Need fresh read — must be on map screen
     snapshot = read_panel_statuses(device)
     if snapshot is None:
         return False
     return snapshot.any_doing(TroopAction.DEFENDING)
 
 
-def _is_troop_defending_relaxed(device):
-    """Like _is_troop_defending but accepts snapshots up to 120s old.
+def _is_troop_in_building_relaxed(device):
+    """Like _is_troop_in_building but accepts snapshots up to 120s old.
 
     Quest OCR takes 60+ seconds, so by the time _run_tower_quest runs the
     snapshot from check_quests start is stale for the 30s window but still
-    valid — defending status doesn't change that quickly.
+    valid — building status doesn't change that quickly.
     """
+    try:
+        from startup import get_protocol_troop_in_building
+        result = get_protocol_troop_in_building(device)
+        if result is not None:
+            return result
+    except ImportError:
+        pass
     snapshot = get_troop_status(device)
     if snapshot is not None and snapshot.age_seconds < 120:
         return snapshot.any_doing(TroopAction.DEFENDING)
-    # Snapshot too old — try fresh panel read (needs MAP screen)
     snapshot = read_panel_statuses(device)
     if snapshot is None:
         return False
@@ -1094,16 +1139,32 @@ def occupy_tower(device, stop_check=None):
     """
     log = get_logger("actions", device)
 
-    # Check if already defending
-    if navigate(Screen.MAP, device):
-        if _is_troop_defending(device):
-            log.info("Troop already defending tower — no action needed")
-            return True
+    # Protocol fast path — skip visual checks entirely when protocol available
+    if _is_troop_in_building(device):
+        log.info("Troop already in building (protocol) — no action needed")
+        return True
+
+    try:
+        from startup import get_protocol_troops_home
+        proto_troops = get_protocol_troops_home(device)
+        if proto_troops is not None and proto_troops < 1:
+            log.warning("No troops available (protocol) — skipping tower deploy")
+            return False
+    except ImportError:
+        pass
 
     if stop_check and stop_check():
         return False
 
-    # Need at least 1 troop
+    # Visual fallback — navigate to MAP for panel checks
+    if not navigate(Screen.MAP, device):
+        log.warning("Failed to navigate to MAP for tower deploy")
+        return False
+
+    if stop_check and stop_check():
+        return False
+
+    # Need at least 1 troop (visual check if protocol didn't confirm)
     troops = troops_avail(device)
     if troops < 1:
         log.warning("No troops available to occupy tower")
@@ -1167,15 +1228,27 @@ def occupy_tower(device, stop_check=None):
     if stop_check and stop_check():
         return False
 
-    # Tap depart
+    # Tap depart (with depart_anyway fallback for low-health troops)
     if wait_for_image_and_tap("depart.png", device, timeout=5):
         log.info("Tower troop deployed!")
         _tower_quest_state[device] = {"deployed_at": time.time()}
         return True
-    else:
-        log.warning("Depart button not found after tower reinforce")
-        save_failure_screenshot(device, "tower_depart_missing")
-        return False
+
+    # Depart Anyway fallback — troops are low health / underpowered
+    screen = load_screenshot(device)
+    if screen is not None and find_image(screen, "depart_anyway.png", threshold=0.65):
+        if config.AUTO_HEAL_ENABLED:
+            log.info("Tower quest: troops need healing — healing first")
+            heal_all(device)
+            return False  # retry next cycle (heal_all navigates away)
+        tap_image("depart_anyway.png", device, threshold=0.65)
+        log.warning("Tower troop deployed via Depart Anyway (troops low health)")
+        _tower_quest_state[device] = {"deployed_at": time.time()}
+        return True
+
+    log.warning("Depart button not found after tower reinforce")
+    save_failure_screenshot(device, "tower_depart_missing")
+    return False
 
 
 def _recall_tap_sequence(device, log, stop_check=None):
@@ -1305,7 +1378,7 @@ def _run_tower_quest(device, quests, stop_check=None, all_complete=False):
         # No tower quests on screen — but troop may still be defending from a
         # previous quest. Recall it so it's not stuck indefinitely.
         # During auto quest a defending troop with no quest is a wasted slot.
-        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+        if device in _tower_quest_state or _is_troop_in_building_relaxed(device):
             log.info("No tower quests but troop still defending — recalling")
             recall_tower_troop(device, stop_check)
         return
@@ -1316,14 +1389,14 @@ def _run_tower_quest(device, quests, stop_check=None, all_complete=False):
     if all_done:
         # All tower/fortress quests complete — free the troop for rallies/gold.
         # Don't keep it defending when there's no tower quest benefit.
-        if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+        if device in _tower_quest_state or _is_troop_in_building_relaxed(device):
             log.info("All tower quests complete — recalling tower troop")
             recall_tower_troop(device, stop_check)
         return
 
     # Tower quest is active — check if already defending.
     # _tower_quest_state is set on successful deploy (reliable within session).
-    if device in _tower_quest_state or _is_troop_defending_relaxed(device):
+    if device in _tower_quest_state or _is_troop_in_building_relaxed(device):
         log.info("Tower quest active, troop already defending — skipping")
         config.set_device_status(device, "Tower Quest: Defending...")
         return

@@ -2,7 +2,7 @@
 
 Tests _deduplicate_quests, _get_actionable_quests, _ocr_quest_rows,
 _claim_quest_rewards, _wait_for_rallies, _run_rally_loop, _check_quests_legacy,
-get_quest_tracking_state, get_quest_last_checked, _is_troop_defending_relaxed.
+get_quest_tracking_state, get_quest_last_checked, _is_troop_in_building_relaxed.
 """
 import time
 import numpy as np
@@ -16,7 +16,7 @@ from actions.quests import (_deduplicate_quests, _get_actionable_quests,
                             _marker_errors, _quest_pending_since,
                             _quest_last_checked,
                             get_quest_tracking_state, get_quest_last_checked,
-                            _claim_quest_rewards, _is_troop_defending_relaxed,
+                            _claim_quest_rewards, _is_troop_in_building_relaxed,
                             _wait_for_rallies, _run_rally_loop,
                             _check_quests_legacy, _ocr_quest_rows,
                             _recall_tap_sequence)
@@ -184,7 +184,7 @@ class TestAllQuestsVisuallyComplete:
         ]
         assert _all_quests_visually_complete(mock_device, quests) is True
 
-    @patch("actions.quests._is_troop_defending_relaxed", return_value=True)
+    @patch("actions.quests._is_troop_in_building_relaxed", return_value=True)
     def test_tower_ok_if_defending(self, mock_defending, mock_device):
         quests = [
             {"quest_type": QuestType.TITAN, "current": 15, "target": 15, "completed": False},
@@ -192,7 +192,7 @@ class TestAllQuestsVisuallyComplete:
         ]
         assert _all_quests_visually_complete(mock_device, quests) is True
 
-    @patch("actions.quests._is_troop_defending_relaxed", return_value=False)
+    @patch("actions.quests._is_troop_in_building_relaxed", return_value=False)
     def test_tower_blocks_if_not_defending(self, mock_defending, mock_device):
         quests = [
             {"quest_type": QuestType.TITAN, "current": 15, "target": 15, "completed": False},
@@ -200,7 +200,7 @@ class TestAllQuestsVisuallyComplete:
         ]
         assert _all_quests_visually_complete(mock_device, quests) is False
 
-    @patch("actions.quests._is_troop_defending_relaxed", return_value=True)
+    @patch("actions.quests._is_troop_in_building_relaxed", return_value=True)
     def test_fortress_ok_if_defending(self, mock_defending, mock_device):
         quests = [
             {"quest_type": QuestType.FORTRESS, "current": 5, "target": 30, "completed": False},
@@ -1047,7 +1047,7 @@ class TestClaimQuestRewards:
 
 
 # ============================================================
-# _is_troop_defending_relaxed
+# _is_troop_in_building_relaxed
 # ============================================================
 
 class TestIsTroopDefendingRelaxed:
@@ -1057,14 +1057,14 @@ class TestIsTroopDefendingRelaxed:
         snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
         # Make snapshot fresh (age < 120s)
         with patch("actions.quests.get_troop_status", return_value=snapshot):
-            assert _is_troop_defending_relaxed(mock_device) is True
+            assert _is_troop_in_building_relaxed(mock_device) is True
 
     def test_fresh_snapshot_not_defending(self, mock_device):
         from troops import TroopStatus, TroopAction, DeviceTroopSnapshot
         troops = [TroopStatus(action=TroopAction.HOME)]
         snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
         with patch("actions.quests.get_troop_status", return_value=snapshot):
-            assert _is_troop_defending_relaxed(mock_device) is False
+            assert _is_troop_in_building_relaxed(mock_device) is False
 
     def test_stale_snapshot_falls_to_panel(self, mock_device):
         """Snapshot older than 120s falls through to panel read."""
@@ -1077,12 +1077,12 @@ class TestIsTroopDefendingRelaxed:
         fresh_snapshot = DeviceTroopSnapshot(device=mock_device, troops=troops)
         with patch("actions.quests.get_troop_status", return_value=old_snapshot), \
              patch("actions.quests.read_panel_statuses", return_value=fresh_snapshot):
-            assert _is_troop_defending_relaxed(mock_device) is True
+            assert _is_troop_in_building_relaxed(mock_device) is True
 
     def test_no_snapshot_no_panel(self, mock_device):
         with patch("actions.quests.get_troop_status", return_value=None), \
              patch("actions.quests.read_panel_statuses", return_value=None):
-            assert _is_troop_defending_relaxed(mock_device) is False
+            assert _is_troop_in_building_relaxed(mock_device) is False
 
 
 # ============================================================
