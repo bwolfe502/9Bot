@@ -41,7 +41,8 @@ from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      check_quests, rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop,
-                     reinforce_ally_castle, capture_home_coords)
+                     reinforce_ally_castle, capture_home_coords,
+                     get_eg_rally_state, rally_eg_resume)
 from territory import frontline_occupy_loop
 
 
@@ -132,7 +133,18 @@ def run_auto_quest(device, stop_event):
                     continue
                 read_panel_statuses(device)
                 troops = troops_avail(device)
-                if troops > config.get_device_config(device, "min_troops"):
+                # Resume EG rally once the march countdown expires.
+                eg_state = get_eg_rally_state(device)
+                if eg_state and time.time() >= eg_state["march_arrival"]:
+                    dlog.info("EG march timer expired — resuming at coords %s",
+                              eg_state.get("eg_coords"))
+                    config.set_device_status(device, "Resuming Evil Guard Rally...")
+                    result = rally_eg_resume(device, stop_check)
+                    if result == "marching":
+                        dlog.info("EG rally yielded again — will resume later")
+                    if stop_check():
+                        break
+                elif troops > config.get_device_config(device, "min_troops"):
                     config.set_device_status(device, "Checking Quests...")
                     check_quests(device, stop_check=stop_check)
                     _last_quest_check[device] = time.time()

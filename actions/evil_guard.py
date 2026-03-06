@@ -103,12 +103,61 @@ def clear_eg_rally_state(device):
 
 
 def _capture_eg_coords(device):
-    """Capture EG centroid from protocol entity data.  Returns (X, Z) or None."""
+    """Capture EG coordinates from the EBSearchMonsterAck message.
+
+    Must be called BEFORE the EG search so the listener is ready.
+    Returns a callable that yields (X, Z) or None after the search completes.
+    """
     try:
-        from startup import get_protocol_eg_coords
-        return get_protocol_eg_coords(device)
+        from startup import get_protocol_event_bus
     except ImportError:
         return None
+    bus = get_protocol_event_bus(device)
+    if bus is None:
+        return None
+    result = {}
+
+    def _on_search_ack(msg):
+        if isinstance(msg, dict):
+            x = msg.get("x", 0)
+            z = msg.get("z", 0)
+        else:
+            x = getattr(msg, "x", 0)
+            z = getattr(msg, "z", 0)
+        if x and z:
+            result["coords"] = (x, z)
+        bus.off("msg:EBSearchMonsterAck", _on_search_ack)
+        bus.off("msg:LBSearchMonsterAck", _on_search_ack)
+
+    bus.on("msg:EBSearchMonsterAck", _on_search_ack)
+    bus.on("msg:LBSearchMonsterAck", _on_search_ack)
+    return result
+
+
+def _get_captured_eg_coords(capture_result, device):
+    """Read coords from a capture started by _capture_eg_coords.
+
+    Waits briefly for the message to arrive, then returns (X, Z) or None.
+    """
+    if capture_result is None:
+        return None
+    log = get_logger("actions", device)
+    for _ in range(10):
+        if "coords" in capture_result:
+            x, z = capture_result["coords"]
+            log.info("EG coordinates from search response: (%d, %d)", x, z)
+            return (x, z)
+        time.sleep(0.5)
+    log.debug("EG coord capture: no EBSearchMonsterAck received")
+    # Clean up listener if it never fired
+    try:
+        from startup import get_protocol_event_bus
+        bus = get_protocol_event_bus(device)
+        if bus:
+            bus.off("msg:EBSearchMonsterAck", None)
+    except Exception:
+        pass
+    return None
 
 
 def _get_march_eta_seconds(device):
@@ -118,6 +167,7 @@ def _get_march_eta_seconds(device):
         return get_protocol_march_eta(device)
     except ImportError:
         return None
+
 
 
 def _search_eg_center(device, skip_claimed=True):
@@ -315,9 +365,8 @@ def rally_eg_resume(device, stop_check=None):
     if not state:
         return False
     log = get_logger("actions", device)
-    log.info("Resuming EG rally at coords (%d, %d) — %d priests dead, %d attacked",
-             state["eg_coords"][0], state["eg_coords"][1],
-             state["priests_dead"], state["attacks_completed"])
+    log.info("Resuming EG rally at coords (%d, %d)",
+             state["eg_coords"][0], state["eg_coords"][1])
     return rally_eg(device, stop_check=stop_check,
                     _eg_coords_override=state["eg_coords"])
 
@@ -362,6 +411,7 @@ def rally_eg(device, stop_check=None, _eg_coords_override=None):
             return False
 
     eg_coords = None
+    coord_capture = None
 
     if _eg_coords_override:
         # Resume path — navigate to saved EG coords instead of searching
@@ -375,6 +425,8 @@ def rally_eg(device, stop_check=None, _eg_coords_override=None):
         eg_coords = _eg_coords_override
         time.sleep(1)
     else:
+        # Start listening for EBSearchMonsterAck BEFORE the search
+        coord_capture = _capture_eg_coords(device)
         # Normal path — search for nearest unclaimed EG
         config.set_device_status(device, "Searching for Evil Guard...")
         if not _search_eg_center(device):
@@ -385,14 +437,14 @@ def rally_eg(device, stop_check=None, _eg_coords_override=None):
     timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                1.5, "eg_search_overlay_close")
 
-    # Capture EG world coordinates from protocol entity data (for async resume)
+    # Read EG coordinates captured from the search response.
+    # Once saved, used independently — no further feed reads needed.
     if not eg_coords:
-        time.sleep(0.5)  # allow entity data to arrive
-        eg_coords = _capture_eg_coords(device)
+        eg_coords = _get_captured_eg_coords(coord_capture, device)
     if eg_coords:
-        log.info("EG coords: (%d, %d)", eg_coords[0], eg_coords[1])
+        log.info("EG coords captured: (%d, %d)", eg_coords[0], eg_coords[1])
     else:
-        log.debug("EG coords not available from protocol — will poll synchronously")
+        log.warning("EG coord capture failed — async yield disabled for this run")
     # Verify we're back on map_screen (search overlay dismissed)
     if check_screen(device) != Screen.MAP:
         log.debug("EG: search overlay may still be open, waiting...")
@@ -714,18 +766,15 @@ def rally_eg(device, stop_check=None, _eg_coords_override=None):
             return False
         config.set_device_status(device, "Marching to Dark Priest (1/5)...")
         # Check march ETA — yield to other tasks if march is long
+        time.sleep(1)
         march_eta = _get_march_eta_seconds(device)
+        log.info("P1: eg_coords=%s, march_eta=%s", eg_coords, march_eta)
         if eg_coords and march_eta is not None and march_eta > _EG_YIELD_THRESHOLD_S:
-            log.info("P1: march ETA %.0fs — yielding to other tasks (coords %d,%d)",
-                     march_eta, eg_coords[0], eg_coords[1])
+            log.warning("P1: march ETA %.0fs — yielding (coords %d,%d)",
+                        march_eta, eg_coords[0], eg_coords[1])
             _eg_rally_state[device] = {
                 "eg_coords": eg_coords,
                 "march_arrival": time.time() + march_eta,
-                "attacks_completed": 1,
-                "priests_dead": 1,
-                "next_priest_idx": 1,  # next index into EG_PRIEST_POSITIONS (P2)
-                "phase": "priests",
-                "p1_hit": True,
             }
             return "marching"
         if not poll_troop_ready(300, 1):
@@ -761,26 +810,24 @@ def rally_eg(device, stop_check=None, _eg_coords_override=None):
             if not check_and_proceed(pnum):
                 log.warning("P%d: check_and_proceed failed after probe hit — skipping", pnum)
                 continue
-            try_stationed_before_depart(pnum)
+            # Only use stationed troop if we already killed a priest this run
+            # (our troop is stationed nearby). Skip on fresh runs to avoid
+            # grabbing an unrelated stationed troop from elsewhere on the map.
+            if attacks_completed > 0:
+                try_stationed_before_depart(pnum)
             if not click_depart_with_fallback(pnum):
                 log.warning("P%d: depart failed — skipping", pnum)
                 continue
             timed_wait(device, lambda: check_screen(device) == Screen.MAP,
                        1, "eg_depart_to_map")
             # Check march ETA — yield to other tasks if march is long
+            time.sleep(1)
             march_eta = _get_march_eta_seconds(device)
             if eg_coords and march_eta is not None and march_eta > _EG_YIELD_THRESHOLD_S:
-                log.info("P%d: march ETA %.0fs — yielding to other tasks",
-                         pnum, march_eta)
+                log.warning("P%d: march ETA %.0fs — yielding", pnum, march_eta)
                 _eg_rally_state[device] = {
                     "eg_coords": eg_coords,
                     "march_arrival": time.time() + march_eta,
-                    "attacks_completed": attacks_completed + 1,
-                    "priests_dead": priests_dead + 1,
-                    "next_priest_idx": i + 1,  # next index into EG_PRIEST_POSITIONS
-                    "phase": "priests" if i + 1 < 5 else "boss",
-                    "p1_hit": p1_hit,
-                    "missed_priests": list(missed_priests),
                 }
                 return "marching"
             # First priest we attack gets the long-march budget (240s) since
@@ -869,7 +916,8 @@ def rally_eg(device, stop_check=None, _eg_coords_override=None):
                 log.warning("P%d retry: check_and_proceed failed — skipping", pnum)
                 priests_dead += 1
                 continue
-            try_stationed_before_depart(pnum)
+            if attacks_completed > 0:
+                try_stationed_before_depart(pnum)
             if not click_depart_with_fallback(pnum):
                 log.warning("P%d retry: depart failed — skipping", pnum)
                 priests_dead += 1
@@ -1024,7 +1072,8 @@ def rally_eg(device, stop_check=None, _eg_coords_override=None):
         save_failure_screenshot(device, "eg_p6_dialog_failed")
         return False
 
-    try_stationed_before_depart(6)
+    if attacks_completed > 0:
+        try_stationed_before_depart(6)
     if not click_depart_with_fallback(6):
         return False
     if not poll_troop_ready(240, 6):

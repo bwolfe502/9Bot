@@ -758,9 +758,14 @@ def check_quests(device, stop_check=None):
     # a wasteful MAP round-trip when already on the quest screen.
     # Stray defender recall is handled by _run_tower_quest AFTER quest OCR,
     # so we know whether an active tower quest needs the defender.
+    # Skip recall when an EG rally is in progress — the troop is intentionally
+    # stationed near the Evil Guard waiting for its march timer to expire.
+    from actions.evil_guard import get_eg_rally_state
     snapshot = get_troop_status(device)
     if snapshot is not None and snapshot.any_doing(TroopAction.STATIONING):
-        if navigate(Screen.MAP, device):
+        if get_eg_rally_state(device):
+            log.debug("Stationed troop detected but EG rally active — skipping recall")
+        elif navigate(Screen.MAP, device):
             _recall_stray_stationed(device, stop_check)
     if stop_check and stop_check():
         return True
@@ -857,27 +862,6 @@ def check_quests(device, stop_check=None):
             cnt > 0 for (dev, qt), cnt in _quest_rallies_pending.items()
             if dev == device and qt in (QuestType.TITAN, QuestType.EVIL_GUARD)
         )
-
-        # Check for active EG march — resume when arrival time has passed
-        from actions.evil_guard import get_eg_rally_state, rally_eg_resume
-        eg_state = get_eg_rally_state(device)
-        if eg_state:
-            if time.time() >= eg_state["march_arrival"]:
-                log.info("EG march arrived — resuming rally")
-                config.set_device_status(device, "Resuming Evil Guard Rally...")
-                result = rally_eg_resume(device, stop_check)
-                if result == "marching":
-                    log.info("EG rally still marching — will resume later")
-                    return True
-                # Rally completed or failed — continue with other quests
-                return True
-            else:
-                remaining = eg_state["march_arrival"] - time.time()
-                log.info("EG troop marching (%.0fs remaining) — doing other tasks",
-                         remaining)
-                # Fall through to other tasks (PVP, gather, tower, etc.)
-                # but skip starting new EG/Titan rallies
-                has_eg = False  # don't start another EG rally
 
         if has_eg or has_titan:
             if _run_rally_loop(device, actionable, stop_check):

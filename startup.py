@@ -469,13 +469,12 @@ def get_protocol_eg_coords(device=None):
 
     Should be called while the camera is centered on an Evil Guard so that
     EVIL entities are in the viewport.  Returns None when protocol is off
-    or no EVIL entities are visible.
+    or no EVIL entities are visible.  No freshness gate — if EVIL entities
+    are present in the store, they're from the current viewport.
     """
     try:
         state = _get_device_state(device)
         if state is None:
-            return None
-        if not state.is_fresh("entities", max_age_s=10.0):
             return None
         return state.get_evil_entity_centroid()
     except Exception:
