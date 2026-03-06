@@ -68,6 +68,15 @@ echo.
 echo Activating venv...
 call ".venv\Scripts\activate.bat" >nul 2>&1
 
+REM Remove legacy EasyOCR/PyTorch if present (conflicts with PaddlePaddle)
+py -c "import easyocr" >nul 2>&1
+if not errorlevel 1 (
+  echo.
+  echo Removing old OCR engine ^(EasyOCR/PyTorch^) to avoid conflicts...
+  py -m pip uninstall easyocr torch torchvision torchaudio -y -qq 2>nul
+  echo Done.
+)
+
 REM Check if first-time setup (paddleocr not installed yet)
 set FIRST_RUN=0
 py -c "import paddleocr" >nul 2>&1
