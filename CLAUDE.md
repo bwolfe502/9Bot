@@ -14,7 +14,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 |------|---------|-------------|
 | `run_web.py` | Web-only entry point (primary) | `main` (pywebview + browser fallback) |
 | `startup.py` | Shared initialization & shutdown | `initialize`, `shutdown`, `apply_settings`, `create_bug_report_zip`, `get_relay_config`, `device_hash`, `generate_device_token`, `generate_device_ro_token`, `validate_device_token`, `upload_bug_report`, `start_manual_upload`, `get_upload_progress`, `start_auto_upload`, `stop_auto_upload`, `upload_status`, `get_protocol_ap`, `get_protocol_rallies`, `get_protocol_troops_home`, `get_protocol_troop_snapshot`, `get_protocol_territory_grid`, `start_protocol_for_device`, `stop_protocol_for_device`, `get_protocol_chat_messages`, `get_protocol_stats`, `start_apk_patch`, `is_patching`, `get_patch_progress`, `set_protocol_ally_monitoring` |
-| `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_esb`, `run_auto_pass`, `run_auto_occupy`, `run_auto_reinforce`, `run_auto_reinforce_ally`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
+| `runners.py` | Shared task runners | `run_auto_quest`, `run_auto_titan`, `run_auto_groot`, `run_auto_esb`, `run_auto_pass`, `run_frontline_occupy`, `run_auto_reinforce`, `run_auto_reinforce_ally`, `run_auto_mithril`, `run_auto_gold`, `run_repeat`, `run_once`, `launch_task`, `stop_task`, `force_stop_all`, `stop_all_tasks_matching` |
 | `settings.py` | Settings persistence | `DEFAULTS`, `load_settings`, `save_settings`, `SETTINGS_FILE` |
 | `actions/` | Game actions package (8 submodules) | Re-exports all public functions via `__init__.py` |
 | `actions/quests.py` | Quest system + tower quest + PVP attack | `check_quests`, `get_quest_tracking_state`, `get_quest_last_checked`, `reset_quest_tracking`, `occupy_tower`, `recall_tower_troop` |
@@ -29,7 +29,7 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 | `navigation.py` | Screen detection + state-machine navigation | `check_screen`, `navigate` |
 | `troops.py` | Troop counting (pixel/protocol), status model, healing | `troops_avail`, `all_troops_home`, `heal_all`, `read_panel_statuses`, `get_troop_status`, `detect_selected_troop`, `capture_portrait`, `store_portrait`, `identify_troop`, `TroopAction`, `TroopStatus`, `DeviceTroopSnapshot` |
 | `training.py` | Training data collector (JSONL + images) | `configure`, `log_template`, `log_ocr`, `log_screen`, `save_training_image`, `get_training_stats`, `shutdown` |
-| `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `scan_targets`, `_pick_target`, `auto_occupy_loop`, `open_territory_manager`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
+| `territory.py` | Territory grid analysis + auto-occupy | `attack_territory`, `scan_targets`, `_pick_target`, `frontline_occupy_loop`, `diagnose_grid`, `scan_territory_coordinates`, `scan_test_squares` |
 | `protocol/` | Frida Gadget protocol interception (package) | Re-exports all public classes via `__init__.py` |
 | `protocol/interceptor.py` | Frida connection + hook loading | `ProtocolInterceptor` (start/stop/stats) |
 | `protocol/frida_hook.js` | Frida Gadget hook script (loaded into game) | Hooks `TFW.NetMsgData.FromByte/MakeByte` via IL2CPP runtime API |
@@ -257,7 +257,6 @@ LineupState enum (16 values extracted from game binary): see `protocol/game_stat
 - Adjacency check: only attack squares bordering own territory
 - `MANUAL_ATTACK_SQUARES` / `MANUAL_IGNORE_SQUARES` override auto-detection
 - `PASS_BLOCKED_SQUARES` — computed set of squares the bot can't reach (see Pass Zone Model below)
-- `open_territory_manager(device)`: Tkinter window for visual square selection (click to cycle: none → attack → ignore)
 - `diagnose_grid(device)`: diagnostic tool — screenshots all 576 squares, classifies each using the same
   `_get_border_color` + `_classify_square_team` pipeline as `attack_territory`, logs a 24-row character grid
   (Y/G/R/B/?/T), team counts, unknown BGR values with nearest-color distances, and saves annotated debug
@@ -288,10 +287,9 @@ attack/reinforce, deploy troops. Capture timer: 4h total, swings 2h each way.
 - Enemy-occupied tower → attack to clear, then reinforce
 - Friendly tower on frontline → reinforce to stack defense
 
-**Architecture**: `auto_occupy_loop(device, stop_check)` is the main loop. Per-device cooperative
-stop via `stop_check` callback (from `threading.Event.is_set`). No global flags — the old
-`config.auto_occupy_running` global was removed. `run_auto_occupy` in `runners.py` passes
-`stop_event.is_set` directly.
+**Architecture**: `frontline_occupy_loop(device, stop_check)` is the main loop. Per-device cooperative
+stop via `stop_check` callback (from `threading.Event.is_set`). `run_frontline_occupy` in `runners.py`
+passes `stop_event.is_set` directly.
 
 **Target selection** (`scan_targets` + `_pick_target`):
 1. **Priority 1**: Unflagged enemy squares adjacent to own territory (best — no one marching there)
