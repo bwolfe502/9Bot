@@ -32,23 +32,43 @@ py -3.13 -V >nul 2>&1
 if errorlevel 1 (
   echo.
   echo Python 3.13 not found. Installing...
+  set PY_INSTALLED=0
   winget --version >nul 2>&1
   if errorlevel 1 (
+    echo winget not available — downloading Python installer directly...
     echo.
-    echo ERROR: winget is not available on this system.
-    echo Install Python 3.13 manually from https://python.org
-    echo Make sure "Add Python to PATH" and "py launcher" are both checked.
-    pause
-    exit /b 1
+    powershell -Command "Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.13.2/python-3.13.2-amd64.exe' -OutFile '%TEMP%\python-3.13.2-amd64.exe'"
+    if errorlevel 1 (
+      echo.
+      echo ERROR: Failed to download Python installer.
+      echo Install Python 3.13 manually from https://python.org
+      echo Make sure "Add Python to PATH" and "py launcher" are both checked.
+      pause
+      exit /b 1
+    )
+    echo Installing Python 3.13 ^(this may take a minute^)...
+    "%TEMP%\python-3.13.2-amd64.exe" /passive InstallAllUsers=0 PrependPath=1 Include_launcher=1
+    if errorlevel 1 (
+      echo.
+      echo ERROR: Python installer failed.
+      echo Install Python 3.13 manually from https://python.org
+      echo Make sure "Add Python to PATH" and "py launcher" are both checked.
+      pause
+      exit /b 1
+    )
+    del "%TEMP%\python-3.13.2-amd64.exe" 2>nul
+    set PY_INSTALLED=1
   )
-  winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements --scope user
-  if errorlevel 1 (
-    echo.
-    echo ERROR: Failed to install Python 3.13 via winget.
-    echo Install manually from https://python.org
-    echo Make sure "Add Python to PATH" and "py launcher" are both checked.
-    pause
-    exit /b 1
+  if !PY_INSTALLED!==0 (
+    winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements --scope user
+    if errorlevel 1 (
+      echo.
+      echo ERROR: Failed to install Python 3.13 via winget.
+      echo Install manually from https://python.org
+      echo Make sure "Add Python to PATH" and "py launcher" are both checked.
+      pause
+      exit /b 1
+    )
   )
   echo Python 3.13 installed. Refreshing environment...
   REM Refresh PATH from registry — installer updated PATH but this session is stale
@@ -114,40 +134,34 @@ set FIRST_RUN=0
 py -c "import paddleocr" >nul 2>&1
 if errorlevel 1 set FIRST_RUN=1
 
-if %FIRST_RUN%==1 (
-  echo.
-  echo First-time setup: downloading OCR engine.
-  echo This only happens once and may take a few minutes.
-  echo.
-  py -m pip install --upgrade pip -qq 2>nul
-  py -m pip install -r requirements.txt
+REM Only install if requirements.txt changed since last install
+set NEEDS_INSTALL=0
+if not exist ".venv\.req_hash" set NEEDS_INSTALL=1
+if !NEEDS_INSTALL!==0 (
+  certutil -hashfile requirements.txt MD5 2>nul | findstr /v ":" > "%TEMP%\req_hash_new.txt"
+  fc /b ".venv\.req_hash" "%TEMP%\req_hash_new.txt" >nul 2>&1
+  if errorlevel 1 set NEEDS_INSTALL=1
+)
+if !NEEDS_INSTALL!==1 (
+  if %FIRST_RUN%==1 (
+    echo.
+    echo First-time setup: downloading OCR engine.
+    echo This only happens once and may take a few minutes.
+    echo.
+    py -m pip install --upgrade pip -qq 2>nul
+    py -m pip install -r requirements.txt
+  ) else (
+    echo Updating requirements...
+    py -m pip install --upgrade pip -qq 2>nul
+    py -m pip install -r requirements.txt -qq
+  )
   if errorlevel 1 (
     echo.
     echo ERROR: Failed to install requirements.
     pause
     exit /b 1
   )
-) else (
-  REM Only install if requirements.txt changed since last install
-  set NEEDS_INSTALL=0
-  if not exist ".venv\.req_hash" set NEEDS_INSTALL=1
-  if !NEEDS_INSTALL!==0 (
-    certutil -hashfile requirements.txt MD5 2>nul | findstr /v ":" > "%TEMP%\req_hash_new.txt"
-    fc /b ".venv\.req_hash" "%TEMP%\req_hash_new.txt" >nul 2>&1
-    if errorlevel 1 set NEEDS_INSTALL=1
-  )
-  if !NEEDS_INSTALL!==1 (
-    echo Installing requirements...
-    py -m pip install --upgrade pip -qq 2>nul
-    py -m pip install -r requirements.txt -qq
-    if errorlevel 1 (
-      echo.
-      echo ERROR: Failed to install requirements.
-      pause
-      exit /b 1
-    )
-    certutil -hashfile requirements.txt MD5 2>nul | findstr /v ":" > ".venv\.req_hash"
-  )
+  certutil -hashfile requirements.txt MD5 2>nul | findstr /v ":" > ".venv\.req_hash"
 )
 echo Done!
 
