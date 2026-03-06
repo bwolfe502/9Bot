@@ -84,6 +84,31 @@ Last updated: 2026-03-02 (12 sessions: 4 macOS local, 2 Windows inbox, 6 Windows
 | rally_titan | 72% | 197 | Improved |
 | All others | 92-100% | 400+ | Stable |
 
+## Protocol Datamine (2026-03-05)
+
+Full protocol surface analysis: live traffic captures, APK static analysis, coverage gap mapping.
+
+Key numbers: 4,169 wire IDs, 43 typed classes, 15 routed events. Zero decode errors across game update.
+
+Top findings:
+- `RedPointNtf` — high-frequency notification bus, unmapped key taxonomy. Highest-ROI next decode target.
+- `EntitiesNtf` — 427 delta in 8min, heaviest non-envelope message. Underused beyond ally reinforcement.
+- Rally companion messages discovered: `RallyJoinCount*`, `RallyAutoPanel*`, `RallyPowerLimit*`, `RallyList*`.
+- 171 outbound request types mapped with UI trigger annotations.
+- Top-10 truncation in `stats.top_message_types` limits long-tail discovery — needs full export.
+
+Files:
+- [protocol_research_dossier_2026-03-05.md](protocol_research_dossier_2026-03-05.md) — master capability matrix
+- [protocol_candidate_messages_top20.md](protocol_candidate_messages_top20.md) — prioritized message list
+- [protocol_action_plan_2026-03-05.md](protocol_action_plan_2026-03-05.md) — build roadmap (10 features)
+- [protocol_fullcount_hunt_results_2026-03-05.md](protocol_fullcount_hunt_results_2026-03-05.md) — full message census
+- [protocol_send_hunt_results_2026-03-05.md](protocol_send_hunt_results_2026-03-05.md) — outbound request mapping
+- [protocol_family_coverage_gap_2026-03-05.md](protocol_family_coverage_gap_2026-03-05.md) — typed vs available gap
+- [protocol_update_compat_matrix_2026-03-05.md](protocol_update_compat_matrix_2026-03-05.md) — cross-update stability
+- [protocol_packet_hunt_diff_2026-03-05.md](protocol_packet_hunt_diff_2026-03-05.md) — session comparison
+- [apk_datamine_pack_2026-03-05.md](apk_datamine_pack_2026-03-05.md) — APK static analysis (endpoints, intents)
+- [datamine_full_2026-03-05/](datamine_full_2026-03-05/) — raw extracted data (JSON, TSV, strings)
+
 ## Fixed Issues
 
 - rally_titan_select.png: Stable at 0.865 on Windows (50 hits, 0 misses)

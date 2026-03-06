@@ -1,0 +1,324 @@
+[
+  {
+    "activity": "com.tap4fun.framework.activity.MainPlayerActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.MAIN"
+    ],
+    "categories": [
+      "android.intent.category.LAUNCHER"
+    ],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.tap4fun.framework.activity.MainPlayerActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "tfwk1"
+    ],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.tap4fun.tgs.login.twitter.TGSTwitterLoginManager$TwitterRedirectUriReceiverActivity",
+    "exported": false,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "kingdomguard"
+    ],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.tap4fun.tgs.login.twitter.TGSTwitterLoginManager$TwitterRedirectUriReceiverActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.appcoins.sdk.billing.WebIapCommunicationActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "web-iap-result"
+    ],
+    "hosts": [
+      "com.tap4fun.odin.kingdomguard"
+    ],
+    "paths": []
+  },
+  {
+    "activity": "com.discord.socialsdk.AuthenticationActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "discord-1432631371519758449"
+    ],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.linecorp.linesdk.auth.internal.LineAuthenticationCallbackActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "lineauth"
+    ],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "net.openid.appauth.RedirectUriReceiverActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "kingdomguard"
+    ],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.facebook.CustomTabActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "fbconnect"
+    ],
+    "hosts": [
+      "cct.com.tap4fun.odin.kingdomguard"
+    ],
+    "paths": []
+  },
+  {
+    "activity": "com.vk.id.internal.auth.RedirectUriReceiverActivity",
+    "exported": true,
+    "actions": [
+      "android.intent.action.VIEW"
+    ],
+    "categories": [
+      "android.intent.category.DEFAULT",
+      "android.intent.category.BROWSABLE"
+    ],
+    "schemes": [
+      "vk51877677"
+    ],
+    "hosts": [
+      "vk.com"
+    ],
+    "paths": []
+  },
+  {
+    "activity": "com.facebook.ads.AudienceNetworkActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.facebook.ads.AudienceNetworkActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [
+      "android.intent.action.ACTION_POWER_CONNECTED",
+      "android.intent.action.ACTION_POWER_DISCONNECTED"
+    ],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [
+      "android.intent.action.BATTERY_OKAY",
+      "android.intent.action.BATTERY_LOW"
+    ],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [
+      "android.intent.action.DEVICE_STORAGE_LOW",
+      "android.intent.action.DEVICE_STORAGE_OK"
+    ],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [
+      "android.intent.action.BOOT_COMPLETED",
+      "android.intent.action.TIME_SET",
+      "android.intent.action.TIMEZONE_CHANGED"
+    ],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.t4f.utils.AudioRecordManager$AudioRecordRequestPermissionActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.t4f.utils.AudioRecordManager$AudioRecordRequestPermissionActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.t4f.utils.AudioRecordManager$AudioRecordRequestPermissionActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.t4f.utils.AudioRecordManager$AudioRecordRequestPermissionActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  },
+  {
+    "activity": "com.t4f.utils.AudioRecordManager$AudioRecordRequestPermissionActivity",
+    "exported": false,
+    "actions": [],
+    "categories": [],
+    "schemes": [],
+    "hosts": [],
+    "paths": []
+  }
+]

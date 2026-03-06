@@ -155,98 +155,6 @@
         </div>
     </div>
 
-    <!-- General -->
-    <div class="card settings-card">
-        <div class="settings-card-header">General</div>
-        <div class="settings-row settings-row-inline" data-key="min_troops">
-            <span class="settings-row-label">Min Troops</span>
-            <input type="number" value="{{ settings.min_troops }}"
-                   min="0" max="5" class="input-sm"
-                   onchange="saveSetting('min_troops', parseInt(this.value))">
-        </div>
-        <div class="settings-row settings-row-inline" data-key="pass_mode">
-            <span class="settings-row-label">Pass Mode</span>
-            <select class="settings-select" onchange="saveSetting('pass_mode', this.value)">
-                <option value="Rally Joiner" {% if settings.pass_mode == 'Rally Joiner' %}selected{% endif %}>Rally Joiner</option>
-                <option value="Rally Starter" {% if settings.pass_mode == 'Rally Starter' %}selected{% endif %}>Rally Starter</option>
-            </select>
-        </div>
-    </div>
-
-    <!-- Timing -->
-    <div class="card settings-card">
-        <div class="settings-card-header">Timing</div>
-        <div class="settings-row settings-row-inline" data-key="variation">
-            <span class="settings-row-label">Randomize +/-</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.variation }}"
-                       min="0" class="input-sm"
-                       onchange="saveSetting('variation', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="titan_interval">
-            <span class="settings-row-label">Titan</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.titan_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('titan_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="groot_interval">
-            <span class="settings-row-label">Groot</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.groot_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('groot_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="reinforce_interval">
-            <span class="settings-row-label">Reinforce</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.reinforce_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('reinforce_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="pass_interval">
-            <span class="settings-row-label">Pass</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.pass_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('pass_interval', parseInt(this.value))">
-                <span class="unit">sec</span>
-            </div>
-        </div>
-        <div class="settings-row settings-row-inline" data-key="mithril_interval">
-            <span class="settings-row-label">Mithril</span>
-            <div class="settings-row-input">
-                <input type="number" value="{{ settings.mithril_interval }}"
-                       min="1" class="input-sm"
-                       onchange="saveSetting('mithril_interval', parseInt(this.value))">
-                <span class="unit">min</span>
-            </div>
-        </div>
-    </div>
-
-    <!-- Devices (conditional) -->
-    {% if device_troops %}
-    <div class="card settings-card">
-        <div class="settings-card-header">Devices</div>
-        {% for dev_id, count in device_troops.items() %}
-        <div class="settings-row settings-row-inline">
-            <span class="settings-row-label">{{ device_names.get(dev_id, dev_id.split(":")[-1]) }}</span>
-            <input type="number" value="{{ count }}"
-                   min="1" max="5" class="input-sm"
-                   onchange="saveDeviceTroops('{{ dev_id }}', parseInt(this.value))">
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-
     <!-- System -->
     <div class="card settings-card">
         <div class="settings-card-header">System</div>
@@ -323,13 +231,6 @@
 <script>
 // Dependency map: child -> parent
 var DEPS = {
-    'gather_mine_level': 'gather_enabled',
-    'gather_max_troops': 'gather_enabled',
-    'ap_use_free': 'auto_restore_ap',
-    'ap_use_potions': 'auto_restore_ap',
-    'ap_allow_large_potions': 'auto_restore_ap',
-    'ap_use_gems': 'auto_restore_ap',
-    'ap_gem_limit': 'ap_use_gems',
     'upload_interval_hours': 'auto_upload_logs',
     'chat_translate_api_key': 'chat_translate_enabled'
 };
@@ -461,6 +362,7 @@ function updateDeps(key, value) {
         }
     });
 }
+
 
 // Collapsible sections
 function toggleCollapse(sectionId) {

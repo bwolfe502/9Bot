@@ -113,6 +113,7 @@ def validate_device_token(device_id, token):
 _device_protocol = {}
 _device_protocol_lock = threading.Lock()
 _FRIDA_BASE_PORT = 27042
+_stale_lineup_warned = {}  # {device: last_warn_time} — throttle "lineups stale (never)" logs
 
 
 def _allocate_port():
@@ -254,6 +255,36 @@ def get_protocol_stats(device=None):
     if info is None:
         return None
     return info["thread"].stats
+
+
+def get_protocol_message_type_counts(device=None):
+    """Return full protocol message-type counters for *device*, or None."""
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return None
+    return info["thread"].message_type_counts
+
+
+def get_protocol_message_type_counts_by_direction(device=None, direction: str = "both"):
+    """Return protocol message-type counters by direction for *device*.
+
+    *direction* can be ``"recv"``, ``"send"``, or ``"both"``.
+    """
+    if device is None:
+        return None
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return None
+    thread = info["thread"]
+    if direction == "recv":
+        return thread.message_type_counts_recv
+    if direction == "send":
+        return thread.message_type_counts_send
+    return thread.message_type_counts
 
 
 def get_protocol_ap(device=None):
@@ -452,6 +483,15 @@ def get_protocol_troop_snapshot(device):
             age_s = f"{time.time() - age:.1f}s ago" if age else "never"
         except Exception:
             age_s = "unknown"
+        # Throttle "never" logs — only log once per 60s per device to avoid
+        # spamming when interceptor restarts mid-session and hasn't received
+        # LineupsNtf yet (which only arrives at login).
+        if age_s == "never":
+            now = time.time()
+            last = _stale_lineup_warned.get(device, 0)
+            if now - last < 60:
+                return None
+            _stale_lineup_warned[device] = now
         log.debug("proto_snapshot[%s]: lineups stale (%s)", device, age_s)
         return None
     lineups = state.lineups
@@ -541,6 +581,12 @@ def apply_settings(settings):
     set_tower_quest_enabled(settings.get("tower_quest_enabled", False))
     config.FRONTLINE_OCCUPY_ACTION = settings.get("frontline_occupy_action", "reinforce")
     config.FRONTLINE_ENEMY_TEAMS = settings.get("frontline_enemy_teams", [])
+    config.VARIATION = settings.get("variation", 0)
+    config.TITAN_INTERVAL = settings.get("titan_interval", 30)
+    config.GROOT_INTERVAL = settings.get("groot_interval", 30)
+    config.REINFORCE_INTERVAL = settings.get("reinforce_interval", 30)
+    config.PASS_INTERVAL = settings.get("pass_interval", 30)
+    config.PASS_MODE = settings.get("pass_mode", "Rally Joiner")
     set_protocol_enabled(settings.get("protocol_enabled", False))
     # Territory passes & safe zones
     config.TERRITORY_PASSES = settings.get("territory_passes", {})
@@ -770,6 +816,10 @@ def initialize():
     # Connect emulators
     from devices import auto_connect_emulators
     auto_connect_emulators()
+
+    # Reconcile protocol interceptors now that devices are connected.
+    # The earlier call in apply_settings() may have found no devices yet.
+    _reconcile_protocol()
 
     # Pre-initialize OCR engine in background thread
     from vision import warmup_ocr

@@ -46,12 +46,16 @@ log = logging.getLogger("portal")
 
 # Reference to _bots dict from relay_server (injected at setup time)
 _active_bots: dict = {}
+_bot_device_status: dict = {}  # {bot_name: [{"hash", "name", "online"}, ...]}
 
 
-def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
+def setup_portal_routes(app: web.Application, active_bots: dict,
+                        bot_devices: dict | None = None) -> None:
     """Register all portal routes on the aiohttp app."""
-    global _active_bots
+    global _active_bots, _bot_device_status
     _active_bots = active_bots
+    if bot_devices is not None:
+        _bot_device_status = bot_devices
 
     # Pages
     app.router.add_get("/portal", _redirect_portal_slash)
@@ -61,6 +65,7 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_get("/portal/community", page_community)
     app.router.add_get("/portal/bot/{bot_name}", page_bot_detail)
     app.router.add_get("/portal/admin", page_admin)
+    app.router.add_get("/portal/admin/user/{user_id}", page_admin_user_detail)
     app.router.add_get("/portal/account", page_account)
     app.router.add_get("/portal/guide", page_guide)
 
@@ -72,15 +77,21 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_put("/portal/api/bots/{bot_name}", api_update_bot)
     app.router.add_get("/portal/api/grants/{bot_name}", api_grants_for_bot)
     app.router.add_post("/portal/api/grants", api_create_grant)
-    app.router.add_delete("/portal/api/grants/{grant_id}", api_delete_grant)
+    app.router.add_post("/portal/api/grants/{grant_id}/revoke", api_delete_grant)
     app.router.add_post("/portal/api/invite-codes", api_create_invite)
     app.router.add_get("/portal/api/invite-codes", api_list_invites)
     app.router.add_get("/portal/api/admin/users", api_admin_users)
-    app.router.add_delete("/portal/api/admin/users/{user_id}", api_admin_delete_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/delete", api_admin_delete_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/approve", api_admin_approve_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/reject", api_admin_reject_user)
+    app.router.add_post("/portal/api/admin/users/{user_id}/toggle-admin", api_admin_toggle_admin)
     app.router.add_put("/portal/api/admin/bots/{bot_name}/owner", api_admin_set_owner)
+    app.router.add_post("/portal/api/admin/clear-invites", api_admin_clear_invites)
     app.router.add_post("/portal/api/admin/reset-password", api_admin_reset_password)
     app.router.add_post("/portal/api/admin/grant-subscription", api_admin_grant_subscription)
     app.router.add_post("/portal/api/admin/revoke-subscription", api_admin_revoke_subscription)
+    app.router.add_post("/portal/api/admin/users/{user_id}/assign-device", api_admin_assign_device)
+    app.router.add_post("/portal/api/admin/users/{user_id}/unassign-device", api_admin_unassign_device)
     app.router.add_post("/portal/api/account/password", api_change_password)
     app.router.add_post("/portal/api/account/email", api_change_email)
     app.router.add_put("/portal/api/devices/{bot_name}/{device_hash}/label", api_set_device_label)
@@ -117,11 +128,13 @@ async def _get_user(request: web.Request) -> dict | None:
 
 
 async def _require_user(request: web.Request) -> dict:
-    """Like _get_user but redirects to login if not authenticated."""
+    """Like _get_user but redirects to login if not authenticated or unapproved."""
     user = await _get_user(request)
     if not user:
         next_url = str(request.url.relative())
         raise web.HTTPFound(f"/portal/login?next={next_url}")
+    if not user.get("is_approved") and not user.get("is_admin"):
+        raise web.HTTPFound("/portal/login?error=Your+account+is+pending+admin+approval")
     return user
 
 
@@ -499,6 +512,193 @@ def _html_escape(s: str) -> str:
 
 
 # ------------------------------------------------------------------
+# Portal nav CSS — portal-prefixed to avoid clashing with bot's style.css
+# ------------------------------------------------------------------
+
+_PORTAL_NAV_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,wght@1,700&text=9&display=swap');
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    background: #0c0c18; color: #e0e0f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+    -webkit-text-size-adjust: 100%;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+
+.portal-nav {
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px;
+    background: #14142a;
+    border-bottom: 1px solid rgba(100,216,255,0.08);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+}
+.portal-nav-logo {
+    display: flex; align-items: center; gap: 3px;
+    text-decoration: none;
+}
+.portal-nav-logo-bars {
+    display: flex; flex-direction: column; gap: 2px; width: 3px; height: 28px;
+}
+.portal-nav-logo-bars::before, .portal-nav-logo-bars::after {
+    content: ''; width: 2px; flex: 1; border-radius: 1px;
+}
+.portal-nav-logo-bars::before {
+    background: linear-gradient(180deg, rgba(100,216,255,0.13), rgba(100,216,255,0.53), rgba(100,216,255,0.13));
+}
+.portal-nav-logo-bars::after {
+    background: linear-gradient(180deg, rgba(100,216,255,0.27), rgba(100,216,255,1), rgba(100,216,255,0.27));
+}
+.portal-nav-logo-text { display: flex; flex-direction: column; line-height: 1; }
+.portal-nav-logo-main {
+    display: flex; align-items: baseline; gap: 1px;
+    font-size: 11px; font-weight: 300; color: #e0e0f0; letter-spacing: 2px;
+}
+.portal-nav-logo-nine {
+    font-family: 'Bodoni Moda', serif; font-style: italic; font-weight: 700;
+    font-size: 28px; color: #e0e0f0; line-height: 1;
+}
+.portal-nav-logo-sub {
+    font-size: 7px; color: rgba(100,216,255,0.25); letter-spacing: 1.5px;
+    font-weight: 400;
+}
+.portal-nav-links { display: flex; align-items: center; gap: 4px; }
+.portal-nav-links a, .portal-nav-links button {
+    color: #889; font-size: 13px; font-weight: 600; text-decoration: none;
+    padding: 7px 14px; border-radius: 8px; border: none; background: transparent;
+    cursor: pointer; transition: all 0.2s ease;
+}
+.portal-nav-links a:hover, .portal-nav-links button:hover { color: #fff; background: #1e3a5f; text-decoration: none; }
+.portal-nav-links a.active { color: #64d8ff; background: rgba(100,216,255,0.1); }
+@media (max-width: 480px) {
+    .portal-nav { flex-wrap: wrap; gap: 8px; }
+    .portal-nav-links { gap: 2px; }
+    .portal-nav-links a, .portal-nav-links button { padding: 6px 10px; font-size: 12px; }
+}
+"""
+
+# Minimal CSS for device cards when the bot's style.css can't be loaded.
+# The bot's stylesheet overrides these when available.
+_DASHBOARD_FALLBACK_CSS = """
+main { max-width: 600px; margin: 0 auto; padding: 12px; }
+.device-grid { display: flex; flex-direction: column; gap: 12px; }
+.card, .device-card {
+    background: #1a1a2e; border-radius: 12px; padding: 16px;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+.device-card-offline { opacity: 0.6; }
+.device-top { margin-bottom: 8px; }
+.device-name-row { display: flex; align-items: center; justify-content: space-between; }
+.device-name-row strong { font-size: 15px; }
+.device-troops { font-size: 12px; color: #889; }
+.device-status-bar { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.status-text { font-size: 12px; color: #889; }
+.status-offline { color: #666; }
+.status-active { color: #64d8ff; }
+.status-stopping { color: #ff6b6b; }
+.status-waiting { color: #ffb74d; }
+.section-label { font-size: 11px; color: #556; font-weight: 600; margin: 8px 0 4px; }
+.troop-slots, .quest-tracking { min-height: 20px; }
+.troop-summary { display: inline-block; font-size: 11px; padding: 2px 8px;
+    border-radius: 6px; margin: 2px; background: rgba(255,255,255,0.05); }
+.controls-header, .events-header { display: flex; align-items: center;
+    justify-content: space-between; padding: 8px 0; cursor: pointer;
+    font-size: 12px; font-weight: 600; color: #889; }
+.auto-columns { display: flex; gap: 12px; }
+.auto-column { flex: 1; }
+.auto-subheader { font-size: 10px; color: #556; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px; }
+.auto-row { display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 0; }
+.auto-label { font-size: 12px; color: #aab; }
+.toggle { width: 36px; height: 20px; border-radius: 10px; border: none;
+    background: #333; cursor: pointer; position: relative; transition: background 0.2s; }
+.toggle.on { background: #2196f3; }
+.toggle::after { content: ''; position: absolute; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; top: 2px; left: 2px; transition: left 0.2s; }
+.toggle.on::after { left: 18px; }
+.control-pill { display: inline-block; font-size: 10px; padding: 3px 8px;
+    border-radius: 6px; margin: 2px; background: rgba(255,255,255,0.04);
+    color: #667; cursor: pointer; }
+.control-pill.pill-on { background: rgba(33,150,243,0.15); color: #64d8ff; }
+.bottom-bar { display: flex; gap: 8px; }
+.bottom-btn { padding: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+    background: #1a1a2e; color: #aab; font-size: 12px; font-weight: 600; cursor: pointer; }
+.bottom-btn-danger { background: rgba(255,80,80,0.08); color: #ff6b6b;
+    border-color: rgba(255,80,80,0.15); }
+.live-view-section { margin-top: 8px; }
+.live-view-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.live-view-toggle, .manual-control-toggle, .chat-view-toggle, .restart-game-btn,
+.emu-step-btn { padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+    background: #1a1a2e; color: #889; font-size: 11px; cursor: pointer; }
+.actions-section { margin-top: 16px; }
+.offline-section-header { display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0; cursor: pointer; color: #556; font-size: 12px; }
+.muted { color: #556; font-size: 12px; }
+.btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; text-decoration: none; display: inline-block; }
+.btn-primary { background: rgba(100,216,255,0.12); color: #64d8ff; }
+.btn-outline { background: transparent; border: 1px solid rgba(255,255,255,0.1); color: #aab; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+"""
+
+
+def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csrf: str = "",
+                            css_bot: str = "") -> str:
+    """HTML wrapper for dashboard page — loads bot's style.css, uses portal-prefixed nav."""
+    nav_links = ""
+    if user:
+        links = [
+            '<a href="/portal/" class="active">Dashboard</a>',
+            '<a href="/portal/community">Community</a>',
+            '<a href="/portal/billing">Billing</a>',
+            '<a href="/portal/guide">Guide</a>',
+            '<a href="/portal/account">Account</a>',
+        ]
+        if user.get("is_admin"):
+            links.append('<a href="/portal/admin">Admin</a>')
+        links.append(
+            f'<form method="post" action="/portal/api/logout" style="display:inline">'
+            f'<input type="hidden" name="csrf_token" value="{csrf}">'
+            f'<button type="submit">Logout</button>'
+            f'</form>'
+        )
+        nav_links = f'<div class="portal-nav-links">{"".join(links)}</div>'
+
+    logo = (
+        '<a href="/portal/" class="portal-nav-logo">'
+        '<div class="portal-nav-logo-bars"></div>'
+        '<div class="portal-nav-logo-text">'
+        '<div class="portal-nav-logo-main"><span class="portal-nav-logo-nine">9</span>BOT</div>'
+        '<div class="portal-nav-logo-sub">PORTAL</div>'
+        '</div></a>'
+    )
+
+    bot_online = css_bot and css_bot in _active_bots and not _active_bots[css_bot].closed
+    css_link = f'<link rel="stylesheet" href="/{css_bot}/static/style.css?v=96">' if bot_online else ""
+
+    return (
+        f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        f"<meta name='viewport' content='width=device-width,initial-scale=1,"
+        f"maximum-scale=1,user-scalable=no'>"
+        f"<meta name='apple-mobile-web-app-capable' content='yes'>"
+        f"<title>{title} — 9Bot Portal</title>"
+        f"<style>{_PORTAL_NAV_CSS}</style>"
+        f"<style>{_DASHBOARD_FALLBACK_CSS}</style>"
+        f"{css_link}"
+        f"</head><body>"
+        f'<div class="portal-nav">{logo}{nav_links}</div>'
+        f'<main>'
+        f"{body}"
+        f"</main></body></html>"
+    )
+
+
+# ------------------------------------------------------------------
 # Page handlers
 # ------------------------------------------------------------------
 
@@ -530,7 +730,7 @@ async def page_login(request: web.Request) -> web.Response:
             <button type="submit" class="btn btn-primary">Login</button>
         </form>
         <p class="muted" style="margin-top:12px">
-            Don't have an account? <a href="/portal/register">Register with invite code</a>
+            Don't have an account? <a href="/portal/register">Sign up</a>
         </p>
     </div>
     """
@@ -543,26 +743,19 @@ async def page_register(request: web.Request) -> web.Response:
         raise web.HTTPFound("/portal/")
 
     error = request.query.get("error", "")
+    success = request.query.get("success", "")
     error_html = f'<div class="alert alert-error">{_html_escape(error)}</div>' if error else ""
-
-    invite_prefill = _html_escape(request.query.get("invite", ""))
+    success_html = f'<div class="alert alert-success">{_html_escape(success)}</div>' if success else ""
 
     body = f"""
-    {error_html}
+    {error_html}{success_html}
     <div class="card">
-        <h2>Register</h2>
+        <h2>Create Account</h2>
         <form method="post" action="/portal/api/register">
-            <div class="form-group">
-                <label>Invite Code</label>
-                <input type="text" name="invite_code" required maxlength="20"
-                       autocomplete="off" value="{invite_prefill}"
-                       {"autofocus" if not invite_prefill else ""}>
-            </div>
             <div class="form-group">
                 <label>Email</label>
                 <input type="email" name="email" required maxlength="200"
-                       autocomplete="email" placeholder="you@example.com"
-                       {"autofocus" if invite_prefill else ""}>
+                       autocomplete="email" placeholder="you@example.com" autofocus>
             </div>
             <div class="form-group">
                 <label>Username</label>
@@ -575,14 +768,14 @@ async def page_register(request: web.Request) -> web.Response:
                 <input type="password" name="password" required minlength="6"
                        autocomplete="new-password">
             </div>
-            <button type="submit" class="btn btn-primary">Register</button>
+            <button type="submit" class="btn btn-primary">Sign Up</button>
         </form>
         <p class="muted" style="margin-top:12px">
             Already have an account? <a href="/portal/login">Login</a>
         </p>
     </div>
     """
-    return web.Response(text=_page("Register", body), content_type="text/html")
+    return web.Response(text=_page("Sign Up", body), content_type="text/html")
 
 
 async def page_dashboard(request: web.Request) -> web.Response:
@@ -593,54 +786,9 @@ async def page_dashboard(request: web.Request) -> web.Response:
     if user["is_admin"]:
         return await _page_dashboard_admin(request, user, csrf)
 
-    # Customer view: device-focused cards
+    # Customer view: full device cards (same visual as admin dashboard)
     devices = await asyncio.to_thread(db.get_user_devices, user["user_id"])
     shared_devices = await asyncio.to_thread(db.list_shared_devices)
-
-    # Device cards
-    dev_html = ""
-    for d in devices:
-        bot_name = d["bot_name"]
-        online = bot_name in _active_bots and not _active_bots[bot_name].closed
-        dot = "dot-online" if online else "dot-offline"
-        status = "Online" if online else "Offline"
-        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
-        open_url = f"/{bot_name}/d/{d['device_hash']}"
-
-        dev_html += (
-            f'<div class="bot-row">'
-            f'<div class="bot-info">'
-            f'<div class="bot-name"><span class="dot {dot}"></span>{label}</div>'
-            f'<div class="bot-meta">{status}</div>'
-            f'</div>'
-            f'<a href="{open_url}" class="btn btn-primary btn-sm">Open</a>'
-            f'</div>'
-        )
-
-    if not dev_html:
-        dev_html = (
-            '<p class="muted" style="padding:8px 0">No devices yet. '
-            'Ask an admin to grant you access, or browse '
-            '<a href="/portal/community">community accounts</a>.</p>'
-        )
-
-    devices_card = f'<div class="card"><h2>My Devices</h2>{dev_html}</div>'
-
-    # Community teaser
-    online_shared = sum(
-        1 for d in shared_devices
-        if d["bot_name"] in _active_bots and not _active_bots[d["bot_name"]].closed
-    )
-    community_text = f"{online_shared} online" if online_shared else "Browse shared accounts"
-    community_card = (
-        f'<div class="card" style="display:flex;align-items:center;justify-content:space-between">'
-        f'<div>'
-        f'<strong>Community Accounts</strong>'
-        f'<div class="muted" style="margin-top:2px">{community_text}</div>'
-        f'</div>'
-        f'<a href="/portal/community" class="btn btn-outline btn-sm">Browse &rarr;</a>'
-        f'</div>'
-    )
 
     # Subscription status
     sub_html = ""
@@ -685,63 +833,1134 @@ async def page_dashboard(request: web.Request) -> web.Response:
                 '</div>'
             )
 
-    body = f"{getting_started}{devices_card}{community_card}{sub_html}"
-    return web.Response(text=_page("Dashboard", body, user, csrf), content_type="text/html")
+    # Build unified device list with state
+    all_devices = []  # (bot_name, dhash, label, state)
+    for d in devices:
+        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
+        all_devices.append((d["bot_name"], d["device_hash"], label, _device_state(d)))
+    for d in shared_devices:
+        label = _html_escape(d.get("label") or d.get("device_name") or d["device_hash"][:8])
+        all_devices.append((d["bot_name"], d["device_hash"], label, _device_state(d)))
+
+    if not all_devices:
+        body = (
+            getting_started + sub_html
+            + '<p style="padding:24px;text-align:center;color:#556">No devices yet. '
+            'Ask an admin to grant you access.</p>'
+        )
+        return web.Response(
+            text=_page_dashboard_wrapper("Dashboard", body, user, csrf),
+            content_type="text/html",
+        )
+
+    css_bot = next((n for n, _, _, s in all_devices if s == "online"), all_devices[0][0])
+
+    # Build device cards using shared helpers
+    pills, toggles, events = _build_card_controls()
+    cards_html = ""
+    offline_cards = ""
+    for bot_name, dhash, label, state in all_devices:
+        api_base = f"/{bot_name}/d/{dhash}"
+        if state == "disconnected":
+            offline_cards += _device_card_disconnected(dhash, label, "")
+        elif state == "offline":
+            # Render full card so JS can populate sections when device comes online
+            offline_cards += _device_card_online(
+                dhash, api_base, label, "", pills, toggles, events, offline=True)
+        else:
+            cards_html += _device_card_online(dhash, api_base, label, "", pills, toggles, events)
+
+    offline_section = _offline_section_html(
+        [(s,) for _, _, _, s in all_devices],
+        offline_cards,
+    )
+
+    body = (
+        getting_started
+        + sub_html
+        + f'<div class="device-grid">{cards_html}</div>'
+        + offline_section
+        + _CHAT_MODAL_HTML
+        + "\n<script>\n" + _PORTAL_DASHBOARD_JS + "\n</script>"
+    )
+    return web.Response(
+        text=_page_dashboard_wrapper("Dashboard", body, user, csrf, css_bot=css_bot),
+        content_type="text/html",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Portal dashboard JS — renders device cards identically to the bot's
+# index.html.  Uses the bot's style.css (loaded via <link>).  Each card has
+# data-api="/{bot}/d/{dhash}" so every fetch targets the correct device.
+# This is a raw string so JS braces don't clash with Python f-strings.
+# ---------------------------------------------------------------------------
+_PORTAL_DASHBOARD_JS = r"""
+var _troopData = {};
+var _stoppingModes = {};
+var _startingModes = {};
+var _manualControlDevices = {};
+var _liveViewTimers = {};
+var _chatFeedCache = {};
+
+function fmtTime(sec) {
+    if (sec == null) return '';
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + ':' + (s < 10 ? '0' : '') + s;
+}
+function fmtNum(n) {
+    if (n == null) return '?';
+    if (n >= 1000000) return (n / 1000000).toFixed(n % 1000000 === 0 ? 0 : 1) + 'M';
+    if (n >= 10000) return (n / 1000).toFixed(n % 1000 === 0 ? 0 : 1) + 'K';
+    return n.toLocaleString();
+}
+
+var QUEST_LABELS = {'TITAN':'Titans','EVIL_GUARD':'Evil Guard','PVP':'PvP',
+    'GATHER':'Gold','TOWER':'Fortress'};
+var QUEST_ALIASES = {'FORTRESS':'TOWER'};
+var ACTION_CLASSES = {'Home':'troop-home','Returning':'troop-returning',
+    'Rallying':'troop-rallying','Defending':'troop-defending',
+    'Marching':'troop-marching','Gathering':'troop-gathering'};
+var _chatChannelMap = {'SERVER':{name:'Kingdom',cls:'server'},
+    'UNION':{name:'Alliance',cls:'union'},'UNION_R4':{name:'Alliance',cls:'union'},
+    'FACTION':{name:'Faction',cls:'faction'},'WORLD':{name:'World',cls:'world'},
+    'PRIVATE':{name:'Private',cls:'private'}};
+var _chatChannelNames = {SERVER:'Kingdom',UNION:'Alliance',FACTION:'Faction',WORLD:'World',PRIVATE:'Private'};
+
+/* ---------- Troops ---------- */
+function renderTroops(container, troops, age, elapsed, source) {
+    container.textContent = '';
+    var card = container.closest('.device-card');
+    var ageEl = card ? card.querySelector('.troop-label .troop-age') : null;
+    if (ageEl) {
+        if (age != null) {
+            var d = age + (elapsed || 0);
+            ageEl.textContent = d < 60 ? d + 's ago' : Math.floor(d/60) + 'm ago';
+        } else ageEl.textContent = '';
+    }
+    var srcEl = card ? card.querySelector('.troop-label .troop-source') : null;
+    if (srcEl) {
+        if (source === 'protocol') { srcEl.textContent = '(proto) '; srcEl.style.color = '#00e5ff'; }
+        else if (source === 'vision') { srcEl.textContent = '(vision) '; srcEl.style.color = '#999'; }
+        else srcEl.textContent = '';
+    }
+    if (!troops || troops.length === 0) {
+        var h = document.createElement('span');
+        h.className = 'muted'; h.style.fontSize = '11px';
+        h.textContent = 'No troop data yet';
+        container.appendChild(h); return;
+    }
+    var groups = {};
+    troops.forEach(function(t) {
+        var k = t.action;
+        if (!groups[k]) groups[k] = {count:0, soonest:null};
+        groups[k].count++;
+        if (t.time_left != null) {
+            var adj = Math.max(0, t.time_left - (elapsed || 0));
+            if (groups[k].soonest === null || adj < groups[k].soonest) groups[k].soonest = adj;
+        }
+    });
+    Object.keys(groups).forEach(function(action) {
+        var g = groups[action];
+        var span = document.createElement('span');
+        span.className = 'troop-summary ' + (ACTION_CLASSES[action] || 'troop-deployed');
+        var txt = g.count + ' ' + action;
+        if (action !== 'Home' && g.soonest !== null) txt += ' ' + fmtTime(g.soonest);
+        span.textContent = txt;
+        container.appendChild(span);
+    });
+}
+function tickTroopTimers() {
+    var now = Date.now();
+    Object.keys(_troopData).forEach(function(dh) {
+        var e = _troopData[dh];
+        var elapsed = Math.floor((now - e.lastPollTime) / 1000);
+        if (elapsed < 1) return;
+        var card = document.querySelector('.device-card[data-dhash="' + dh + '"]');
+        if (!card) return;
+        var el = card.querySelector('.troop-slots');
+        if (el) renderTroops(el, e.troops, e.snapshotAge, elapsed, e.source);
+    });
+}
+setInterval(tickTroopTimers, 1000);
+
+/* ---------- Quests ---------- */
+function renderQuests(container, quests, questAge) {
+    var header = container.previousElementSibling;
+    var ageEl = header ? header.querySelector('.quest-age') : null;
+    if (ageEl) {
+        if (questAge != null)
+            ageEl.textContent = questAge < 60 ? questAge + 's ago' : Math.floor(questAge/60) + 'm ago';
+        else ageEl.textContent = '';
+    }
+    if (!quests || quests.length === 0) {
+        container.textContent = '';
+        if (header) header.style.display = 'none'; return;
+    }
+    if (header) header.style.display = '';
+    container.textContent = '';
+    var wrap = document.createElement('div'); wrap.className = 'dp-quests';
+    var cnt = 0;
+    quests.forEach(function(q) {
+        var raw = q.quest_type.replace('QuestType.', '');
+        raw = QUEST_ALIASES[raw] || raw;
+        var label = QUEST_LABELS[raw] || raw;
+        var seen = q.last_seen != null ? q.last_seen : 0;
+        var target = q.target, pend = q.pending || 0;
+        if (target != null && seen >= target && pend === 0) return;
+        cnt++;
+        var pill = document.createElement('div');
+        pill.className = 'quest-pill quest-' + raw.toLowerCase();
+        var lbl = document.createElement('span');
+        lbl.className = 'quest-label'; lbl.textContent = label;
+        pill.appendChild(lbl);
+        if (raw !== 'PVP') {
+            var val = document.createElement('span'); val.className = 'quest-val';
+            var vt = fmtNum(seen);
+            if (target != null) vt += '/' + fmtNum(target);
+            val.textContent = vt;
+            if (pend > 0) {
+                var ps = document.createElement('span');
+                ps.className = 'quest-pend'; ps.textContent = '+' + pend;
+                val.appendChild(ps);
+            }
+            pill.appendChild(val);
+        }
+        wrap.appendChild(pill);
+    });
+    if (cnt === 0) {
+        var m = document.createElement('div');
+        m.className = 'quest-complete-msg'; m.textContent = 'All Quests Complete!';
+        wrap.appendChild(m);
+    }
+    if (cnt >= 4) wrap.classList.add('quests-wrap');
+    container.appendChild(wrap);
+}
+
+/* ---------- Events collapse ---------- */
+function toggleEvents(header) {
+    var section = header.closest('.device-events-section');
+    var body = section.querySelector('.events-body');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : '';
+    arrow.textContent = isOpen ? '\u25B6' : '\u25BC';
+}
+
+/* ---------- Status polling (all cards) ---------- */
+function refreshAllDevices() {
+    document.querySelectorAll('.device-card[data-api]').forEach(function(card) {
+        var apiBase = card.getAttribute('data-api');
+        var dh = card.getAttribute('data-dhash');
+        fetch(apiBase + '/api/status', {credentials:'include'})
+            .then(function(r) {
+                if (!r.ok) throw new Error(r.status);
+                return r.json();
+            })
+            .then(function(data) {
+                if (!data.devices || !data.devices[0]) return;
+                var dev = data.devices[0];
+
+                // Offline
+                if (dev.offline) {
+                    card.classList.add('device-card-offline');
+                    var st = card.querySelector('.status-text');
+                    if (st) {
+                        st.textContent = dev.status; st.className = 'status-text';
+                        if (dev.status.indexOf('Starting') !== -1 || dev.status.indexOf('Waiting') !== -1)
+                            st.classList.add('status-waiting');
+                        else if (dev.status === 'Offline') st.classList.add('status-offline');
+                    }
+                    // Show Start Emulator button (create if needed)
+                    var emuBtn = card.querySelector('.emu-step-emu');
+                    if (!emuBtn) {
+                        var wrap = document.createElement('div');
+                        wrap.className = 'emu-steps';
+                        wrap.innerHTML = '<button type="button" class="emu-step-btn emu-step-emu" onclick="startEmulator(this)">Start Emulator</button>';
+                        // Insert after device-top
+                        var top = card.querySelector('.device-top');
+                        if (top) top.after(wrap);
+                        emuBtn = wrap.querySelector('.emu-step-emu');
+                    }
+                    if (emuBtn) {
+                        if (dev.emu_starting) {
+                            emuBtn.textContent = 'Starting...';
+                            emuBtn.disabled = true;
+                            emuBtn.classList.add('emu-starting');
+                        } else {
+                            emuBtn.textContent = 'Start Emulator';
+                            emuBtn.disabled = false;
+                            emuBtn.classList.remove('emu-starting');
+                        }
+                    }
+                    // Hide controls/events/live-view for offline devices
+                    card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = 'none'; });
+                    _moveToOffline(card);
+                    return;
+                }
+                card.classList.remove('device-card-offline');
+                // Restore sections hidden by offline state
+                card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = ''; });
+                _moveToOnline(card);
+                // Remove Start Emulator if device came online
+                var emuWrap = card.querySelector('.emu-steps');
+                if (emuWrap && !card.querySelector('.emu-steps-compact')) { /* don't remove the compact emu bar */ }
+                var offlineEmu = card.querySelector('.emu-steps:not(.emu-steps-compact)');
+                if (offlineEmu) offlineEmu.remove();
+
+                // Status text + indicator
+                var st = card.querySelector('.status-text');
+                if (st) {
+                    st.textContent = dev.status; st.className = 'status-text';
+                    if (dev.status === 'Idle') { /* default gray */ }
+                    else if (dev.status.indexOf('Logged Out') !== -1 || dev.status.indexOf('Offline') !== -1)
+                        st.classList.add('status-error');
+                    else if (dev.status.indexOf('Stopping') !== -1) st.classList.add('status-stopping');
+                    else if (dev.status.indexOf('Waiting') !== -1) st.classList.add('status-waiting');
+                    else if (dev.status.indexOf('Navigating') !== -1) st.classList.add('status-navigating');
+                    else st.classList.add('status-active');
+                }
+                var dot = card.querySelector('.status-indicator');
+                if (dot) { if (dev.status !== 'Idle') dot.classList.add('active'); else dot.classList.remove('active'); }
+
+                // Troop count in header
+                var troopCount = card.querySelector('.device-troops');
+                if (troopCount && dev.troops) {
+                    var home = dev.troops.filter(function(t){ return t.action === 'Home'; }).length;
+                    troopCount.innerHTML = '&#9876; ' + home + '/' + dev.troops.length;
+                }
+                // Troops
+                var troopEl = card.querySelector('.troop-slots');
+                if (troopEl) {
+                    _troopData[dh] = {troops:dev.troops, snapshotAge:dev.snapshot_age,
+                        lastPollTime:Date.now(), source:dev.troop_source};
+                    renderTroops(troopEl, dev.troops, dev.snapshot_age, 0, dev.troop_source);
+                }
+                // Quests
+                var questEl = card.querySelector('.quest-tracking');
+                if (questEl) renderQuests(questEl, dev.quests, dev.quest_age);
+                // Mithril
+                var mt = card.querySelector('.mithril-timer');
+                if (mt) {
+                    if (dev.mithril_next != null) {
+                        var ts = mt.querySelector('.mithril-time');
+                        if (ts) ts.textContent = dev.mithril_next > 0 ? fmtTime(dev.mithril_next) : 'Due';
+                        mt.style.display = '';
+                    } else mt.style.display = 'none';
+                }
+                // Chat
+                var chatAvail = dev.chat_available || dev.protocol_active;
+                var chatBtn = card.querySelector('.chat-view-toggle');
+                if (chatBtn) chatBtn.style.display = chatAvail ? '' : 'none';
+                var chatFeed = card.querySelector('.chat-feed');
+                if (chatFeed) {
+                    if (chatAvail) {
+                        chatFeed.style.display = '';
+                        loadChatFeed(dh, apiBase, chatFeed);
+                    } else chatFeed.style.display = 'none';
+                }
+                // Auto mode toggles + pills
+                var tasks = data.tasks || [];
+                card.querySelectorAll('.auto-row[data-mode]').forEach(function(row) {
+                    var key = row.getAttribute('data-mode');
+                    var toggle = row.querySelector('.toggle');
+                    if (!toggle) return;
+                    if (_manualControlDevices[dh]) { toggle.classList.remove('on'); return; }
+                    var sk = dh + '_' + key;
+                    var running = tasks.some(function(t) { return t.endsWith('_' + key); });
+                    if (_stoppingModes[sk]) { if (!running) delete _stoppingModes[sk]; toggle.classList.remove('on'); }
+                    else if (_startingModes[sk]) { if (running) delete _startingModes[sk]; toggle.classList.add('on'); }
+                    else { if (running) toggle.classList.add('on'); else toggle.classList.remove('on'); }
+                });
+                card.querySelectorAll('.control-pill[data-mode]').forEach(function(pill) {
+                    var key = pill.getAttribute('data-mode');
+                    var sk = dh + '_' + key;
+                    var running = tasks.some(function(t) { return t.endsWith('_' + key); });
+                    if (_stoppingModes[sk]) { if (!running) delete _stoppingModes[sk]; pill.classList.remove('pill-on'); }
+                    else if (_startingModes[sk]) { if (running) delete _startingModes[sk]; pill.classList.add('pill-on'); }
+                    else { if (running) pill.classList.add('pill-on'); else pill.classList.remove('pill-on'); }
+                });
+            })
+            .catch(function() {
+                // Device unreachable (404/502/network error) — show as offline
+                card.classList.add('device-card-offline');
+                var st = card.querySelector('.status-text');
+                if (st) { st.textContent = 'Offline'; st.className = 'status-text status-offline'; }
+                card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = 'none'; });
+                _moveToOffline(card);
+            });
+    });
+}
+refreshAllDevices();
+setInterval(refreshAllDevices, 3000);
+
+/* ---------- Auto mode toggle ---------- */
+function toggleAutoMode(modeKey, btn) {
+    var card = btn.closest('.device-card');
+    if (!card) return;
+    var dh = card.getAttribute('data-dhash');
+    if (_manualControlDevices[dh]) return;
+    var apiBase = card.getAttribute('data-api');
+    var row = btn.closest('.auto-row');
+    var toggle = row ? row.querySelector('.toggle') : null;
+    var isRunning = toggle && toggle.classList.contains('on');
+    var url, body;
+    if (isRunning) {
+        url = apiBase + '/tasks/stop-mode';
+        body = 'mode_key=' + encodeURIComponent(modeKey);
+    } else {
+        url = apiBase + '/tasks/start';
+        body = 'task_name=' + encodeURIComponent(modeKey) + '&task_type=auto';
+    }
+    if (toggle) toggle.classList.toggle('on');
+    var sk = dh + '_' + modeKey;
+    var pill = card.querySelector('.control-pill[data-mode="' + modeKey + '"]');
+    if (isRunning) {
+        _stoppingModes[sk] = true; delete _startingModes[sk];
+        if (pill) pill.classList.remove('pill-on');
+    } else {
+        _startingModes[sk] = true; delete _stoppingModes[sk];
+        if (pill) pill.classList.add('pill-on');
+    }
+    fetch(url, {method:'POST', credentials:'include',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body
+    }).catch(function(){});
+}
+
+/* ---------- Controls collapse ---------- */
+function toggleControls(header) {
+    var modes = header.closest('.device-auto-modes');
+    var body = modes.querySelector('.controls-body');
+    var pills = modes.querySelector('.controls-pills');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = body.style.display !== 'none';
+    body.style.display = isOpen ? 'none' : '';
+    pills.style.display = isOpen ? '' : 'none';
+    arrow.textContent = isOpen ? '\u25B6' : '\u25BC';
+}
+
+/* ---------- Live View ---------- */
+function _apiOf(el) {
+    var c = el.closest('.device-card');
+    return c ? c.getAttribute('data-api') : '';
+}
+function _dhOf(el) {
+    var c = el.closest('.device-card');
+    return c ? c.getAttribute('data-dhash') : '';
+}
+function _startStream(img, btn, dh, fps) {
+    var streamUrl = _apiOf(img) + '/api/stream?fps=' + fps + '&quality=30';
+    img.onerror = function() {
+        if (btn.getAttribute('data-active') !== 'true') return;
+        img.onerror = null;
+        startPollingFallback(img, dh);
+    };
+    img.src = streamUrl;
+}
+function _activateLiveView(card, dh, fps) {
+    var btn = card.querySelector('.live-view-toggle');
+    var container = card.querySelector('.live-view-container');
+    var img = container.querySelector('.live-view-img');
+    if (btn && btn.getAttribute('data-active') === 'true') {
+        img.src = ''; _startStream(img, btn, dh, fps); return;
+    }
+    if (btn) { btn.setAttribute('data-active','true'); btn.classList.add('live-view-on'); }
+    container.style.display = '';
+    _startStream(img, btn || container, dh, fps);
+}
+function _deactivateLiveView(card, dh) {
+    var btn = card.querySelector('.live-view-toggle');
+    var container = card.querySelector('.live-view-container');
+    var img = container.querySelector('.live-view-img');
+    if (btn) { btn.setAttribute('data-active','false'); btn.classList.remove('live-view-on'); }
+    container.style.display = 'none'; img.src = '';
+    if (_liveViewTimers[dh]) { clearInterval(_liveViewTimers[dh]); delete _liveViewTimers[dh]; }
+}
+function toggleLiveView(btn) {
+    var card = btn.closest('.device-card');
+    var dh = card.getAttribute('data-dhash');
+    var active = btn.getAttribute('data-active') === 'true';
+    if (active) {
+        _deactivateLiveView(card, dh);
+        if (_manualControlDevices[dh]) {
+            var mc = card.querySelector('.manual-control-toggle');
+            if (mc) { mc.setAttribute('data-active','false'); mc.classList.remove('manual-control-on'); }
+            card.classList.remove('manual-mode');
+            delete _manualControlDevices[dh];
+        }
+    } else {
+        _activateLiveView(card, dh, _manualControlDevices[dh] ? 8 : 5);
+    }
+}
+function toggleManualControl(btn) {
+    var card = btn.closest('.device-card');
+    var dh = card.getAttribute('data-dhash');
+    var apiBase = card.getAttribute('data-api');
+    var active = btn.getAttribute('data-active') === 'true';
+    if (active) {
+        btn.setAttribute('data-active','false'); btn.classList.remove('manual-control-on');
+        card.classList.remove('manual-mode'); delete _manualControlDevices[dh];
+        var lv = card.querySelector('.live-view-toggle');
+        if (lv && lv.getAttribute('data-active') === 'true') _activateLiveView(card, dh, 5);
+    } else {
+        btn.setAttribute('data-active','true'); btn.classList.add('manual-control-on');
+        card.classList.add('manual-mode'); _manualControlDevices[dh] = true;
+        fetch(apiBase + '/tasks/stop-all', {method:'POST', credentials:'include'}).catch(function(){});
+        card.querySelectorAll('.auto-row .toggle.on').forEach(function(t) {
+            t.classList.remove('on');
+            var r = t.closest('.auto-row');
+            if (r) _stoppingModes[dh + '_' + r.getAttribute('data-mode')] = true;
+        });
+        _activateLiveView(card, dh, 8);
+    }
+}
+function startPollingFallback(img, dh) {
+    var apiBase = _apiOf(img);
+    function poll() {
+        var url = apiBase + '/api/screenshot?quality=50&_t=' + Date.now();
+        var p = new Image(); p.onload = function() { img.src = p.src; }; p.src = url;
+    }
+    poll();
+    _liveViewTimers[dh] = setInterval(poll, 3000);
+}
+
+/* ---------- Offline section toggle ---------- */
+function toggleOffline(header) {
+    var section = header.closest('.actions-section');
+    var grid = section.querySelector('.device-grid');
+    var arrow = header.querySelector('.controls-arrow');
+    var isOpen = grid.style.display !== 'none';
+    grid.style.display = isOpen ? 'none' : '';
+    arrow.innerHTML = isOpen ? '&#9654;' : '&#9660;';
+}
+
+/* ---------- Move card between online/offline grids ---------- */
+function _getOfflineGrid() {
+    var section = document.querySelector('.actions-section');
+    if (section) return section.querySelector('.device-grid');
+    return null;
+}
+function _getOnlineGrid() {
+    // The main grid is the first .device-grid that is NOT inside .actions-section
+    var grids = document.querySelectorAll('.device-grid');
+    for (var i = 0; i < grids.length; i++) {
+        if (!grids[i].closest('.actions-section')) return grids[i];
+    }
+    return null;
+}
+function _ensureOfflineSection() {
+    var section = document.querySelector('.actions-section');
+    if (section) return section.querySelector('.device-grid');
+    // Create the offline section
+    var onlineGrid = _getOnlineGrid();
+    if (!onlineGrid) return null;
+    section = document.createElement('div');
+    section.className = 'actions-section';
+    section.style.marginTop = '16px';
+    section.innerHTML =
+        '<div class="actions-header" onclick="toggleOffline(this)" ' +
+        'style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">' +
+        '<span style="font-size:13px;font-weight:600;color:#667" class="offline-section-label">' +
+        'Offline (0) &middot; Disconnected (0)</span>' +
+        '<span class="controls-arrow" style="color:#667">&#9660;</span></div>' +
+        '<div class="device-grid"></div>';
+    onlineGrid.after(section);
+    return section.querySelector('.device-grid');
+}
+function _updateOfflineCounts() {
+    var offGrid = _getOfflineGrid();
+    if (!offGrid) return;
+    var cards = offGrid.querySelectorAll('.device-card');
+    var offline = 0, disconnected = 0;
+    cards.forEach(function(c) {
+        var st = c.querySelector('.status-text');
+        if (st && st.textContent === 'Disconnected') disconnected++;
+        else offline++;
+    });
+    var label = offGrid.closest('.actions-section').querySelector('.offline-section-label');
+    if (label) label.textContent = 'Offline (' + offline + ') \\u00b7 Disconnected (' + disconnected + ')';
+    // Hide section if empty
+    var section = offGrid.closest('.actions-section');
+    if (section) section.style.display = cards.length ? '' : 'none';
+}
+function _moveToOffline(card) {
+    var offGrid = _ensureOfflineSection();
+    if (!offGrid || card.parentNode === offGrid) return;
+    offGrid.appendChild(card);
+    _updateOfflineCounts();
+}
+function _moveToOnline(card) {
+    var onGrid = _getOnlineGrid();
+    if (!onGrid || card.parentNode === onGrid) return;
+    onGrid.appendChild(card);
+    _updateOfflineCounts();
+}
+
+/* ---------- Stop All per device ---------- */
+function stopAllDevice(btn) {
+    if (!confirm('Stop all tasks on this device?')) return;
+    var apiBase = _apiOf(btn);
+    btn.textContent = 'Stopping...'; btn.disabled = true;
+    fetch(apiBase + '/tasks/stop-all', {method:'POST', credentials:'include'})
+        .then(function() {
+            btn.textContent = 'Stopped!';
+            // Clear all toggles on this card
+            var card = btn.closest('.device-card');
+            if (card) {
+                card.querySelectorAll('.toggle.on').forEach(function(t) { t.classList.remove('on'); });
+                card.querySelectorAll('.control-pill.pill-on').forEach(function(p) { p.classList.remove('pill-on'); });
+            }
+            setTimeout(function() { btn.textContent = 'Stop All'; btn.disabled = false; }, 2000);
+        }).catch(function() {
+            btn.textContent = 'Error';
+            setTimeout(function() { btn.textContent = 'Stop All'; btn.disabled = false; }, 2000);
+        });
+}
+
+/* ---------- Remote tap ---------- */
+(function() {
+    function handleTap(img, cx, cy) {
+        var dh = _dhOf(img);
+        if (!dh || !_manualControlDevices[dh]) return;
+        var apiBase = _apiOf(img);
+        var r = img.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return;
+        var rx = cx - r.left, ry = cy - r.top;
+        var gx = Math.round(rx / r.width * 1080), gy = Math.round(ry / r.height * 1920);
+        if (gx < 0 || gx > 1080 || gy < 0 || gy > 1920) return;
+        var dot = document.createElement('div'); dot.className = 'tap-ripple';
+        dot.style.left = rx + 'px'; dot.style.top = ry + 'px';
+        img.parentElement.appendChild(dot);
+        setTimeout(function() { dot.remove(); }, 400);
+        fetch(apiBase + '/api/tap', {method:'POST', credentials:'include',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({x:gx, y:gy})});
+    }
+    document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('live-view-img')) handleTap(e.target, e.clientX, e.clientY);
+    });
+    document.addEventListener('touchstart', function(e) {
+        if (!e.target.classList.contains('live-view-img')) return;
+        e.preventDefault(); var t = e.touches[0];
+        handleTap(e.target, t.clientX, t.clientY);
+    }, {passive:false});
+})();
+
+/* ---------- Restart / Emulator ---------- */
+function restartGame(btn) {
+    var apiBase = _apiOf(btn);
+    btn.textContent = 'Restarting...'; btn.disabled = true;
+    fetch(apiBase + '/api/restart-game', {method:'POST', credentials:'include'})
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            btn.textContent = d.ok ? 'Restarted!' : 'Failed';
+            setTimeout(function() { btn.textContent = 'Restart Game'; btn.disabled = false; }, 2000);
+        }).catch(function() {
+            btn.textContent = 'Error';
+            setTimeout(function() { btn.textContent = 'Restart Game'; btn.disabled = false; }, 2000);
+        });
+}
+function startEmulator(btn) {
+    var apiBase = _apiOf(btn);
+    btn.textContent = 'Starting...'; btn.disabled = true; btn.classList.add('emu-starting');
+    fetch(apiBase + '/api/emulator/start', {method:'POST', credentials:'include'})
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (!d.ok) { btn.textContent = 'Start Emulator'; btn.disabled = false; btn.classList.remove('emu-starting'); }
+        }).catch(function() {
+            btn.textContent = 'Start Emulator'; btn.disabled = false; btn.classList.remove('emu-starting');
+        });
+}
+function stopEmulator(btn) {
+    if (!confirm('Stop this emulator? All bot tasks on it will be stopped first.')) return;
+    var apiBase = _apiOf(btn);
+    btn.disabled = true;
+    fetch(apiBase + '/api/emulator/stop', {method:'POST', credentials:'include'})
+        .then(function() { btn.disabled = false; })
+        .catch(function() { btn.disabled = false; });
+}
+
+/* ---------- Chat feed ---------- */
+function loadChatFeed(dh, apiBase, feedEl) {
+    var c = _chatFeedCache[dh];
+    if (c && Date.now() - c.ts < 10000) { renderChatFeed(c.messages, feedEl); return; }
+    fetch(apiBase + '/api/chat', {credentials:'include'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var msgs = (data.messages || []).filter(function(m) { return m.payload_type !== 11; });
+            _chatFeedCache[dh] = {messages:msgs, ts:Date.now()};
+            renderChatFeed(msgs, feedEl);
+        }).catch(function() {});
+}
+function renderChatFeed(messages, feedEl) {
+    var container = feedEl.querySelector('.chat-feed-messages');
+    if (!container) return;
+    var recent = messages.slice(-3);
+    container.textContent = '';
+    if (recent.length === 0) {
+        var h = document.createElement('div');
+        h.className = 'chat-feed-empty'; h.textContent = 'No chat yet';
+        container.appendChild(h); return;
+    }
+    recent.forEach(function(msg) {
+        var ch = _chatChannelMap[msg.channel] || {name:'?',cls:'server'};
+        var div = document.createElement('div'); div.className = 'chat-feed-msg';
+        var sender = document.createElement('span');
+        sender.className = 'chat-feed-sender chat-sender-' + ch.cls;
+        sender.textContent = msg.sender || '???'; div.appendChild(sender);
+        var text = document.createElement('span'); text.className = 'chat-feed-text';
+        text.textContent = (msg.content || '').replace(/\[[^\]]*\|(@[^\]]+)\]/g, '[$1]');
+        div.appendChild(text); container.appendChild(div);
+    });
+}
+
+/* ---------- Chat modal ---------- */
+var _chatDhash = '';
+var _chatChannel = '';
+var _chatPollId = null;
+var _chatShowSystem = false;
+var _chatMessages = [];
+
+function openDeviceChat(dhash) {
+    _chatDhash = dhash;
+    _chatChannel = '';
+    _chatShowSystem = false;
+    _chatMessages = [];
+    document.querySelectorAll('#chat-modal-tabs .chat-tab').forEach(function(t) {
+        t.classList.toggle('active', !t.getAttribute('data-channel'));
+    });
+    document.getElementById('chat-system-toggle').classList.remove('active');
+    var card = document.querySelector('.device-card[data-dhash="' + dhash + '"]');
+    var nameEl = card ? card.querySelector('.device-name-row strong') : null;
+    document.getElementById('chat-modal-device').textContent = nameEl ? nameEl.textContent : dhash;
+    document.getElementById('chat-modal-messages').innerHTML =
+        '<div class="chat-messages-empty"><div class="chat-messages-empty-icon">&#128172;</div>' +
+        '<div class="chat-messages-empty-text">Loading...</div></div>';
+    document.getElementById('chat-status-text').textContent = '';
+    document.getElementById('chat-system-count').textContent = '';
+    document.getElementById('chat-overlay').classList.add('visible');
+    _loadChatModal();
+    if (_chatPollId) clearInterval(_chatPollId);
+    _chatPollId = setInterval(_loadChatModal, 3000);
+}
+function closeChatModal() {
+    document.getElementById('chat-overlay').classList.remove('visible');
+    if (_chatPollId) { clearInterval(_chatPollId); _chatPollId = null; }
+    _chatDhash = '';
+}
+function setChatChannel(btn, channel) {
+    _chatChannel = channel;
+    document.querySelectorAll('#chat-modal-tabs .chat-tab').forEach(function(t) { t.classList.remove('active'); });
+    btn.classList.add('active');
+    _loadChatModal();
+}
+function toggleChatSystem(btn) {
+    _chatShowSystem = !_chatShowSystem;
+    btn.classList.toggle('active', _chatShowSystem);
+    _renderChatModal(_chatMessages);
+    _updateChatStatus(_chatMessages);
+}
+function _loadChatModal() {
+    if (!_chatDhash) return;
+    var card = document.querySelector('.device-card[data-dhash="' + _chatDhash + '"]');
+    if (!card) return;
+    var apiBase = card.getAttribute('data-api');
+    var url = apiBase + '/api/chat';
+    if (_chatChannel) url += '?channel=' + encodeURIComponent(_chatChannel);
+    fetch(url, {credentials:'include'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _chatMessages = data.messages || [];
+            _renderChatModal(_chatMessages);
+            _updateChatStatus(_chatMessages);
+        }).catch(function() {});
+}
+function _updateChatStatus(messages) {
+    var systemCount = messages.filter(function(m) { return m.payload_type === 11; }).length;
+    var visible = _chatShowSystem ? messages : messages.filter(function(m) { return m.payload_type !== 11; });
+    var text = visible.length + ' messages';
+    if (_chatChannel) text += ' \u00b7 ' + (_chatChannelNames[_chatChannel] || _chatChannel);
+    document.getElementById('chat-status-text').textContent = text;
+    document.getElementById('chat-system-count').textContent = systemCount > 0 ? systemCount + ' hidden' : '';
+}
+function _renderChatModal(messages) {
+    var container = document.getElementById('chat-modal-messages');
+    var wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 50;
+    container.textContent = '';
+    var filtered = _chatShowSystem ? messages : messages.filter(function(m) { return m.payload_type !== 11; });
+    if (filtered.length === 0) {
+        var empty = document.createElement('div'); empty.className = 'chat-messages-empty';
+        var icon = document.createElement('div'); icon.className = 'chat-messages-empty-icon'; icon.innerHTML = '&#128172;';
+        empty.appendChild(icon);
+        var hint = document.createElement('div'); hint.className = 'chat-messages-empty-text';
+        hint.textContent = messages.length > 0
+            ? 'All messages are system notifications.\nToggle "System" below to view them.'
+            : 'No messages yet.\nGame chat must be active.';
+        empty.appendChild(hint); container.appendChild(empty); return;
+    }
+    var lastDateStr = '';
+    filtered.forEach(function(msg) {
+        if (msg.timestamp > 0) {
+            var msgDate = new Date(msg.timestamp);
+            var dateStr = msgDate.toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'});
+            if (dateStr !== lastDateStr) {
+                lastDateStr = dateStr;
+                var sep = document.createElement('div'); sep.className = 'chat-date-sep';
+                var line1 = document.createElement('div'); line1.className = 'chat-date-line';
+                var label = document.createElement('span'); label.className = 'chat-date-label'; label.textContent = dateStr;
+                var line2 = document.createElement('div'); line2.className = 'chat-date-line';
+                sep.appendChild(line1); sep.appendChild(label); sep.appendChild(line2); container.appendChild(sep);
+            }
+        }
+        var isSystem = msg.payload_type === 11;
+        var isCoord = msg.payload_type === 5;
+        var ch = _chatChannelMap[msg.channel] || {name: msg.channel || '?', cls: 'server'};
+        if (isSystem) ch = {name: 'System', cls: 'system'};
+        var div = document.createElement('div'); div.className = 'chat-msg ch-' + ch.cls;
+        var row = document.createElement('div'); row.className = 'chat-msg-row';
+        var time = document.createElement('span'); time.className = 'chat-time';
+        if (msg.timestamp > 0) {
+            var d = new Date(msg.timestamp);
+            time.textContent = ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
+        }
+        row.appendChild(time);
+        var badge = document.createElement('span'); badge.className = 'chat-channel-badge badge-' + ch.cls; badge.textContent = ch.name;
+        row.appendChild(badge);
+        if (msg.union_name) {
+            var union = document.createElement('span'); union.className = 'chat-union-tag'; union.textContent = '[' + msg.union_name + ']';
+            row.appendChild(union);
+        }
+        var isR4 = msg.channel === 'UNION_R4';
+        var sender = document.createElement('span'); sender.className = 'chat-sender chat-sender-' + (isR4 ? 'r4' : ch.cls);
+        sender.textContent = msg.sender || (isSystem ? 'System' : '???');
+        row.appendChild(sender); div.appendChild(row);
+        var content = document.createElement('div');
+        content.className = isSystem ? 'chat-content-system' : (isCoord ? 'chat-content chat-content-coord' : 'chat-content');
+        content.textContent = (msg.content || '').replace(/\[[^\]]*\|(@[^\]]+)\]/g, '[$1]');
+        div.appendChild(content); container.appendChild(div);
+    });
+    if (wasAtBottom) container.scrollTop = container.scrollHeight;
+}
+"""
+
+
+# ------------------------------------------------------------------
+# Shared device-card builders (used by both admin and customer dashboards)
+# ------------------------------------------------------------------
+
+_AUTO_MODE_GROUPS = [
+    {"group": "Combat", "modes": [
+        ("auto_pass", "Pass Battle"), ("auto_occupy", "Occupy Towers"),
+        ("auto_reinforce", "Reinforce Throne"), ("auto_reinforce_ally", "Reinforce Ally"),
+    ]},
+    {"group": "Farming", "modes": [
+        ("auto_quest", "Auto Quest"), ("auto_titan", "Rally Titans"),
+        ("auto_gold", "Gather Gold"), ("auto_mithril", "Mine Mithril"),
+    ]},
+]
+
+
+def _build_card_controls() -> tuple[str, str, str]:
+    """Build pills, toggles, and events HTML (identical for every device card)."""
+    pills = ""
+    toggles = ""
+    for grp in _AUTO_MODE_GROUPS:
+        toggles += (
+            f'<div class="auto-column">'
+            f'<div class="auto-subheader">{grp["group"]}</div>'
+            f'<div class="auto-list">'
+        )
+        for key, mlabel in grp["modes"]:
+            pills += f'<span class="control-pill" data-mode="{key}">{mlabel}</span>'
+            toggles += (
+                f'<div class="auto-row" data-mode="{key}">'
+                f'<span class="auto-label">{mlabel}</span>'
+                f'<button type="button" class="toggle" '
+                f"""onclick="toggleAutoMode('{key}',this)"></button>"""
+                f'</div>'
+            )
+        toggles += '</div></div>'
+
+    events = (
+        f'<div class="device-events-section">'
+        f'<div class="events-header" onclick="toggleEvents(this)">'
+        f'<span class="events-label">Events</span>'
+        f'<span class="controls-arrow">&#9660;</span>'
+        f'</div>'
+        f'<div class="events-body" style="display:none">'
+        f'<div class="auto-row" data-mode="auto_groot">'
+        f'<span class="auto-label">Join Groot</span>'
+        f'<button type="button" class="toggle" '
+        f"""onclick="toggleAutoMode('auto_groot',this)"></button>"""
+        f'</div>'
+        f'<div class="auto-row" data-mode="auto_esb">'
+        f'<span class="auto-label">Phantom Clash</span>'
+        f'<button type="button" class="toggle" '
+        f"""onclick="toggleAutoMode('auto_esb',this)"></button>"""
+        f'</div>'
+        f'</div></div>'
+    )
+    return pills, toggles, events
+
+
+def _device_card_online(
+    dhash: str, api_base: str, label: str, bot_label: str,
+    pills: str, toggles: str, events: str,
+    offline: bool = False,
+) -> str:
+    bot_label_html = (
+        f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
+        if bot_label else ""
+    )
+    offline_cls = " device-card-offline" if offline else ""
+    return (
+        f'<div class="card device-card{offline_cls}" data-dhash="{dhash}" data-api="{api_base}">'
+        f'<div class="device-top">'
+        f'<div class="device-name-row">'
+        f'<strong>{label}</strong>'
+        f'<span class="device-troops" title="Troops">&#9876; ?</span>'
+        f'</div>'
+        f'<div class="device-header-right">{bot_label_html}</div>'
+        f'<div class="device-status-bar">'
+        f'<span class="status-indicator"></span>'
+        f'<span class="status-text">Loading...</span>'
+        f'</div>'
+        f'<span class="mithril-timer" style="display:none">'
+        f'&#9935; <span class="mithril-time"></span></span>'
+        f'</div>'
+        # Troops
+        f'<div class="section-label troop-label">Troops '
+        f'<span class="troop-source"></span><span class="troop-age"></span></div>'
+        f'<div class="troop-slots"></div>'
+        # Quests
+        f'<div class="section-label quest-label quest-header" style="display:none">'
+        f'Quests <span class="quest-age"></span></div>'
+        f'<div class="quest-tracking"></div>'
+        # Chat feed
+        f'<div class="chat-feed" data-dhash="{dhash}" style="display:none"'
+        f""" onclick="openDeviceChat('{dhash}')">"""
+        f'<div class="chat-feed-well">'
+        f'<div class="chat-feed-messages"></div>'
+        f'<div class="chat-feed-fade"></div>'
+        f'</div></div>'
+        # Controls
+        f'<div class="device-auto-modes">'
+        f'<div class="controls-header" onclick="toggleControls(this)">'
+        f'<span class="controls-label">Controls</span>'
+        f'<span class="controls-arrow">&#9660;</span>'
+        f'</div>'
+        f'<div class="controls-pills" style="display:none">{pills}</div>'
+        f'<div class="controls-body"><div class="auto-columns">{toggles}</div></div>'
+        f'</div>'
+        # Events
+        + events +
+        # Live view + emulator buttons
+        f'<div class="live-view-section">'
+        f'<div class="live-view-buttons">'
+        f'<button type="button" class="live-view-toggle" '
+        f'onclick="toggleLiveView(this)" data-active="false">Live View</button>'
+        f'<button type="button" class="manual-control-toggle" '
+        f'onclick="toggleManualControl(this)" data-active="false">Manual Control</button>'
+        f'<button type="button" class="chat-view-toggle" '
+        f"""data-dhash="{dhash}" onclick="openDeviceChat('{dhash}')" """
+        f'style="display:none">Chat</button>'
+        f'<button type="button" class="restart-game-btn" '
+        f'onclick="restartGame(this)">Restart Game</button>'
+        f'</div>'
+        f'<div class="emu-steps emu-steps-compact">'
+        f'<button type="button" class="emu-step-btn emu-step-stop" '
+        f'onclick="stopEmulator(this)">Stop Emulator</button>'
+        f'<button type="button" class="emu-step-btn emu-step-game" '
+        f'onclick="restartGame(this)">Restart Game</button>'
+        f'</div>'
+        f'<div class="live-view-container" style="display:none">'
+        f'<img class="live-view-img" alt="Screenshot">'
+        f'</div></div>'
+        # Bottom bar (Settings + Stop All)
+        f'<div class="bottom-bar" style="margin-top:8px">'
+        f'<button type="button" class="bottom-btn bottom-btn-danger" style="flex:1" '
+        f'onclick="stopAllDevice(this)">Stop All</button>'
+        f'<a href="{api_base}/settings" class="bottom-btn" '
+        f'style="flex:1;text-align:center;text-decoration:none">Settings</a>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _device_card_offline(
+    dhash: str, api_base: str, label: str, bot_label: str,
+) -> str:
+    bot_label_html = (
+        f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
+        if bot_label else ""
+    )
+    return (
+        f'<div class="card device-card device-card-offline" data-dhash="{dhash}" data-api="{api_base}">'
+        f'<div class="device-top">'
+        f'<div class="device-name-row"><strong>{label}</strong></div>'
+        f'<div class="device-header-right">{bot_label_html}</div>'
+        f'<div class="device-status-bar">'
+        f'<span class="status-indicator"></span>'
+        f'<span class="status-text status-offline">Offline</span>'
+        f'</div></div>'
+        f'<div class="emu-steps">'
+        f'<button type="button" class="emu-step-btn emu-step-emu" '
+        f'onclick="startEmulator(this)">Start Emulator</button>'
+        f'</div></div>'
+    )
+
+
+def _device_card_disconnected(dhash: str, label: str, bot_label: str) -> str:
+    bot_label_html = (
+        f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
+        if bot_label else ""
+    )
+    return (
+        f'<div class="card device-card device-card-offline" data-dhash="{dhash}">'
+        f'<div class="device-top">'
+        f'<div class="device-name-row"><strong>{label}</strong></div>'
+        f'<div class="device-header-right">{bot_label_html}</div>'
+        f'<div class="device-status-bar">'
+        f'<span class="status-indicator"></span>'
+        f'<span class="status-text status-offline">Disconnected</span>'
+        f'</div></div></div>'
+    )
+
+
+def _offline_section_html(all_devices: list, offline_cards: str) -> str:
+    """Collapsible section for offline + disconnected devices."""
+    if not offline_cards:
+        return ""
+    offline_count = sum(1 for d in all_devices if d[-1] == "offline")
+    disconnected_count = sum(1 for d in all_devices if d[-1] == "disconnected")
+    return (
+        f'<div class="actions-section" style="margin-top:16px">'
+        f'<div class="actions-header" onclick="toggleOffline(this)" '
+        f'style="cursor:pointer;display:flex;align-items:center;justify-content:space-between">'
+        f'<span style="font-size:13px;font-weight:600;color:#667">'
+        f'Offline ({offline_count}) &middot; Disconnected ({disconnected_count})'
+        f'</span>'
+        f'<span class="controls-arrow" style="color:#667">&#9654;</span>'
+        f'</div>'
+        f'<div class="device-grid" style="display:none">{offline_cards}</div>'
+        f'</div>'
+    )
+
+
+_CHAT_MODAL_HTML = (
+    '<div class="chat-overlay" id="chat-overlay" onclick="closeChatModal()">'
+    '<div class="chat-modal" onclick="event.stopPropagation()">'
+    '<div class="chat-modal-header">'
+    '<div><span class="chat-modal-title">Chat</span>'
+    '<span class="chat-modal-device" id="chat-modal-device"></span></div>'
+    '<button type="button" class="chat-modal-close" onclick="closeChatModal()">&times;</button>'
+    '</div>'
+    '<div class="chat-tabs" id="chat-modal-tabs">'
+    '<button class="chat-tab active" data-channel="" onclick="setChatChannel(this, \'\')">All</button>'
+    '<button class="chat-tab" data-channel="SERVER" onclick="setChatChannel(this, \'SERVER\')">Kingdom</button>'
+    '<button class="chat-tab" data-channel="UNION" onclick="setChatChannel(this, \'UNION\')">Alliance</button>'
+    '<button class="chat-tab" data-channel="FACTION" onclick="setChatChannel(this, \'FACTION\')">Faction</button>'
+    '<button class="chat-tab" data-channel="WORLD" onclick="setChatChannel(this, \'WORLD\')">World</button>'
+    '<button class="chat-tab" data-channel="PRIVATE" onclick="setChatChannel(this, \'PRIVATE\')">Private</button>'
+    '</div>'
+    '<div class="chat-messages" id="chat-modal-messages">'
+    '<div class="chat-messages-empty">'
+    '<div class="chat-messages-empty-icon">&#128172;</div>'
+    '<div class="chat-messages-empty-text">Loading chat messages...</div>'
+    '</div></div>'
+    '<div class="chat-modal-footer">'
+    '<button type="button" class="chat-system-toggle" id="chat-system-toggle" onclick="toggleChatSystem(this)">System</button>'
+    '<span class="chat-system-count" id="chat-system-count"></span>'
+    '<span class="chat-status-text" id="chat-status-text"></span>'
+    '</div></div></div>'
+)
+
+
+def _device_state(d: dict) -> str:
+    """Return 'online', 'offline', or 'disconnected' for a device dict."""
+    bot_name = d["bot_name"]
+    bot_online = bot_name in _active_bots and not _active_bots[bot_name].closed
+    if not bot_online:
+        return "disconnected"
+    dev_online_map = {
+        bd["hash"]: bd.get("online", True)
+        for bd in _bot_device_status.get(bot_name, [])
+    }
+    return "online" if dev_online_map.get(d["device_hash"], True) else "offline"
 
 
 async def _page_dashboard_admin(
     request: web.Request, user: dict, csrf: str,
 ) -> web.Response:
-    """Admin dashboard — shows bots, grants, full management (legacy view)."""
-    data = await asyncio.to_thread(db.get_user_bots, user["user_id"])
+    """Admin dashboard — all device cards from every server, inline with full controls."""
+    bots = await asyncio.to_thread(db.list_bots)
 
-    def _bot_card(bot: dict, is_owned: bool = False) -> str:
-        name = bot["bot_name"]
-        label = _html_escape(bot.get("label") or name)
-        online = name in _active_bots and not _active_bots[name].closed
-        dot = "dot-online" if online else "dot-offline"
-        status = "Online" if online else "Offline"
-        dev_count = bot.get("device_count", 0)
+    # Collect all devices across all bots
+    # Each entry: (bot_name, bot_label, dhash, label, device_state)
+    # device_state: "online" | "offline" (emu stopped, startable) | "disconnected" (server off)
+    all_devices = []
+    for b in bots:
+        name = b["bot_name"]
+        bot_online = name in _active_bots and not _active_bots[name].closed
+        bot_label = _html_escape(b.get("label") or name)
+        devices = await asyncio.to_thread(db.list_devices, name)
+        # Build lookup of per-device online status from bot's last report
+        dev_online_map = {}
+        for bd in _bot_device_status.get(name, []):
+            dev_online_map[bd["hash"]] = bd.get("online", True)
+        for d in devices:
+            label = _html_escape(
+                d.get("label") or d.get("device_name") or d["device_hash"][:8]
+            )
+            dh = d["device_hash"]
+            if not bot_online:
+                state = "disconnected"
+            elif dev_online_map.get(dh, True):
+                state = "online"
+            else:
+                state = "offline"
+            all_devices.append((name, bot_label, dh, label, state))
 
-        manage = ""
-        if is_owned or user["is_admin"]:
-            manage = f'<a href="/portal/bot/{name}" class="btn btn-outline btn-sm">Manage</a>'
-        access = bot.get("access_level", "full" if is_owned else "")
-        badge = ""
-        if access and not is_owned:
-            cls = "badge-full" if access == "full" else "badge-readonly"
-            badge = f'<span class="badge {cls}">{access}</span>'
-
-        return (
-            f'<div class="bot-row">'
-            f'<div class="bot-info">'
-            f'<div class="bot-name"><span class="dot {dot}"></span>{label} {badge}</div>'
-            f'<div class="bot-meta">{name} &middot; {dev_count} device(s) &middot; {status}</div>'
-            f'</div>'
-            f'<div style="display:flex;gap:8px;align-items:center">'
-            f'<a href="/{name}/" class="btn btn-primary btn-sm">Open</a>'
-            f'{manage}'
-            f'</div></div>'
+    if not all_devices:
+        body = '<p class="muted" style="padding:24px;text-align:center">No devices registered.</p>'
+        return web.Response(
+            text=_page_dashboard_wrapper("Dashboard", body, user, csrf),
+            content_type="text/html",
         )
 
-    owned_html = ""
-    if data["owned"]:
-        cards = "".join(_bot_card(b, is_owned=True) for b in data["owned"])
-        owned_html = f'<div class="card"><h2>My Servers</h2>{cards}</div>'
+    # Pick the first online bot to source style.css from
+    css_bot = next((n for n, _, _, _, s in all_devices if s == "online"), all_devices[0][0])
 
-    shared_html = ""
-    if data["shared"]:
-        cards = "".join(_bot_card(b) for b in data["shared"])
-        shared_html = f'<div class="card"><h2>Shared With Me</h2>{cards}</div>'
+    # Build device cards using shared helpers
+    pills, toggles, events = _build_card_controls()
+    cards_html = ""
+    offline_cards = ""
+    for bot_name, bot_label, dhash, label, state in all_devices:
+        api_base = f"/{bot_name}/d/{dhash}"
+        if state == "disconnected":
+            offline_cards += _device_card_disconnected(dhash, label, bot_label)
+        elif state == "offline":
+            # Render full card so JS can populate sections when device comes online
+            offline_cards += _device_card_online(
+                dhash, api_base, label, bot_label, pills, toggles, events, offline=True)
+        else:
+            cards_html += _device_card_online(dhash, api_base, label, bot_label, pills, toggles, events)
 
-    if not data["owned"] and not data["shared"]:
-        owned_html = (
-            '<div class="card"><p class="muted">'
-            'No servers available.</p></div>'
-        )
+    offline_section = _offline_section_html(
+        [(s,) for _, _, _, _, s in all_devices],  # just need state as last element
+        offline_cards,
+    )
 
-    body = f"{owned_html}{shared_html}"
-    return web.Response(text=_page("Dashboard", body, user, csrf), content_type="text/html")
+    body = (
+        f'<div class="device-grid">{cards_html}</div>'
+        + offline_section
+        + _CHAT_MODAL_HTML
+        + "\n<script>\n" + _PORTAL_DASHBOARD_JS + "\n</script>"
+    )
+    return web.Response(
+        text=_page_dashboard_wrapper("Dashboard", body, user, csrf, css_bot=css_bot),
+        content_type="text/html",
+    )
 
 
 async def page_community(request: web.Request) -> web.Response:
@@ -943,8 +2162,8 @@ async def page_bot_detail(request: web.Request) -> web.Response:
 
     async function revokeGrant(id) {{
         if (!confirm("Revoke this access?")) return;
-        const resp = await fetch("/portal/api/grants/" + id, {{
-            method: "DELETE",
+        const resp = await fetch("/portal/api/grants/" + id + "/revoke", {{
+            method: "POST",
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{csrf_token: csrf}})
         }});
@@ -1009,78 +2228,131 @@ async def page_admin(request: web.Request) -> web.Response:
     users = await asyncio.to_thread(db.list_users)
     bots = await asyncio.to_thread(db.list_bots)
     invites = await asyncio.to_thread(db.list_invite_codes)
+    pending = await asyncio.to_thread(db.list_pending_users)
+    subs = await asyncio.to_thread(db.list_subscriptions)
 
-    # Users table
-    user_rows = ""
-    for u in users:
-        admin_badge = '<span class="badge badge-admin">admin</span> ' if u["is_admin"] else ""
-        last = u.get("last_login") or "never"
-        email = _html_escape(u.get("email") or "—")
-        user_rows += (
-            f'<tr>'
-            f'<td>{u["id"]}</td>'
-            f'<td>{admin_badge}{_html_escape(u["username"])}</td>'
-            f'<td class="muted" style="font-size:11px">{email}</td>'
-            f'<td class="muted">{u["created_at"]}</td>'
-            f'<td class="muted">{last}</td>'
-            f'<td style="white-space:nowrap">'
-            f'<button class="btn btn-outline btn-sm" style="margin-right:4px" '
-            f'onclick="resetPassword({u["id"]},\'{_html_escape(u["username"])}\')">Reset PW</button>'
-            f'<button class="btn btn-danger btn-sm" '
-            f'onclick="deleteUser({u["id"]},\'{_html_escape(u["username"])}\')">Delete</button>'
-            f'</td></tr>'
+    # --- Stats ---
+    online_count = sum(1 for b in bots if b["bot_name"] in _active_bots and not _active_bots[b["bot_name"]].closed)
+    active_subs = sum(1 for s in subs if s["status"] == "active")
+    unused_invites = [i for i in invites if not i.get("used_by")]
+    used_invites = [i for i in invites if i.get("used_by")]
+
+    # --- Pending approval cards ---
+    pending_cards = ""
+    for p in pending:
+        email = _html_escape(p.get("email") or "—")
+        pending_cards += (
+            f'<div class="adm-pending-card">'
+            f'<div class="adm-pending-info">'
+            f'<span class="adm-pending-name">{_html_escape(p["username"])}</span>'
+            f'<span class="adm-pending-meta">{email}<span class="adm-sep"></span>{p["created_at"]}</span>'
+            f'</div>'
+            f'<div class="adm-pending-actions">'
+            f'<button class="adm-act adm-act-approve" '
+            f'onclick="approveUser({p["id"]},\'{_html_escape(p["username"])}\')">Approve</button>'
+            f'<button class="adm-act adm-act-reject" '
+            f'onclick="rejectUser({p["id"]},\'{_html_escape(p["username"])}\')">Reject</button>'
+            f'</div></div>'
         )
 
-    # Bots table
+    pending_section = ""
+    if pending:
+        pending_section = (
+            f'<div class="adm-alert-banner">'
+            f'<div class="adm-alert-dot"></div>'
+            f'<div class="adm-alert-content">'
+            f'<strong>{len(pending)} pending approval{"s" if len(pending) != 1 else ""}</strong>'
+            f'<span class="muted">New signups waiting for review</span>'
+            f'</div></div>'
+            f'{pending_cards}'
+        )
+
+    # --- User rows ---
+    user_rows = ""
+    for u in users:
+        role_badge = '<span class="adm-role adm-role-admin">Admin</span>' if u["is_admin"] else '<span class="adm-role adm-role-user">User</span>'
+        last = u.get("last_login") or "never"
+        email = _html_escape(u.get("email") or "—")
+
+        is_owner = user["user_id"] == 1
+        admin_btn = ""
+        delete_btn = (
+            f'<button class="adm-act adm-act-danger" '
+            f'onclick="deleteUser({u["id"]},\'{_html_escape(u["username"])}\')">Delete</button>'
+        )
+        if u["id"] == 1:
+            # Owner account: no one can demote or delete
+            delete_btn = ""
+        elif is_owner and not u["is_admin"]:
+            admin_btn = (
+                f'<button class="adm-act adm-act-outline" '
+                f'onclick="toggleAdmin({u["id"]},\'{_html_escape(u["username"])}\')">Promote</button>'
+            )
+        elif is_owner and u["id"] != user["user_id"]:
+            admin_btn = (
+                f'<button class="adm-act adm-act-outline adm-act-warn" '
+                f'onclick="toggleAdmin({u["id"]},\'{_html_escape(u["username"])}\')">Demote</button>'
+            )
+
+        user_rows += (
+            f'<div class="adm-row">'
+            f'<div class="adm-row-main">'
+            f'<div class="adm-row-title">'
+            f'{role_badge}'
+            f'<a href="/portal/admin/user/{u["id"]}" class="adm-link"><strong>{_html_escape(u["username"])}</strong></a>'
+            f'<span class="adm-id">#{u["id"]}</span>'
+            f'</div>'
+            f'<div class="adm-row-meta">'
+            f'{email}<span class="adm-sep"></span>joined {u["created_at"]}<span class="adm-sep"></span>last login {last}'
+            f'</div></div>'
+            f'<div class="adm-row-actions">'
+            f'{admin_btn}'
+            f'<button class="adm-act adm-act-outline" '
+            f'onclick="resetPassword({u["id"]},\'{_html_escape(u["username"])}\')">Reset PW</button>'
+            f'{delete_btn}'
+            f'</div></div>'
+        )
+
+    # --- Bot rows ---
     bot_rows = ""
     for b in bots:
-        owner = _html_escape(b.get("owner_name") or "—")
         online = b["bot_name"] in _active_bots and not _active_bots[b["bot_name"]].closed
-        dot = "dot-online" if online else "dot-offline"
+        status_cls = "adm-online" if online else "adm-offline"
+        status_text = "Online" if online else "Offline"
         last = b.get("last_seen") or "never"
+        label = _html_escape(b.get("label") or b["bot_name"])
 
-        # Owner assignment dropdown
-        owner_select = f'<select onchange="setOwner(\'{b["bot_name"]}\',this.value)">'
-        owner_select += '<option value="">— none —</option>'
+        owner_select = f'<select class="adm-select" onchange="setOwner(\'{b["bot_name"]}\',this.value)">'
+        owner_select += '<option value="">Unassigned</option>'
         for u in users:
             sel = " selected" if b.get("owner_id") == u["id"] else ""
             owner_select += f'<option value="{u["id"]}"{sel}>{_html_escape(u["username"])}</option>'
         owner_select += "</select>"
 
         bot_rows += (
-            f'<tr>'
-            f'<td><span class="dot {dot}"></span>'
-            f'<a href="/portal/bot/{b["bot_name"]}">{_html_escape(b.get("label") or b["bot_name"])}</a></td>'
-            f'<td class="muted">{b["bot_name"]}</td>'
-            f'<td>{owner_select}</td>'
-            f'<td class="muted">{last}</td>'
-            f'</tr>'
-        )
-
-    # Invite codes
-    unused_invites = [i for i in invites if not i.get("used_by")]
-    used_invites = [i for i in invites if i.get("used_by")]
-
-    invite_rows = ""
-    for i in unused_invites[:20]:
-        creator = _html_escape(i.get("created_by_name") or "?")
-        invite_rows += (
-            f'<div class="device-row">'
-            f'<code>{i["code"]}</code>'
-            f'<span class="muted">by {creator} &middot; {i["created_at"]}</span>'
+            f'<div class="adm-row">'
+            f'<div class="adm-row-main">'
+            f'<div class="adm-row-title">'
+            f'<span class="adm-status {status_cls}"></span>'
+            f'<a href="/portal/bot/{b["bot_name"]}" class="adm-link"><strong>{label}</strong></a>'
+            f'<span class="adm-id">{b["bot_name"]}</span>'
             f'</div>'
+            f'<div class="adm-row-meta">'
+            f'{status_text}<span class="adm-sep"></span>last seen {last}'
+            f'</div></div>'
+            f'<div class="adm-row-actions">'
+            f'<div class="adm-owner-wrap"><span class="adm-owner-label">Owner</span>{owner_select}</div>'
+            f'</div></div>'
         )
 
-    # Subscriptions section
-    subs = await asyncio.to_thread(db.list_subscriptions)
+    # --- Subscription rows ---
     sub_rows = ""
     for s in subs:
         uname = _html_escape(s.get("username", "?"))
         is_admin_grant = s.get("stripe_customer_id") == "admin_grant"
-        src_label = "Admin" if is_admin_grant else "Stripe"
-        status_color = "#4caf50" if s["status"] == "active" else (
-            "#ffb74d" if s["status"] == "past_due" else "#ef5350"
-        )
+        src_cls = "adm-src-granted" if is_admin_grant else "adm-src-stripe"
+        src_label = "Granted" if is_admin_grant else "Stripe"
+        status_cls = "adm-sub-active" if s["status"] == "active" else ("adm-sub-warn" if s["status"] == "past_due" else "adm-sub-expired")
         period = s.get("current_period_end", "—")
         if period and period != "—":
             try:
@@ -1089,22 +2361,29 @@ async def page_admin(request: web.Request) -> web.Response:
                 period = pe.strftime("%Y-%m-%d")
             except Exception:
                 pass
+
         revoke_btn = ""
         if is_admin_grant and s["status"] in ("active", "past_due"):
             revoke_btn = (
-                f'<button class="btn btn-danger btn-sm" '
+                f'<button class="adm-act adm-act-danger" '
                 f'onclick="revokeSub({s["user_id"]})">Revoke</button>'
             )
+
         sub_rows += (
-            f'<tr>'
-            f'<td>{_html_escape(uname)}</td>'
-            f'<td>{s["plan"]}</td>'
-            f'<td style="color:{status_color}">{s["status"]}</td>'
-            f'<td class="muted">{src_label}</td>'
-            f'<td class="muted">{s["device_limit"]}</td>'
-            f'<td class="muted">{period}</td>'
-            f'<td>{revoke_btn}</td>'
-            f'</tr>'
+            f'<div class="adm-row">'
+            f'<div class="adm-row-main">'
+            f'<div class="adm-row-title">'
+            f'<span class="adm-sub-dot {status_cls}"></span>'
+            f'<strong>{uname}</strong>'
+            f'<span class="adm-pill {src_cls}">{src_label}</span>'
+            f'</div>'
+            f'<div class="adm-row-meta">'
+            f'{s["plan"]}<span class="adm-sep"></span>{s["status"]}'
+            f'<span class="adm-sep"></span>{s["device_limit"]} device{"s" if s["device_limit"] != 1 else ""}'
+            f'<span class="adm-sep"></span>expires {period}'
+            f'</div></div>'
+            f'<div class="adm-row-actions">{revoke_btn}</div>'
+            f'</div>'
         )
 
     # User options for grant form
@@ -1113,69 +2392,436 @@ async def page_admin(request: web.Request) -> web.Response:
         if not u["is_admin"]:
             user_options += f'<option value="{u["id"]}">{_html_escape(u["username"])}</option>'
 
+    # --- Invite code items ---
+    invite_items = ""
+    for i in unused_invites[:20]:
+        creator = _html_escape(i.get("created_by_name") or "?")
+        invite_items += (
+            f'<div class="adm-invite-item">'
+            f'<code class="adm-invite-code">{i["code"]}</code>'
+            f'<span class="adm-row-meta">by {creator}<span class="adm-sep"></span>{i["created_at"]}</span>'
+            f'</div>'
+        )
+
     body = f"""
-    <div class="card">
-        <h2>Users ({len(users)})</h2>
-        <table>
-            <tr><th>ID</th><th>Username</th><th>Email</th><th>Created</th><th>Last Login</th><th></th></tr>
-            {user_rows}
-        </table>
+    <style>
+    /* ── Admin page styles ── */
+
+    /* Card-tabs: stat cards that double as tabs */
+    .adm-cards {{
+        display: grid; grid-template-columns: repeat(4, 1fr);
+        gap: 8px; margin-bottom: 4px;
+    }}
+    .adm-card {{
+        background: #141428; border-radius: 12px; padding: 16px 18px;
+        border: 1px solid rgba(255,255,255,0.04);
+        position: relative; overflow: hidden; cursor: pointer;
+        transition: all 0.2s ease; user-select: none;
+    }}
+    .adm-card:hover {{ border-color: rgba(255,255,255,0.1); }}
+    .adm-card::before {{
+        content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+        opacity: 0.4; transition: opacity 0.2s ease;
+    }}
+    .adm-card.active::before {{ opacity: 1; }}
+    .adm-card::after {{
+        content: ''; position: absolute; bottom: -1px; left: 50%;
+        width: 0; height: 2px; transition: all 0.25s ease;
+        transform: translateX(-50%);
+    }}
+    .adm-card.active::after {{ width: 40px; }}
+    #card-users.adm-card::before {{ background: linear-gradient(90deg, #64d8ff, transparent); }}
+    #card-users.adm-card::after {{ background: #64d8ff; }}
+    #card-servers.adm-card::before {{ background: linear-gradient(90deg, #4caf50, transparent); }}
+    #card-servers.adm-card::after {{ background: #4caf50; }}
+    #card-subs.adm-card::before {{ background: linear-gradient(90deg, #ab47bc, transparent); }}
+    #card-subs.adm-card::after {{ background: #ab47bc; }}
+    #card-invites.adm-card::before {{ background: linear-gradient(90deg, #ffb74d, transparent); }}
+    #card-invites.adm-card::after {{ background: #ffb74d; }}
+    .adm-card.active {{
+        border-color: rgba(255,255,255,0.1);
+        background: #181830;
+        box-shadow: 0 2px 12px rgba(0,0,0,0.3);
+    }}
+    .adm-card-val {{
+        font-size: 26px; font-weight: 700; letter-spacing: -1px;
+        font-variant-numeric: tabular-nums; line-height: 1.1;
+        transition: color 0.2s ease;
+    }}
+    #card-users .adm-card-val {{ color: #64d8ff; }}
+    #card-servers .adm-card-val {{ color: #4caf50; }}
+    #card-subs .adm-card-val {{ color: #ab47bc; }}
+    #card-invites .adm-card-val {{ color: #ffb74d; }}
+    .adm-card-label {{
+        font-size: 10px; font-weight: 600; color: #667;
+        text-transform: uppercase; letter-spacing: 1.2px; margin-top: 4px;
+    }}
+
+    /* Panels */
+    .adm-panel {{ display: none; }}
+    .adm-panel.active {{ display: block; animation: admFadeIn 0.15s ease; }}
+    @keyframes admFadeIn {{ from {{ opacity: 0; transform: translateY(4px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+
+    /* Alert banner */
+    .adm-alert-banner {{
+        display: flex; align-items: center; gap: 12px;
+        padding: 14px 18px; margin-bottom: 10px;
+        background: rgba(255,183,77,0.06); border-radius: 12px;
+        border: 1px solid rgba(255,183,77,0.15);
+    }}
+    .adm-alert-dot {{
+        width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+        background: #ffb74d; box-shadow: 0 0 10px rgba(255,183,77,0.5);
+        animation: admPulse 2s ease-in-out infinite;
+    }}
+    @keyframes admPulse {{
+        0%, 100% {{ box-shadow: 0 0 4px rgba(255,183,77,0.2); }}
+        50% {{ box-shadow: 0 0 12px rgba(255,183,77,0.6); }}
+    }}
+    .adm-alert-content {{ display: flex; flex-direction: column; gap: 2px; }}
+    .adm-alert-content strong {{ font-size: 13px; color: #ffb74d; }}
+    .adm-alert-content .muted {{ font-size: 11px; }}
+
+    /* Pending cards */
+    .adm-pending-card {{
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 12px 16px; margin-bottom: 6px;
+        background: #141428; border-radius: 10px;
+        border: 1px solid rgba(255,183,77,0.08);
+        transition: border-color 0.15s;
+    }}
+    .adm-pending-card:hover {{ border-color: rgba(255,183,77,0.2); }}
+    .adm-pending-info {{ display: flex; flex-direction: column; gap: 3px; }}
+    .adm-pending-name {{ font-weight: 600; font-size: 14px; }}
+    .adm-pending-meta {{ font-size: 11px; color: #556; }}
+    .adm-pending-actions {{ display: flex; gap: 6px; }}
+
+    /* Rows */
+    .adm-row {{
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 14px 16px; margin-bottom: 6px;
+        background: #141428; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.04);
+        transition: border-color 0.15s; gap: 12px;
+    }}
+    .adm-row:hover {{ border-color: rgba(100,216,255,0.1); }}
+    .adm-row-main {{ flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }}
+    .adm-row-title {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+    .adm-row-title strong {{ font-size: 14px; }}
+    .adm-row-meta {{ font-size: 11px; color: #556; }}
+    .adm-row-actions {{ display: flex; gap: 6px; flex-shrink: 0; align-items: center; flex-wrap: wrap; }}
+    .adm-id {{
+        font-family: "SF Mono","Consolas",monospace; font-size: 10px;
+        color: #445; letter-spacing: 0.3px;
+    }}
+    .adm-sep {{ display: inline-block; width: 3px; height: 3px; border-radius: 50%;
+        background: #334; margin: 0 6px; vertical-align: middle; }}
+    .adm-link {{ color: #e0e0f0; text-decoration: none; }}
+    .adm-link:hover {{ color: #64d8ff; text-decoration: none; }}
+
+    /* Status dots */
+    .adm-status {{
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .adm-online {{
+        background: #4caf50; box-shadow: 0 0 8px rgba(76,175,80,0.5);
+        animation: admPulseGreen 2s ease-in-out infinite;
+    }}
+    .adm-offline {{ background: #333; }}
+    @keyframes admPulseGreen {{
+        0%, 100% {{ box-shadow: 0 0 4px rgba(76,175,80,0.2); }}
+        50% {{ box-shadow: 0 0 10px rgba(76,175,80,0.5); }}
+    }}
+
+    /* Role badges */
+    .adm-role {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.8px;
+        padding: 3px 8px; border-radius: 6px;
+    }}
+    .adm-role-admin {{
+        color: #ab47bc; background: rgba(171,71,188,0.1);
+        border: 1px solid rgba(171,71,188,0.2);
+    }}
+    .adm-role-user {{
+        color: #667; background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+    }}
+
+    /* Action buttons */
+    .adm-act {{
+        padding: 6px 14px; border-radius: 7px; border: none;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+        transition: all 0.15s ease; white-space: nowrap;
+    }}
+    .adm-act:active {{ transform: scale(0.96); }}
+    .adm-act-approve {{
+        background: rgba(76,175,80,0.12); color: #66bb6a;
+        border: 1px solid rgba(76,175,80,0.2);
+    }}
+    .adm-act-approve:hover {{ background: rgba(76,175,80,0.2); }}
+    .adm-act-reject {{
+        background: rgba(239,83,80,0.08); color: #ef5350;
+        border: 1px solid rgba(239,83,80,0.15);
+    }}
+    .adm-act-reject:hover {{ background: rgba(239,83,80,0.15); }}
+    .adm-act-outline {{
+        background: transparent; color: #889;
+        border: 1px solid rgba(255,255,255,0.08);
+    }}
+    .adm-act-outline:hover {{ border-color: rgba(255,255,255,0.2); color: #e0e0f0; }}
+    .adm-act-warn {{ color: #ffb74d; border-color: rgba(255,183,77,0.15); }}
+    .adm-act-warn:hover {{ border-color: rgba(255,183,77,0.3); }}
+    .adm-act-danger {{
+        background: rgba(239,83,80,0.08); color: #ef5350;
+        border: 1px solid rgba(239,83,80,0.12);
+    }}
+    .adm-act-danger:hover {{ background: rgba(239,83,80,0.15); }}
+    .adm-act-primary {{
+        background: rgba(100,216,255,0.1); color: #64d8ff;
+        border: 1px solid rgba(100,216,255,0.15);
+    }}
+    .adm-act-primary:hover {{ background: rgba(100,216,255,0.18); }}
+
+    /* Subscription pills */
+    .adm-pill {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
+        padding: 2px 7px; border-radius: 5px; letter-spacing: 0.5px;
+    }}
+    .adm-src-granted {{ color: #ab47bc; background: rgba(171,71,188,0.1); }}
+    .adm-src-stripe {{ color: #64d8ff; background: rgba(100,216,255,0.1); }}
+    .adm-sub-dot {{
+        width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .adm-sub-active {{ background: #4caf50; }}
+    .adm-sub-warn {{ background: #ffb74d; }}
+    .adm-sub-expired {{ background: #ef5350; }}
+
+    /* Grant form */
+    .adm-grant {{
+        padding: 16px; background: #0e0e1e; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.04); margin-bottom: 12px;
+    }}
+    .adm-grant-title {{
+        font-size: 11px; font-weight: 700; color: #556; text-transform: uppercase;
+        letter-spacing: 1px; margin-bottom: 12px;
+    }}
+    .adm-grant-form {{
+        display: flex; gap: 10px; align-items: end; flex-wrap: wrap;
+    }}
+    .adm-grant-field {{ display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 120px; }}
+    .adm-grant-field label {{
+        font-size: 10px; font-weight: 600; color: #556; text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }}
+
+    /* Owner select */
+    .adm-owner-wrap {{
+        display: flex; align-items: center; gap: 8px;
+    }}
+    .adm-owner-label {{
+        font-size: 10px; font-weight: 600; color: #445; text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }}
+    .adm-select {{
+        background: #0e0e1e; color: #e0e0f0; border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 7px; padding: 6px 10px; font-size: 12px; outline: none;
+        transition: border-color 0.15s;
+    }}
+    .adm-select:focus {{ border-color: rgba(100,216,255,0.3); }}
+
+    /* Invite items */
+    .adm-invite-item {{
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px; margin-bottom: 4px;
+        background: #141428; border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.04);
+    }}
+    .adm-invite-code {{
+        font-family: "SF Mono","Consolas",monospace; font-size: 13px;
+        color: #64d8ff; letter-spacing: 0.5px; font-weight: 600;
+    }}
+    .adm-invite-actions {{ display: flex; gap: 8px; margin-bottom: 14px; }}
+    .adm-invite-counter {{
+        display: flex; gap: 16px; padding-top: 10px; margin-top: 10px;
+        border-top: 1px solid rgba(255,255,255,0.04);
+    }}
+    .adm-invite-counter span {{ font-size: 11px; color: #445; }}
+    .adm-invite-counter strong {{ color: #667; }}
+
+    /* Toast */
+    .adm-toast {{
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 600;
+        z-index: 1000; pointer-events: none;
+        animation: admToastIn 0.2s ease, admToastOut 0.3s ease 1.7s forwards;
+    }}
+    .adm-toast-ok {{ background: rgba(76,175,80,0.15); color: #66bb6a; border: 1px solid rgba(76,175,80,0.3); }}
+    @keyframes admToastIn {{ from {{ opacity: 0; transform: translateX(-50%) translateY(8px); }} }}
+    @keyframes admToastOut {{ to {{ opacity: 0; transform: translateX(-50%) translateY(-8px); }} }}
+
+    /* Result area */
+    #inviteResult .alert {{ border-radius: 10px; }}
+
+    /* Responsive */
+    @media (max-width: 600px) {{
+        .adm-cards {{ grid-template-columns: repeat(2, 1fr); }}
+        .adm-card {{ padding: 12px 14px; }}
+        .adm-card-val {{ font-size: 22px; }}
+        .adm-row {{ flex-direction: column; align-items: flex-start; gap: 10px; }}
+        .adm-row-actions {{ width: 100%; }}
+        .adm-pending-card {{ flex-direction: column; align-items: flex-start; gap: 10px; }}
+        .adm-pending-actions {{ width: 100%; }}
+        .adm-grant-form {{ flex-direction: column; }}
+        .adm-grant-field {{ min-width: 100%; }}
+        .adm-owner-wrap {{ flex-direction: column; align-items: flex-start; gap: 4px; }}
+    }}
+    </style>
+
+    <!-- Pending approval (always visible when present) -->
+    {pending_section}
+
+    <!-- Card-tabs: click to reveal section -->
+    <div class="adm-cards">
+        <div class="adm-card active" id="card-users" onclick="admSwitch('users')">
+            <div class="adm-card-val">{len(users)}</div>
+            <div class="adm-card-label">Users</div>
+        </div>
+        <div class="adm-card" id="card-servers" onclick="admSwitch('servers')">
+            <div class="adm-card-val">{online_count}<span style="font-size:13px;color:#556;font-weight:400">/{len(bots)}</span></div>
+            <div class="adm-card-label">Servers</div>
+        </div>
+        <div class="adm-card" id="card-subs" onclick="admSwitch('subs')">
+            <div class="adm-card-val">{active_subs}</div>
+            <div class="adm-card-label">Subs</div>
+        </div>
+        <div class="adm-card" id="card-invites" onclick="admSwitch('invites')">
+            <div class="adm-card-val">{len(unused_invites)}</div>
+            <div class="adm-card-label">Invites</div>
+        </div>
     </div>
 
-    <div class="card">
-        <h2>Subscriptions</h2>
-        <div style="margin-bottom:16px;padding:14px;background:#141428;border-radius:10px;border:1px solid rgba(255,255,255,0.04)">
-            <strong style="font-size:13px;display:block;margin-bottom:10px">Grant Free Subscription</strong>
-            <form id="grantSubForm" onsubmit="return grantSub(event)" style="display:flex;flex-wrap:wrap;gap:8px;align-items:end">
-                <div class="form-group" style="margin:0;flex:1;min-width:120px">
+    <!-- Users panel -->
+    <div id="panel-users" class="adm-panel active">
+        {user_rows if user_rows else '<p class="muted" style="padding:20px 0;text-align:center">No users.</p>'}
+    </div>
+
+    <!-- Servers panel -->
+    <div id="panel-servers" class="adm-panel">
+        {bot_rows if bot_rows else '<p class="muted" style="padding:20px 0;text-align:center">No servers registered.</p>'}
+    </div>
+
+    <!-- Subscriptions panel -->
+    <div id="panel-subs" class="adm-panel">
+        <div class="adm-grant">
+            <div class="adm-grant-title">Grant Free Subscription</div>
+            <form id="grantSubForm" onsubmit="return grantSub(event)" class="adm-grant-form">
+                <div class="adm-grant-field">
                     <label>User</label>
-                    <select name="user_id" required>{user_options}</select>
+                    <select name="user_id" required class="adm-select" style="width:100%">{user_options}</select>
                 </div>
-                <div class="form-group" style="margin:0">
+                <div class="adm-grant-field" style="flex:0 0 auto;min-width:130px">
                     <label>Duration</label>
-                    <select name="duration">
+                    <select name="duration" class="adm-select" style="width:100%">
                         <option value="7">1 Week</option>
                         <option value="30" selected>1 Month</option>
                         <option value="90">3 Months</option>
                         <option value="">Permanent</option>
                     </select>
                 </div>
-                <button type="submit" class="btn btn-primary btn-sm">Grant</button>
+                <button type="submit" class="adm-act adm-act-primary" style="height:34px;align-self:end">Grant</button>
             </form>
         </div>
-        {f'<table><tr><th>User</th><th>Plan</th><th>Status</th><th>Source</th><th>Devices</th><th>Expires</th><th></th></tr>{sub_rows}</table>' if sub_rows else '<p class="muted">No subscriptions.</p>'}
+        {sub_rows if sub_rows else '<p class="muted" style="padding:20px 0;text-align:center">No subscriptions.</p>'}
     </div>
 
-    <div class="card">
-        <h2>Servers ({len(bots)})</h2>
-        <table>
-            <tr><th>Server</th><th>ID</th><th>Owner</th><th>Last Seen</th></tr>
-            {bot_rows}
-        </table>
-    </div>
-
-    <div class="card">
-        <h2>Invite Codes</h2>
-        <button class="btn btn-primary btn-sm" onclick="genInvite()" style="margin-bottom:12px">
-            Generate Invite Code
-        </button>
+    <!-- Invites panel -->
+    <div id="panel-invites" class="adm-panel">
+        <div class="adm-invite-actions">
+            <button class="adm-act adm-act-primary" onclick="genInvite()">Generate Code</button>
+            {'<button class="adm-act adm-act-danger" onclick="clearInvites()">Clear Unused (' + str(len(unused_invites)) + ')</button>' if unused_invites else ''}
+        </div>
         <div id="inviteResult"></div>
-        {invite_rows if invite_rows else '<p class="muted">No unused invite codes.</p>'}
-        <p class="muted" style="margin-top:8px">{len(used_invites)} used code(s)</p>
+        {invite_items if invite_items else '<p class="muted" style="padding:12px 0;text-align:center">No unused invite codes.</p>'}
+        <div class="adm-invite-counter">
+            <span><strong>{len(unused_invites)}</strong> unused</span>
+            <span><strong>{len(used_invites)}</strong> used</span>
+        </div>
     </div>
 
     <script>
     const csrf = "{csrf}";
 
+    function admSwitch(panel) {{
+        var cards = document.querySelectorAll('.adm-card');
+        var panels = document.querySelectorAll('.adm-panel');
+        for (var i = 0; i < cards.length; i++) cards[i].classList.remove('active');
+        for (var i = 0; i < panels.length; i++) panels[i].classList.remove('active');
+        var c = document.getElementById('card-' + panel);
+        var p = document.getElementById('panel-' + panel);
+        if (c) c.classList.add('active');
+        if (p) p.classList.add('active');
+    }}
+
+    function admToast(msg, ok) {{
+        const t = document.createElement('div');
+        t.className = 'adm-toast adm-toast-ok';
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 2200);
+    }}
+
     async function deleteUser(id, name) {{
         if (!confirm("Delete user " + name + "? This revokes all their access.")) return;
-        const resp = await fetch("/portal/api/admin/users/" + id, {{
-            method: "DELETE",
+        const resp = await fetch("/portal/api/admin/users/" + id + "/delete", {{
+            method: "POST",
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{csrf_token: csrf}})
         }});
         if (resp.ok) location.reload();
         else alert("Failed");
+    }}
+
+    async function approveUser(id, name) {{
+        const resp = await fetch("/portal/api/admin/users/" + id + "/approve", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to approve user");
+    }}
+
+    async function rejectUser(id, name) {{
+        if (!confirm("Reject and delete " + name + "'s signup request?")) return;
+        const resp = await fetch("/portal/api/admin/users/" + id + "/reject", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to reject user");
+    }}
+
+    async function clearInvites() {{
+        if (!confirm("Delete all unused invite codes?")) return;
+        const resp = await fetch("/portal/api/admin/clear-invites", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to clear invites");
+    }}
+
+    async function toggleAdmin(id, name) {{
+        if (!confirm("Toggle admin status for " + name + "?")) return;
+        const resp = await fetch("/portal/api/admin/users/" + id + "/toggle-admin", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }});
+        if (resp.ok) location.reload();
+        else alert("Failed to toggle admin");
     }}
 
     async function resetPassword(id, name) {{
@@ -1187,7 +2833,7 @@ async def page_admin(request: web.Request) -> web.Response:
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{csrf_token: csrf, user_id: id, new_password: pw}})
         }});
-        if (resp.ok) alert("Password reset for " + name);
+        if (resp.ok) admToast("Password reset for " + name);
         else alert("Failed to reset password");
     }}
 
@@ -1197,7 +2843,8 @@ async def page_admin(request: web.Request) -> web.Response:
             headers: {{"Content-Type": "application/json"}},
             body: JSON.stringify({{csrf_token: csrf, user_id: userId ? parseInt(userId) : null}})
         }});
-        if (!resp.ok) alert("Failed to set owner");
+        if (resp.ok) admToast("Owner updated");
+        else alert("Failed to set owner");
     }}
 
     async function genInvite() {{
@@ -1208,26 +2855,28 @@ async def page_admin(request: web.Request) -> web.Response:
         }});
         if (resp.ok) {{
             const data = await resp.json();
-            document.getElementById("inviteResult").innerHTML =
-                '<div class="alert alert-success">Invite code: <code><strong>' +
-                data.code + '</strong></code>'
-                + ' <button class="btn btn-outline btn-sm" onclick="copyInviteEmail(\'' + data.code + '\')">Copy Email</button>'
+            var code = data.code;
+            var el = document.getElementById("inviteResult");
+            el.innerHTML = '<div class="alert alert-success" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+                + '<span>Code: <code class="adm-invite-code">' + code + '</code></span>'
+                + '<button class="adm-act adm-act-outline" id="copyInvBtn">Copy Invite Email</button>'
                 + '</div>';
+            document.getElementById("copyInvBtn").onclick = function() {{ copyInviteEmail(code); }};
         }} else alert("Failed");
     }}
 
     function copyInviteEmail(code) {{
-        const url = location.origin + "/portal/register?invite=" + code;
+        const url = location.origin + "/portal/register";
         const body = "Hi,\\n\\nYou've been invited to 9Bot — automated Kingdom Guard running 24/7 on cloud servers.\\n\\n"
-            + "Click the link below to create your account:\\n" + url + "\\n\\n"
+            + "Create your account here:\\n" + url + "\\n\\n"
             + "What to expect after signing up:\\n"
-            + "1. Choose a subscription plan\\n"
+            + "1. Your account will be approved by an admin\\n"
             + "2. Send us your game account details\\n"
             + "3. We set up your dedicated server (usually within 24 hours)\\n"
             + "4. Control everything from your phone dashboard\\n\\n"
             + "See you in the game!\\n— 9Bot Team";
         navigator.clipboard.writeText(body).then(
-            () => alert("Invite email copied to clipboard!"),
+            () => admToast("Invite email copied!"),
             () => alert("Failed to copy — check browser permissions")
         );
     }}
@@ -1265,6 +2914,696 @@ async def page_admin(request: web.Request) -> web.Response:
     </script>
     """
     return web.Response(text=_page("Admin", body, user, csrf), content_type="text/html")
+
+
+async def page_admin_user_detail(request: web.Request) -> web.Response:
+    """Admin user detail — manage device assignments for a specific user."""
+    admin = await _require_admin(request)
+    csrf = _get_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    target = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not target:
+        raise web.HTTPNotFound(text="User not found")
+
+    # Subscription
+    sub = await asyncio.to_thread(db.get_subscription, user_id)
+
+    # All bots + pre-fetch devices
+    all_bots = await asyncio.to_thread(db.list_bots)
+    bot_map = {b["bot_name"]: b for b in all_bots}
+    devices_by_bot: dict[str, list] = {}
+    for b in all_bots:
+        devices_by_bot[b["bot_name"]] = await asyncio.to_thread(
+            db.list_devices, b["bot_name"]
+        )
+
+    # User's grants
+    user_grants = await asyncio.to_thread(db.list_grants_for_user, user_id)
+
+    # Online status helper
+    def _dev_state(bot_name, device_hash=None):
+        bot_on = (
+            bot_name in _active_bots
+            and not _active_bots[bot_name].closed
+        )
+        if not bot_on:
+            return "disconnected"
+        if device_hash:
+            dev_map = {
+                d["hash"]: d.get("online", True)
+                for d in _bot_device_status.get(bot_name, [])
+            }
+            return "online" if dev_map.get(device_hash, True) else "offline"
+        return "online"
+
+    # --- Build assigned devices list ---
+    assigned = []
+    assigned_keys: set[tuple] = set()
+
+    # From bot ownership
+    for b in all_bots:
+        if b.get("owner_id") == user_id:
+            for d in devices_by_bot.get(b["bot_name"], []):
+                key = (d["bot_name"], d["device_hash"])
+                assigned.append({
+                    "bot_name": d["bot_name"],
+                    "device_hash": d["device_hash"],
+                    "label": (
+                        d.get("label") or d.get("device_name")
+                        or d["device_hash"][:8]
+                    ),
+                    "bot_label": b.get("label") or b["bot_name"],
+                    "source": "owner",
+                    "grant_id": None,
+                    "access_level": "full",
+                    "state": _dev_state(d["bot_name"], d["device_hash"]),
+                })
+                assigned_keys.add(key)
+
+    # From grants
+    for g in user_grants:
+        bot = bot_map.get(g["bot_name"], {})
+        bot_label = bot.get("label") or g["bot_name"]
+        if g["device_hash"]:
+            key = (g["bot_name"], g["device_hash"])
+            if key not in assigned_keys:
+                dev_info = None
+                for d in devices_by_bot.get(g["bot_name"], []):
+                    if d["device_hash"] == g["device_hash"]:
+                        dev_info = d
+                        break
+                if dev_info:
+                    assigned.append({
+                        "bot_name": g["bot_name"],
+                        "device_hash": g["device_hash"],
+                        "label": (
+                            dev_info.get("label") or dev_info.get("device_name")
+                            or g["device_hash"][:8]
+                        ),
+                        "bot_label": bot_label,
+                        "source": "grant",
+                        "grant_id": g["id"],
+                        "access_level": g["access_level"],
+                        "state": _dev_state(g["bot_name"], g["device_hash"]),
+                    })
+                    assigned_keys.add(key)
+        else:
+            # Wildcard grant — all devices on this bot
+            for d in devices_by_bot.get(g["bot_name"], []):
+                key = (d["bot_name"], d["device_hash"])
+                if key not in assigned_keys:
+                    assigned.append({
+                        "bot_name": d["bot_name"],
+                        "device_hash": d["device_hash"],
+                        "label": (
+                            d.get("label") or d.get("device_name")
+                            or d["device_hash"][:8]
+                        ),
+                        "bot_label": bot_label,
+                        "source": "grant",
+                        "grant_id": g["id"],
+                        "access_level": g["access_level"],
+                        "state": _dev_state(d["bot_name"], d["device_hash"]),
+                    })
+                    assigned_keys.add(key)
+
+    # --- Build available devices grouped by server ---
+    available_servers: dict[str, dict] = {}
+    total_available = 0
+    for b in all_bots:
+        for d in devices_by_bot.get(b["bot_name"], []):
+            key = (d["bot_name"], d["device_hash"])
+            if key not in assigned_keys:
+                if b["bot_name"] not in available_servers:
+                    available_servers[b["bot_name"]] = {
+                        "bot_label": b.get("label") or b["bot_name"],
+                        "state": _dev_state(b["bot_name"]),
+                        "devices": [],
+                    }
+                available_servers[b["bot_name"]]["devices"].append({
+                    "device_hash": d["device_hash"],
+                    "label": (
+                        d.get("label") or d.get("device_name")
+                        or d["device_hash"][:8]
+                    ),
+                    "state": _dev_state(b["bot_name"], d["device_hash"]),
+                })
+                total_available += 1
+
+    # --- Render HTML ---
+    initial = _html_escape(target["username"][0].upper())
+    username = _html_escape(target["username"])
+    email = _html_escape(target.get("email") or "")
+    joined = target.get("created_at", "—")
+    last_login = target.get("last_login") or "never"
+
+    role_badge = (
+        '<span class="up-pill up-pill-admin">Admin</span>'
+        if target["is_admin"]
+        else '<span class="up-pill up-pill-user">User</span>'
+    )
+
+    # Subscription section
+    sub_section = ""
+    if sub and sub.get("status") in ("active", "past_due"):
+        is_admin_grant = sub.get("stripe_customer_id") == "admin_grant"
+        plan = sub.get("plan", "none").title()
+        limit = sub.get("device_limit", 0)
+        limit_text = "Unlimited" if limit >= 999 else str(limit)
+        status_cls = "up-sub-active" if sub["status"] == "active" else "up-sub-warn"
+        period = sub.get("current_period_end", "—")
+        try:
+            from datetime import datetime as dt
+            pe = dt.fromisoformat(period)
+            period = pe.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+        src = "Granted" if is_admin_grant else "Stripe"
+        revoke_btn = ""
+        if is_admin_grant:
+            revoke_btn = (
+                '<button class="up-btn up-btn-danger" '
+                'onclick="revokeSub()">Revoke</button>'
+            )
+        sub_section = (
+            f'<div class="up-sub">'
+            f'<div class="up-sub-left">'
+            f'<span class="up-sub-dot {status_cls}"></span>'
+            f'<div>'
+            f'<div class="up-sub-plan">{plan}</div>'
+            f'<div class="up-sub-detail">{src} &middot; '
+            f'{limit_text} device{"s" if limit != 1 else ""}'
+            f' &middot; exp {period}</div>'
+            f'</div></div>'
+            f'{revoke_btn}'
+            f'</div>'
+        )
+    else:
+        sub_section = (
+            f'<div class="up-sub up-sub-empty">'
+            f'<span class="up-sub-none-text">No subscription</span>'
+            f'<div class="up-sub-grant-form">'
+            f'<select id="subDur" class="up-select">'
+            f'<option value="30">1 Month</option>'
+            f'<option value="90">3 Months</option>'
+            f'<option value="">Permanent</option>'
+            f'</select>'
+            f'<button class="up-btn up-btn-primary" onclick="grantSub()">'
+            f'Grant</button>'
+            f'</div></div>'
+        )
+
+    # Assigned device rows
+    assigned_rows = ""
+    for a in assigned:
+        state_cls = f"up-dot-{a['state']}"
+        label = _html_escape(a["label"])
+        bot_label = _html_escape(a["bot_label"])
+        source_html = ""
+        action_html = ""
+        if a["source"] == "owner":
+            source_html = '<span class="up-tag up-tag-owner">Owner</span>'
+        else:
+            tag_cls = (
+                "up-tag-full" if a["access_level"] == "full"
+                else "up-tag-ro"
+            )
+            source_html = (
+                f'<span class="up-tag {tag_cls}">{a["access_level"]}</span>'
+            )
+            action_html = (
+                f'<button class="up-btn up-btn-danger up-btn-sm" '
+                f'onclick="unassign({a["grant_id"]})">Unassign</button>'
+            )
+        assigned_rows += (
+            f'<div class="up-dev">'
+            f'<div class="up-dev-info">'
+            f'<span class="up-dot {state_cls}"></span>'
+            f'<div class="up-dev-text">'
+            f'<span class="up-dev-name">{label}</span>'
+            f'<span class="up-dev-server">{bot_label}</span>'
+            f'{source_html}'
+            f'</div></div>'
+            f'{action_html}'
+            f'</div>'
+        )
+    if not assigned_rows:
+        assigned_rows = (
+            '<div class="up-empty">No devices assigned</div>'
+        )
+
+    # Available device rows grouped by server
+    available_html = ""
+    for bot_name, server in available_servers.items():
+        state_cls = f"up-dot-{server['state']}"
+        bot_label = _html_escape(server["bot_label"])
+        count = len(server["devices"])
+        devs_html = ""
+        for d in server["devices"]:
+            dev_state = f"up-dot-{d['state']}"
+            dlabel = _html_escape(d["label"])
+            devs_html += (
+                f'<div class="up-dev up-dev-avail">'
+                f'<div class="up-dev-info">'
+                f'<span class="up-dot {dev_state}"></span>'
+                f'<span class="up-dev-name">{dlabel}</span>'
+                f'</div>'
+                f'<button class="up-btn up-btn-primary up-btn-sm" '
+                f"onclick=\"assign({_html_escape(json.dumps(bot_name))},"
+                f"{_html_escape(json.dumps(d['device_hash']))})\">Assign</button>"
+                f'</div>'
+            )
+        assign_all_btn = ""
+        if count > 1:
+            assign_all_btn = (
+                f'<button class="up-btn up-btn-outline up-btn-xs" '
+                f"onclick=\"assignAll({_html_escape(json.dumps(bot_name))})\">"
+                f'Assign All</button>'
+            )
+        available_html += (
+            f'<div class="up-group">'
+            f'<div class="up-group-header">'
+            f'<span class="up-dot {state_cls}"></span>'
+            f'<span class="up-group-name">{bot_label}</span>'
+            f'<span class="up-group-count">{count}</span>'
+            f'{assign_all_btn}'
+            f'</div>'
+            f'{devs_html}'
+            f'</div>'
+        )
+    if not available_html:
+        available_html = (
+            '<div class="up-empty">All devices assigned</div>'
+        )
+
+    email_html = (
+        f'<span>{email}</span><span class="up-sep"></span>'
+        if email else ""
+    )
+    delete_btn = (
+        "" if user_id == 1 else
+        '<button class="up-btn up-btn-danger" '
+        'onclick="deleteUser()">Delete</button>'
+    )
+
+    body = f"""
+    <style>
+    .up-back {{
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 13px; font-weight: 600; color: #667;
+        text-decoration: none; margin-bottom: 16px;
+        transition: color 0.15s;
+    }}
+    .up-back:hover {{ color: #64d8ff; text-decoration: none; }}
+    .up-back svg {{ transition: transform 0.15s; }}
+    .up-back:hover svg {{ transform: translateX(-2px); }}
+
+    .up-header {{
+        background: #141428; border-radius: 16px;
+        border: 1px solid rgba(255,255,255,0.04);
+        padding: 24px; margin-bottom: 20px;
+        position: relative; overflow: hidden;
+    }}
+    .up-header::before {{
+        content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+        background: linear-gradient(90deg, #64d8ff, rgba(100,216,255,0.05));
+    }}
+    .up-top {{ display: flex; align-items: flex-start; gap: 18px; }}
+    .up-avatar {{
+        width: 56px; height: 56px; border-radius: 50%; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 22px; font-weight: 700; color: #64d8ff;
+        background: radial-gradient(circle at 30% 30%,
+            rgba(100,216,255,0.12), rgba(100,216,255,0.03));
+        border: 2px solid rgba(100,216,255,0.2);
+        box-shadow: 0 0 20px rgba(100,216,255,0.08);
+    }}
+    .up-name {{ font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }}
+    .up-uid {{
+        font-family: "SF Mono","Consolas",monospace; font-size: 11px;
+        color: #445; margin-left: 8px;
+    }}
+    .up-meta {{
+        font-size: 12px; color: #556; margin-top: 4px;
+        display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+    }}
+    .up-sep {{
+        display: inline-block; width: 3px; height: 3px; border-radius: 50%;
+        background: #334;
+    }}
+    .up-badges {{ display: flex; gap: 6px; margin-top: 8px; }}
+    .up-pill {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.8px; padding: 3px 9px; border-radius: 6px;
+    }}
+    .up-pill-admin {{
+        color: #ab47bc; background: rgba(171,71,188,0.1);
+        border: 1px solid rgba(171,71,188,0.2);
+    }}
+    .up-pill-user {{
+        color: #667; background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+    }}
+
+    .up-sub {{
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; margin-top: 16px; padding: 12px 14px;
+        background: #0e0e1e; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.04);
+    }}
+    .up-sub-left {{ display: flex; align-items: center; gap: 10px; }}
+    .up-sub-dot {{
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .up-sub-active {{
+        background: #4caf50; box-shadow: 0 0 6px rgba(76,175,80,0.4);
+    }}
+    .up-sub-warn {{ background: #ffb74d; }}
+    .up-sub-plan {{ font-size: 13px; font-weight: 600; }}
+    .up-sub-detail {{ font-size: 11px; color: #556; }}
+    .up-sub-empty {{ justify-content: space-between; }}
+    .up-sub-none-text {{ font-size: 12px; color: #556; }}
+    .up-sub-grant-form {{
+        display: flex; gap: 8px; align-items: center;
+    }}
+    .up-select {{
+        background: #141428; color: #e0e0f0;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 7px; padding: 6px 10px; font-size: 12px; outline: none;
+    }}
+
+    .up-actions {{
+        display: flex; gap: 6px; margin-top: 14px; flex-wrap: wrap;
+    }}
+
+    .up-btn {{
+        padding: 7px 14px; border-radius: 8px; border: none;
+        font-size: 12px; font-weight: 600; cursor: pointer;
+        transition: all 0.15s; white-space: nowrap;
+    }}
+    .up-btn:active {{ transform: scale(0.96); }}
+    .up-btn-primary {{
+        background: rgba(100,216,255,0.1); color: #64d8ff;
+        border: 1px solid rgba(100,216,255,0.15);
+    }}
+    .up-btn-primary:hover {{ background: rgba(100,216,255,0.18); }}
+    .up-btn-danger {{
+        background: rgba(239,83,80,0.08); color: #ef5350;
+        border: 1px solid rgba(239,83,80,0.12);
+    }}
+    .up-btn-danger:hover {{ background: rgba(239,83,80,0.15); }}
+    .up-btn-outline {{
+        background: transparent; color: #889;
+        border: 1px solid rgba(255,255,255,0.08);
+    }}
+    .up-btn-outline:hover {{ border-color: rgba(255,255,255,0.2); color: #e0e0f0; }}
+    .up-btn-sm {{ padding: 5px 12px; font-size: 11px; }}
+    .up-btn-xs {{ padding: 3px 9px; font-size: 10px; }}
+
+    .up-section {{ margin-bottom: 20px; }}
+    .up-section-header {{
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 10px; padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+    }}
+    .up-section-title {{
+        font-size: 10px; font-weight: 700; color: #778;
+        text-transform: uppercase; letter-spacing: 1px;
+    }}
+    .up-section-count {{
+        font-size: 10px; font-weight: 700; color: #445;
+        background: rgba(255,255,255,0.04); border-radius: 10px;
+        padding: 2px 8px;
+    }}
+
+    .up-dev {{
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 10px 14px; margin-bottom: 4px;
+        background: #141428; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.03);
+        transition: border-color 0.15s; gap: 10px;
+        animation: upFadeIn 0.2s ease both;
+    }}
+    .up-dev:hover {{ border-color: rgba(255,255,255,0.08); }}
+    .up-dev-info {{
+        display: flex; align-items: center; gap: 10px; min-width: 0;
+    }}
+    .up-dev-text {{
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }}
+    .up-dev-name {{ font-size: 13px; font-weight: 600; }}
+    .up-dev-server {{ font-size: 11px; color: #556; }}
+    @keyframes upFadeIn {{
+        from {{ opacity: 0; transform: translateY(4px); }}
+        to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .up-dev:nth-child(1) {{ animation-delay: 0s; }}
+    .up-dev:nth-child(2) {{ animation-delay: 0.03s; }}
+    .up-dev:nth-child(3) {{ animation-delay: 0.06s; }}
+    .up-dev:nth-child(4) {{ animation-delay: 0.09s; }}
+    .up-dev:nth-child(5) {{ animation-delay: 0.12s; }}
+    .up-dev:nth-child(6) {{ animation-delay: 0.15s; }}
+
+    .up-dot {{
+        width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }}
+    .up-dot-online {{
+        background: #4caf50;
+        box-shadow: 0 0 6px rgba(76,175,80,0.5);
+    }}
+    .up-dot-offline {{ background: #555; }}
+    .up-dot-disconnected {{ background: #333; }}
+
+    .up-tag {{
+        font-size: 9px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.5px; padding: 2px 7px; border-radius: 5px;
+    }}
+    .up-tag-owner {{
+        color: #64d8ff; background: rgba(100,216,255,0.08);
+        border: 1px solid rgba(100,216,255,0.12);
+    }}
+    .up-tag-full {{
+        color: #4caf50; background: rgba(76,175,80,0.08);
+        border: 1px solid rgba(76,175,80,0.12);
+    }}
+    .up-tag-ro {{
+        color: #ffb74d; background: rgba(255,183,77,0.08);
+        border: 1px solid rgba(255,183,77,0.12);
+    }}
+
+    .up-group {{ margin-bottom: 12px; }}
+    .up-group-header {{
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 0; font-size: 12px;
+    }}
+    .up-group-name {{ font-weight: 600; color: #aab; }}
+    .up-group-count {{
+        font-size: 10px; color: #445;
+        background: rgba(255,255,255,0.04);
+        border-radius: 8px; padding: 1px 7px;
+    }}
+
+    .up-empty {{
+        padding: 28px; text-align: center; color: #445;
+        font-size: 13px; font-weight: 500;
+    }}
+
+    .up-toast {{
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        padding: 10px 20px; border-radius: 10px;
+        font-size: 13px; font-weight: 600; z-index: 1000;
+        pointer-events: none;
+        animation: upToastIn 0.2s ease, upToastOut 0.3s ease 1.7s forwards;
+        background: rgba(76,175,80,0.15); color: #66bb6a;
+        border: 1px solid rgba(76,175,80,0.3);
+    }}
+    @keyframes upToastIn {{
+        from {{ opacity: 0; transform: translateX(-50%) translateY(8px); }}
+    }}
+    @keyframes upToastOut {{
+        to {{ opacity: 0; transform: translateX(-50%) translateY(-8px); }}
+    }}
+
+    @media (max-width: 500px) {{
+        .up-top {{ gap: 14px; }}
+        .up-avatar {{ width: 46px; height: 46px; font-size: 18px; }}
+        .up-name {{ font-size: 17px; }}
+        .up-dev {{ padding: 8px 10px; }}
+        .up-sub {{ flex-direction: column; align-items: flex-start; gap: 10px; }}
+        .up-sub-grant-form {{ width: 100%; }}
+    }}
+    </style>
+
+    <a href="/portal/admin" class="up-back">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+        <path d="M10 3l-5 5 5 5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round"/></svg>
+        Admin
+    </a>
+
+    <div class="up-header">
+        <div class="up-top">
+            <div class="up-avatar">{initial}</div>
+            <div>
+                <div>
+                    <span class="up-name">{username}</span>
+                    <span class="up-uid">#{user_id}</span>
+                </div>
+                <div class="up-meta">
+                    {email_html}
+                    <span>joined {joined}</span>
+                    <span class="up-sep"></span>
+                    <span>last login {last_login}</span>
+                </div>
+                <div class="up-badges">{role_badge}</div>
+            </div>
+        </div>
+        {sub_section}
+        <div class="up-actions">
+            <button class="up-btn up-btn-outline"
+                onclick="resetPw()">Reset Password</button>
+            {delete_btn}
+        </div>
+    </div>
+
+    <div class="up-section">
+        <div class="up-section-header">
+            <span class="up-section-title">Assigned Devices</span>
+            <span class="up-section-count">{len(assigned)}</span>
+        </div>
+        {assigned_rows}
+    </div>
+
+    <div class="up-section">
+        <div class="up-section-header">
+            <span class="up-section-title">Available Devices</span>
+            <span class="up-section-count">{total_available}</span>
+        </div>
+        {available_html}
+    </div>
+
+    <script>
+    var csrf = "{csrf}";
+    var userId = {user_id};
+    var userName = {json.dumps(target["username"])};
+
+    function upToast(msg) {{
+        var t = document.createElement('div');
+        t.className = 'up-toast';
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(function() {{ t.remove(); }}, 2200);
+    }}
+
+    function assign(botName, deviceHash) {{
+        fetch("/portal/api/admin/users/" + userId + "/assign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                bot_name: botName,
+                device_hash: deviceHash,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Device assigned"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function assignAll(botName) {{
+        if (!confirm("Assign all devices on this server?")) return;
+        fetch("/portal/api/admin/users/" + userId + "/assign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                bot_name: botName,
+                device_hash: null,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("All devices assigned"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function unassign(grantId) {{
+        if (!confirm("Remove this device access?")) return;
+        fetch("/portal/api/admin/users/" + userId + "/unassign-device", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, grant_id: grantId}})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Device unassigned"); location.reload(); }}
+            else alert("Failed to unassign");
+        }});
+    }}
+
+    function grantSub() {{
+        var dur = document.getElementById('subDur');
+        var days = dur ? dur.value : "30";
+        fetch("/portal/api/admin/grant-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                user_id: userId,
+                duration_days: days ? parseInt(days) : null,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Subscription granted"); location.reload(); }}
+            else resp.json().then(function(e) {{ alert(e.error || "Failed"); }});
+        }});
+    }}
+
+    function revokeSub() {{
+        if (!confirm("Revoke subscription for " + userName + "?")) return;
+        fetch("/portal/api/admin/revoke-subscription", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf, user_id: userId}})
+        }}).then(function(resp) {{
+            if (resp.ok) {{ upToast("Subscription revoked"); location.reload(); }}
+            else alert("Failed to revoke");
+        }});
+    }}
+
+    function resetPw() {{
+        var pw = prompt("Set new password for " + userName + ":");
+        if (!pw) return;
+        if (pw.length < 6) {{ alert("Min 6 characters"); return; }}
+        fetch("/portal/api/admin/reset-password", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{
+                csrf_token: csrf,
+                user_id: userId,
+                new_password: pw,
+            }})
+        }}).then(function(resp) {{
+            if (resp.ok) upToast("Password reset");
+            else alert("Failed");
+        }});
+    }}
+
+    function deleteUser() {{
+        if (!confirm("Delete " + userName + "? This revokes all access."))
+            return;
+        fetch("/portal/api/admin/users/" + userId + "/delete", {{
+            method: "POST",
+            headers: {{"Content-Type": "application/json"}},
+            body: JSON.stringify({{csrf_token: csrf}})
+        }}).then(function(resp) {{
+            if (resp.ok) window.location.href = "/portal/admin";
+            else alert("Failed to delete user");
+        }});
+    }}
+    </script>
+    """
+    return web.Response(
+        text=_page(f"User: {username}", body, admin, csrf),
+        content_type="text/html",
+    )
 
 
 async def page_account(request: web.Request) -> web.Response:
@@ -1659,6 +3998,10 @@ async def api_login(request: web.Request) -> web.Response:
         auth.record_failed_login(ip)
         raise web.HTTPFound(f"/portal/login?error=Invalid+credentials&next={next_url}")
 
+    # Block unapproved users (admins always approved)
+    if not user.get("is_approved") and not user.get("is_admin"):
+        raise web.HTTPFound("/portal/login?error=Your+account+is+pending+admin+approval")
+
     auth.clear_rate_limit(ip)
     is_first_login = not user.get("last_login")
     await asyncio.to_thread(db.update_user_login, user["id"])
@@ -1683,12 +4026,11 @@ async def api_logout(request: web.Request) -> web.Response:
 
 async def api_register(request: web.Request) -> web.Response:
     data = await request.post()
-    invite_code = (data.get("invite_code") or "").strip()
     username = (data.get("username") or "").strip()
     email = (data.get("email") or "").strip()
     password = data.get("password") or ""
 
-    if not invite_code or not username or not password or not email:
+    if not username or not password or not email:
         raise web.HTTPFound("/portal/register?error=All+fields+required")
 
     if len(username) > 50 or not all(c.isalnum() or c in "-_" for c in username):
@@ -1697,29 +4039,25 @@ async def api_register(request: web.Request) -> web.Response:
     if len(email) > 200 or "@" not in email:
         raise web.HTTPFound("/portal/register?error=Invalid+email+address")
 
+    # Check email uniqueness
+    existing = await asyncio.to_thread(db.get_user_by_email, email)
+    if existing:
+        raise web.HTTPFound("/portal/register?error=Email+already+registered")
+
     if len(password) < 6:
         raise web.HTTPFound("/portal/register?error=Password+must+be+at+least+6+characters")
 
     pw_hash = await asyncio.to_thread(auth.hash_password, password)
 
     try:
-        user_id = await asyncio.to_thread(db.create_user, username, pw_hash, email=email)
+        await asyncio.to_thread(db.create_user, username, pw_hash, email=email)
     except Exception:
         raise web.HTTPFound("/portal/register?error=Username+already+taken")
 
-    used = await asyncio.to_thread(db.use_invite_code, invite_code, user_id)
-    if not used:
-        # Roll back user creation
-        await asyncio.to_thread(db.delete_user, user_id)
-        raise web.HTTPFound("/portal/register?error=Invalid+or+used+invite+code")
-
-    # Auto-login — redirect new users to the guide
-    await asyncio.to_thread(db.update_user_login, user_id)
-    token = await asyncio.to_thread(db.create_session, user_id)
-
-    resp = web.HTTPFound("/portal/guide")
-    auth.set_session_cookie(resp, token)
-    return resp
+    # Don't auto-login — account needs admin approval
+    raise web.HTTPFound(
+        "/portal/register?success=Account+created!+An+admin+will+review+and+approve+your+account."
+    )
 
 
 async def api_bots(request: web.Request) -> web.Response:
@@ -1868,12 +4206,66 @@ async def api_admin_delete_user(request: web.Request) -> web.Response:
     if user_id == admin["user_id"]:
         return web.json_response({"error": "Cannot delete yourself"}, status=400)
 
+    # Super admin (user ID 1) cannot be deleted by anyone
+    if user_id == 1:
+        return web.json_response({"error": "Cannot delete the owner account"}, status=403)
+
     deleted = await asyncio.to_thread(db.delete_user, user_id)
     if not deleted:
         return web.json_response({"error": "User not found"}, status=404)
     # Also kill their sessions
     await asyncio.to_thread(db.delete_user_sessions, user_id)
     return web.json_response({"status": "ok"})
+
+
+async def api_admin_approve_user(request: web.Request) -> web.Response:
+    await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    approved = await asyncio.to_thread(db.approve_user, user_id)
+    if not approved:
+        return web.json_response({"error": "User not found or already approved"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_reject_user(request: web.Request) -> web.Response:
+    await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    rejected = await asyncio.to_thread(db.reject_user, user_id)
+    if not rejected:
+        return web.json_response({"error": "User not found or already approved"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_toggle_admin(request: web.Request) -> web.Response:
+    admin = await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+
+    if user_id == admin["user_id"]:
+        return web.json_response({"error": "Cannot change your own admin status"}, status=400)
+
+    # Only the super admin (user ID 1) can promote/demote admins
+    if admin["user_id"] != 1:
+        return web.json_response({"error": "Only the owner can change admin status"}, status=403)
+
+    user = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not user:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    new_admin = not user["is_admin"]
+    await asyncio.to_thread(db.set_user_admin, user_id, new_admin)
+    return web.json_response({"status": "ok", "is_admin": new_admin})
+
+
+async def api_admin_clear_invites(request: web.Request) -> web.Response:
+    await _require_admin(request)
+    await _check_csrf(request)
+    count = await asyncio.to_thread(db.delete_unused_invite_codes)
+    return web.json_response({"status": "ok", "deleted": count})
 
 
 async def api_admin_set_owner(request: web.Request) -> web.Response:
@@ -1957,6 +4349,47 @@ async def api_admin_revoke_subscription(request: web.Request) -> web.Response:
     revoked = await asyncio.to_thread(db.revoke_admin_subscription, int(user_id))
     if not revoked:
         return web.json_response({"error": "No admin-granted subscription found"}, status=404)
+    return web.json_response({"status": "ok"})
+
+
+async def api_admin_assign_device(request: web.Request) -> web.Response:
+    """Admin assigns a device to a user (creates a grant)."""
+    admin = await _require_admin(request)
+    await _check_csrf(request)
+    user_id = int(request.match_info["user_id"])
+    data = await request.json()
+    bot_name = data.get("bot_name", "").strip()
+    device_hash = data.get("device_hash")  # None for wildcard
+    if not bot_name:
+        return web.json_response({"error": "bot_name required"}, status=400)
+
+    target = await asyncio.to_thread(db.get_user_by_id, user_id)
+    if not target:
+        return web.json_response({"error": "User not found"}, status=404)
+
+    bot = await asyncio.to_thread(db.get_bot, bot_name)
+    if not bot:
+        return web.json_response({"error": "Server not found"}, status=404)
+
+    grant_id = await asyncio.to_thread(
+        db.create_grant, user_id, bot_name, device_hash,
+        "full", admin["user_id"],
+    )
+    return web.json_response({"status": "ok", "grant_id": grant_id})
+
+
+async def api_admin_unassign_device(request: web.Request) -> web.Response:
+    """Admin removes a device grant from a user."""
+    await _require_admin(request)
+    await _check_csrf(request)
+    data = await request.json()
+    grant_id = data.get("grant_id")
+    if not grant_id:
+        return web.json_response({"error": "grant_id required"}, status=400)
+
+    deleted = await asyncio.to_thread(db.delete_grant, int(grant_id))
+    if not deleted:
+        return web.json_response({"error": "Grant not found"}, status=404)
     return web.json_response({"status": "ok"})
 
 

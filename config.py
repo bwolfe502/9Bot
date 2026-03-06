@@ -192,11 +192,23 @@ MITHRIL_DEPLOY_TIME = {}     # {device_id: timestamp} — when troops were deplo
 GATHER_ENABLED = True
 GATHER_MINE_LEVEL = 4            # Gold mine level to search for (4, 5, or 6)
 GATHER_MAX_TROOPS = 3            # Max troops to send gathering simultaneously
-
 # Tower quest
 TOWER_QUEST_ENABLED = False      # Occupy tower for alliance quest (requires target marker on tower)
 FRONTLINE_OCCUPY_ACTION = "reinforce"  # "attack" = empty enemy towers, "reinforce" = empty ally towers
 FRONTLINE_ENEMY_TEAMS = []  # separate from ENEMY_TEAMS; empty = fall back to ENEMY_TEAMS
+
+# Timing intervals (per-device overridable)
+VARIATION = 0
+TITAN_INTERVAL = 30
+GROOT_INTERVAL = 30
+REINFORCE_INTERVAL = 30
+PASS_INTERVAL = 30
+PASS_MODE = "Rally Joiner"
+
+# General task scheduler (runtime state only — schedule definitions are per-device in settings)
+SCHEDULES = []                   # [{id, mode, start, end, boot?, enabled?}] — loaded from settings
+SCHEDULED_TASKS = {}             # {task_key: schedule_id} — tracks scheduler-started tasks
+SCHEDULE_SUPPRESSED = set()      # {task_key} — manually stopped, don't restart this window
 
 # Protocol interception (opt-in, requires Frida Gadget in APK)
 PROTOCOL_ENABLED = False
@@ -209,7 +221,6 @@ MAX_REINFORCE_DISTANCE = 55      # Max distance to reinforce (display units, 0 =
 
 # Emulator boot tracking
 EMULATOR_STARTING = {}  # {device_id: {"instance": str, "started_at": float}}
-EMULATOR_RECENTLY_STARTED = {}  # {device_id: float timestamp} — cleared after game start
 
 # Per-device lock — prevents concurrent tasks from controlling the same device
 import threading
@@ -495,6 +506,12 @@ _SETTINGS_TO_CONFIG = {
     "home_x":                "HOME_X",
     "home_z":                "HOME_Z",
     "max_reinforce_distance":"MAX_REINFORCE_DISTANCE",
+    "variation":             "VARIATION",
+    "titan_interval":        "TITAN_INTERVAL",
+    "groot_interval":        "GROOT_INTERVAL",
+    "reinforce_interval":    "REINFORCE_INTERVAL",
+    "pass_interval":         "PASS_INTERVAL",
+    "pass_mode":             "PASS_MODE",
 }
 
 _DEVICE_CONFIG = {}  # {device_id: {setting_key: value}}
@@ -515,8 +532,12 @@ def get_device_enemy_teams(device):
     """Return enemy teams for a specific device."""
     # Check per-device override first
     dev = _DEVICE_CONFIG.get(device)
-    if dev and "enemy_teams" in dev:
-        return dev["enemy_teams"]
+    if dev:
+        if "enemy_teams" in dev:
+            return dev["enemy_teams"]
+        # Derive enemies from per-device my_team override
+        if "my_team" in dev:
+            return [t for t in ALL_TEAMS if t != dev["my_team"]]
     # Fall back to global
     return ENEMY_TEAMS
 

@@ -1,0 +1,731 @@
+[
+  {
+    "name": "com.tap4fun.framework.activity.MainPlayerActivity",
+    "exported": true,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.MAIN"
+        ],
+        "categories": [
+          "android.intent.category.LAUNCHER"
+        ],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "tfwk1"
+        ],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.facebook.unity.FBUnityLoginActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.unity.FBUnityDialogsActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.unity.FBUnityAppLinkActivity",
+    "exported": true,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.unity.FBUnityDeepLinkingActivity",
+    "exported": true,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.unity.FBUnityGameRequestActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.unity.FBUnityCreateGameGroupActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.unity.FBUnityJoinGameGroupActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.google.android.play.core.common.PlayCoreDialogWrapperActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.ljoy.chatbot.ChatMainActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ljoy.chatbot.OPActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ljoy.chatbot.FAQActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ljoy.chatbot.WebViewActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ljoy.chatbot.QAWebActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.unity.FBUnityGamingServicesFriendFinderActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.t4ftgs.channel.global.EmptyActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.FAQListActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.FAQDetailActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.FormCreateActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.HomeActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.IMActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.PhotoPreviewActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.VideoPlayerActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.RechargeRecordActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.ImageAndVideoPreviewActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.diagnose.view.DiagnoseActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.RedemptionCodeActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tgs.aics.ui.activity.QuestionnaireActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.t4f.sdkpay.paypal.PayPalActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.tap4fun.tgs.login.twitter.TGSTwitterLoginManager$TwitterRedirectUriReceiverActivity",
+    "exported": false,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "kingdomguard"
+        ],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.t4f.sdkauth.vk.TgsVKLoginActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.appcoins.sdk.billing.WebIapCommunicationActivity",
+    "exported": true,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "web-iap-result"
+        ],
+        "hosts": [
+          "com.tap4fun.odin.kingdomguard"
+        ],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.discord.socialsdk.AuthenticationActivity",
+    "exported": true,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "discord-1432631371519758449"
+        ],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.linecorp.linesdk.openchat.ui.CreateOpenChatActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.linecorp.linesdk.auth.internal.LineAuthenticationActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.linecorp.linesdk.auth.internal.LineAuthenticationCallbackActivity",
+    "exported": true,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "lineauth"
+        ],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.game.sdk.ui.other.ForceLogoutActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.FacebookActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ypx.imagepicker.activity.crop.MultiImageCropActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ypx.imagepicker.activity.preview.MultiImagePreviewActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ypx.imagepicker.activity.singlecrop.SingleCropActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ypx.imagepicker.activity.multi.MultiImagePickerActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "net.openid.appauth.AuthorizationManagementActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "net.openid.appauth.RedirectUriReceiverActivity",
+    "exported": true,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "kingdomguard"
+        ],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.facebook.CustomTabMainActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.CustomTabActivity",
+    "exported": true,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "fbconnect"
+        ],
+        "hosts": [
+          "cct.com.tap4fun.odin.kingdomguard"
+        ],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.vk.id.internal.auth.AuthActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.vk.id.internal.auth.RedirectUriReceiverActivity",
+    "exported": true,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.VIEW"
+        ],
+        "categories": [
+          "android.intent.category.DEFAULT",
+          "android.intent.category.BROWSABLE"
+        ],
+        "schemes": [
+          "vk51877677"
+        ],
+        "hosts": [
+          "vk.com"
+        ],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.google.android.gms.ads.AdActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.google.android.gms.ads.OutOfContextTestingActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.google.android.gms.ads.NotificationHandlerActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.adview.AppLovinFullscreenActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.sdk.AppLovinWebViewActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.hybridAds.MaxHybridMRecAdActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.hybridAds.MaxHybridNativeAdActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.MaxDebuggerActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.MaxDebuggerDetailActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.MaxDebuggerMultiAdActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.MaxDebuggerAdUnitsListActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.MaxDebuggerAdUnitDetailActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.MaxDebuggerTestLiveNetworkActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.mediation.MaxDebuggerTestModeNetworkActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.creative.MaxCreativeDebuggerActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.applovin.creative.MaxCreativeDebuggerDisplayedAdActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.chartboost.sdk.view.CBImpressionActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.facebook.ads.AudienceNetworkActivity",
+    "exported": false,
+    "filters": [
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.android.billingclient.api.ProxyBillingActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.android.billingclient.api.ProxyBillingActivityV2",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.google.android.gms.games.internal.v2.resolution.GamesResolutionActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.google.android.gms.games.internal.v2.appshortcuts.PlayGamesAppShortcutsActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "androidx.credentials.playservices.HiddenActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.google.android.gms.auth.api.signin.internal.SignInHubActivity",
+    "exported": true,
+    "filters": []
+  },
+  {
+    "name": "com.google.android.gms.common.api.GoogleApiActivity",
+    "exported": false,
+    "filters": [
+      {
+        "actions": [
+          "android.intent.action.ACTION_POWER_CONNECTED",
+          "android.intent.action.ACTION_POWER_DISCONNECTED"
+        ],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [
+          "android.intent.action.BATTERY_OKAY",
+          "android.intent.action.BATTERY_LOW"
+        ],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [
+          "android.intent.action.DEVICE_STORAGE_LOW",
+          "android.intent.action.DEVICE_STORAGE_OK"
+        ],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [
+          "android.intent.action.BOOT_COMPLETED",
+          "android.intent.action.TIME_SET",
+          "android.intent.action.TIMEZONE_CHANGED"
+        ],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  },
+  {
+    "name": "com.ironsource.sdk.controller.ControllerActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ironsource.sdk.controller.InterstitialActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.ironsource.sdk.controller.OpenUrlActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.chartboost.sdk.CBImpressionActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.chartboost_helium.sdk.CBImpressionActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.crosspromotion.sdk.AdsActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.crosspromotion.sdk.ActionActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.onevcat.uniwebview.UniWebViewProxyActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.linecorp.linesdk.unitywrapper.activity.LineSdkWrapperActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.flexionmobile.fdk.activity.ExternalFlexionActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.flexionmobile.fdk.activity.FlexionProxyActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.flexionmobile.fdk.activity.GameRestartActivity",
+    "exported": false,
+    "filters": []
+  },
+  {
+    "name": "com.t4f.t4falbum.T4FAlbum",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.t4f.t4falbum.FileHandler",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.t4f.tgs.sdkfileserver.profile.ClipImageActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.t4f.tgs.sdkfileserver.profile.T4FProfileActivity",
+    "exported": null,
+    "filters": []
+  },
+  {
+    "name": "com.t4f.utils.AudioRecordManager$AudioRecordRequestPermissionActivity",
+    "exported": false,
+    "filters": [
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      },
+      {
+        "actions": [],
+        "categories": [],
+        "schemes": [],
+        "hosts": [],
+        "paths": []
+      }
+    ]
+  }
+]

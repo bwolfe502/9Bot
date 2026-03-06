@@ -1314,18 +1314,11 @@ def _run_tower_quest(device, quests, stop_check=None, all_complete=False):
     all_done = len(active) == 0
 
     if all_done:
-        if all_complete:
-            # All quests complete — no benefit keeping troop on tower.
-            # Free it for gold mining or next quest cycle.
-            if device in _tower_quest_state or _is_troop_defending_relaxed(device):
-                log.info("All quests complete — recalling tower troop")
-                recall_tower_troop(device, stop_check)
-            return
-        # Tower quest done but other quests still active — keep defending
-        # so the troop earns time while we work on other quests.
+        # All tower/fortress quests complete — free the troop for rallies/gold.
+        # Don't keep it defending when there's no tower quest benefit.
         if device in _tower_quest_state or _is_troop_defending_relaxed(device):
-            log.info("Tower quests complete, other quests active — keeping troop defending")
-            config.set_device_status(device, "Tower Quest: Complete, Defending...")
+            log.info("All tower quests complete — recalling tower troop")
+            recall_tower_troop(device, stop_check)
         return
 
     # Tower quest is active — check if already defending.
