@@ -23,7 +23,7 @@ from vision import (tap_image, wait_for_image_and_tap, timed_wait,
 from navigation import navigate, check_screen, DEBUG_DIR
 from troops import troops_avail, heal_all, capture_departing_portrait
 
-from actions._helpers import _last_depart_slot
+from actions._helpers import _last_depart_slot, _DEPART_ANYWAY_THRESHOLD, tap_depart_anyway
 
 _log = get_logger("actions")
 
@@ -423,7 +423,7 @@ def rally_titan(device):
                     depart_screen = s
                     break
                 # Also check for Depart Anyway (low health troops)
-                if find_image(s, "depart_anyway.png", threshold=0.6) is not None:
+                if find_image(s, "depart_anyway.png", threshold=_DEPART_ANYWAY_THRESHOLD) is not None:
                     depart_anyway_found = True
                     break
             time.sleep(0.4)
@@ -445,7 +445,7 @@ def rally_titan(device):
                 return False  # caller will retry
             else:
                 log.info("Auto heal off — tapping Depart Anyway")
-                tap_image("depart_anyway.png", device)
+                tap_depart_anyway(device)
                 return True
 
         save_failure_screenshot(device, f"titan_depart_miss_{search_attempt + 1}")
