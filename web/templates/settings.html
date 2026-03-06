@@ -116,12 +116,12 @@
         </div>
     </div>
 
-    <!-- Frontline Occupy -->
+    <!-- Auto Occupy -->
     <div class="card settings-card">
-        <div class="settings-card-header">Frontline Occupy</div>
+        <div class="settings-card-header">Auto Occupy</div>
         <div class="settings-row settings-row-inline" data-key="my_team">
             <span class="settings-row-label">My Team</span>
-            <select class="settings-select" onchange="saveSetting('my_team', this.value); updateEnemyCheckboxes(); updateFrontlineEnemyCheckboxes()">
+            <select class="settings-select" onchange="saveSetting('my_team', this.value); updateEnemyCheckboxes()">
                 {% for color in ['yellow', 'red', 'blue', 'green'] %}
                 <option value="{{ color }}" {% if settings.my_team == color %}selected{% endif %}>{{ color|capitalize }}</option>
                 {% endfor %}
@@ -141,18 +141,7 @@
                 {% endfor %}
             </div>
         </div>
-        <div class="settings-row" data-key="frontline_occupy_action">
-            <span class="settings-row-label">Attack Enemy Towers</span>
-            <button type="button" class="toggle{% if settings.frontline_occupy_action == 'attack' %} on{% endif %}"
-                    onclick="saveSetting('frontline_occupy_action', 'attack'); this.classList.add('on'); this.closest('.card').querySelector('[data-action=reinforce]').classList.remove('on');"
-                    data-action="attack"></button>
-        </div>
-        <div class="settings-row" data-key="frontline_occupy_action">
-            <span class="settings-row-label">Reinforce Alliance Towers</span>
-            <button type="button" class="toggle{% if settings.frontline_occupy_action == 'reinforce' %} on{% endif %}"
-                    onclick="saveSetting('frontline_occupy_action', 'reinforce'); this.classList.add('on'); this.closest('.card').querySelector('[data-action=attack]').classList.remove('on');"
-                    data-action="reinforce"></button>
-        </div>
+        <a href="/territory" class="btn btn-full btn-territory" style="margin:12px 16px;width:auto;">Territory Grid</a>
     </div>
 
     <!-- System -->
@@ -280,33 +269,6 @@ function updateEnemyCheckboxes() {
         container.appendChild(lbl);
     });
     saveEnemyTeams();
-}
-
-function saveFrontlineEnemyTeams() {
-    var checks = document.querySelectorAll('.frontline-enemy-teams-checks input[type="checkbox"]');
-    var selected = [];
-    checks.forEach(function(cb) { if (cb.checked) selected.push(cb.value); });
-    saveSetting('frontline_enemy_teams', selected);
-}
-
-function updateFrontlineEnemyCheckboxes() {
-    var myTeam = document.querySelector('[data-key="my_team"] select').value;
-    var container = document.querySelector('.frontline-enemy-teams-checks');
-    if (!container) return;
-    var colors = ['yellow', 'red', 'blue', 'green'];
-    container.innerHTML = '';
-    colors.forEach(function(c) {
-        if (c === myTeam) return;
-        var lbl = document.createElement('label');
-        lbl.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:13px;color:var(--text-secondary);';
-        var cb = document.createElement('input');
-        cb.type = 'checkbox'; cb.value = c; cb.checked = true;
-        cb.onchange = saveFrontlineEnemyTeams;
-        lbl.appendChild(cb);
-        lbl.appendChild(document.createTextNode(c.charAt(0).toUpperCase() + c.slice(1)));
-        container.appendChild(lbl);
-    });
-    saveFrontlineEnemyTeams();
 }
 
 function saveDeviceTroops(devId, count) {
