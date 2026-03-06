@@ -81,7 +81,6 @@ DEFAULTS = {
     "pass_interval": 30,
     "pass_mode": "Rally Joiner",
     "my_team": "red",
-    "enemy_team": "green",  # legacy — migrated to enemy_teams list
     "enemy_teams": [],
     "mode": "bl",
     "verbose_logging": False,
