@@ -297,6 +297,18 @@ def get_protocol_ap(device=None):
     return state.ap
 
 
+def get_protocol_shield_status(device):
+    """Return shield remaining seconds from GetShieldInfoAck countdown, or None.
+
+    Returns >0 if shield active, 0 if expired, None if never queried.
+    Pure timestamp comparison — no entity search or freshness check needed.
+    """
+    state = _get_device_state(device)
+    if state is None:
+        return None
+    return state.get_own_shield()
+
+
 # LineupState enum → bot TroopAction mapping
 # 0=IDLE, 1=HOME, 2=MARCHING, 3=BATTLING, 4=GATHERING, 5=RETURNING, 6=DEFENDING, 7=RALLYING
 _LINEUP_STATE_TO_ACTION = None  # lazy-built on first use

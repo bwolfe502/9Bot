@@ -49,6 +49,7 @@ from .messages import (
     BuffNtf,
     CombustionStateNtf,
     DelEntitiesNtf,
+    GetShieldInfoAck,
     HeartBeatAck,
     Intelligence,
     IntelligencesNtf,
@@ -253,6 +254,7 @@ class GameState:
         self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id, cur_legion_id)
         self._kvk_tower_troops: Dict[Tuple[int, int], int] = {}  # (row, col) -> troop count from KvkBuilding entity
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
+        self._shield_end_ts: int = 0                          # ShieldEndTs (ms) from GetShieldInfoAck
 
         # -- territory cache ---------------------------------------- #
         import hashlib
@@ -394,6 +396,20 @@ class GameState:
         """
         with self._lock:
             return dict(self._kvk_tower_troops)
+
+    def get_own_shield(self) -> Optional[float]:
+        """Return seconds remaining on own castle shield, or None if unknown.
+
+        Uses the ShieldEndTs captured from GetShieldInfoAck — a simple
+        timestamp comparison, no entity search needed.
+
+        Returns >0 if shield active, 0 if expired, None if never queried.
+        """
+        with self._lock:
+            if not self._shield_end_ts:
+                return None
+            remaining_s = (self._shield_end_ts - int(time.time() * 1000)) / 1000.0
+            return max(0.0, remaining_s)
 
     def is_eg_claimed_by_ally(self) -> bool:
         """Check if any visible EVIL entities are targeted by an alliance troop.
@@ -568,6 +584,7 @@ class GameState:
         self._sub("msg:UnionDelEntitiesNtf", self._on_del_union_entities)
         self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
         self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
+        self._sub("msg:GetShieldInfoAck", self._on_shield_info)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -1351,6 +1368,27 @@ class GameState:
             for eid in ids:
                 self._union_entities.pop(eid, None)
             self._touch("entities")
+
+    def _on_shield_info(self, msg: Any) -> None:
+        """msg:GetShieldInfoAck — capture shield end timestamp.
+
+        Stores ShieldEndTs (ms) so get_own_shield() is a simple countdown
+        without needing further protocol or vision checks.
+        """
+        from .messages import GetShieldInfoAck
+        if not isinstance(msg, GetShieldInfoAck):
+            return
+        si = msg.shieldInfo
+        if si is None:
+            return
+        with self._lock:
+            self._shield_end_ts = si.ShieldEndTs
+        if si.ShieldEndTs > 0:
+            remaining_s = max(0, (si.ShieldEndTs - int(time.time() * 1000)) / 1000.0)
+            log.info("Shield status captured: %.0fs remaining (ends at %d)",
+                     remaining_s, si.ShieldEndTs)
+        else:
+            log.info("Shield status captured: no shield active")
 
     def _on_connected(self, *args: Any) -> None:
         """EVT_CONNECTED — mark protocol as live."""

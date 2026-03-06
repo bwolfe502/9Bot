@@ -1201,6 +1201,49 @@ class GetPlayerHeadInfoAck:
 #  Lookup: class name -> dataclass type
 # ------------------------------------------------------------------ #
 
+# ------------------------------------------------------------------ #
+#  Shield info
+# ------------------------------------------------------------------ #
+
+@dataclass
+class ShieldInfoData:
+    PlayerID: int = 0
+    ShieldTime: int = 0
+    ShieldEndTs: int = 0
+    IsNewbieShield: bool = False
+    ShieldGodEndTs: int = 0
+    ShieldGodCD: int = 0
+
+    @classmethod
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> ShieldInfoData:
+        if not d:
+            return cls()
+        return cls(
+            PlayerID=d.get("PlayerID", 0),
+            ShieldTime=d.get("ShieldTime", 0),
+            ShieldEndTs=d.get("ShieldEndTs", 0),
+            IsNewbieShield=d.get("IsNewbieShield", False),
+            ShieldGodEndTs=d.get("ShieldGodEndTs", 0),
+            ShieldGodCD=d.get("ShieldGodCD", 0),
+        )
+
+
+@dataclass
+class GetShieldInfoAck:
+    errCode: int = 0
+    shieldInfo: Optional[ShieldInfoData] = None
+
+    @classmethod
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> GetShieldInfoAck:
+        if not d:
+            return cls()
+        si = d.get("shieldInfo")
+        return cls(
+            errCode=d.get("errCode", 0),
+            shieldInfo=ShieldInfoData.from_dict(si) if si else None,
+        )
+
+
 MESSAGE_CLASSES: Dict[str, Type] = {
     # Leaf types
     "Coord": Coord,
@@ -1252,4 +1295,7 @@ MESSAGE_CLASSES: Dict[str, Type] = {
     "ChatPullMsgReq": ChatPullMsgReq,
     "ChatPullMsgAck": ChatPullMsgAck,
     "GetPlayerHeadInfoAck": GetPlayerHeadInfoAck,
+    # Shield
+    "ShieldInfoData": ShieldInfoData,
+    "GetShieldInfoAck": GetShieldInfoAck,
 }

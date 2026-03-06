@@ -64,7 +64,7 @@ from actions.farming import (
 )
 
 # -- reinforce ally --
-from actions.reinforce_ally import navigate_to_coord, reinforce_ally_castle, capture_home_coords
+from actions.reinforce_ally import navigate_to_coord, reinforce_ally_castle, capture_home_coords, ensure_shield
 
 # -- shared state --
 from actions._helpers import _last_depart_slot
