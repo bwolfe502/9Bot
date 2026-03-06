@@ -27,7 +27,7 @@ if not exist "platform-tools\adb.exe" (
   )
 )
 
-REM Check Python 3.13
+REM Ensure Python 3.13 is installed (required for PaddlePaddle)
 py -3.13 -V >nul 2>&1
 if errorlevel 1 (
   echo.
@@ -42,10 +42,21 @@ if errorlevel 1 (
   )
   echo Python 3.13 installed successfully.
 )
-REM Create venv if missing
-if not exist ".venv\Scripts\python.exe" (
+
+REM Verify venv uses Python 3.13 — rebuild if it was created with a different version
+set VENV_OK=0
+if exist ".venv\Scripts\python.exe" (
+  ".venv\Scripts\python.exe" -c "import sys; exit(0 if sys.version_info[:2]==(3,13) else 1)" >nul 2>&1
+  if !errorlevel!==0 set VENV_OK=1
+)
+if !VENV_OK!==0 (
+  if exist ".venv" (
+    echo.
+    echo Existing venv uses wrong Python version. Rebuilding with 3.13...
+    rd /s /q ".venv"
+  )
   echo.
-  echo Creating virtual environment...
+  echo Creating virtual environment with Python 3.13...
   py -3.13 -m venv .venv
   if errorlevel 1 (
     echo ERROR: Failed to create venv.
