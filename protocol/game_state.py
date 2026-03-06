@@ -52,6 +52,7 @@ from .messages import (
     HeartBeatAck,
     Intelligence,
     IntelligencesNtf,
+    LandInfo,
     Lineup,
     LineupsNtf,
     NewLineupStateInfo,
@@ -77,12 +78,15 @@ log = logging.getLogger(__name__)
 
 _CHAT_MAXLEN = 200
 _BATTLE_MAXLEN = 50
+_TERRITORY_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
+)
 _AP_ASSET_ID = 11171002  # AssetNtf recover ID for Action Points
 
 # Categories for freshness tracking.
 CATEGORIES = (
     "ap", "rallies", "quests", "resources", "entities",
-    "attacks", "chat", "buffs", "heartbeat", "lineups",
+    "attacks", "chat", "buffs", "heartbeat", "lineups", "territory",
 )
 
 # ------------------------------------------------------------------ #
@@ -246,13 +250,25 @@ class GameState:
         self._lineup_states: Dict[int, NewLineupStateInfo] = {}  # lineupID -> state
         self._union_entities: Dict[Any, dict] = {}           # entity_id -> raw dict (ally PLAYER_CITY only)
         self._own_union_id: int = 0                          # populated from UnionNtf
+        self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id, cur_legion_id)
+        self._kvk_tower_troops: Dict[Tuple[int, int], int] = {}  # (row, col) -> troop count from KvkBuilding entity
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
+
+        # -- territory cache ---------------------------------------- #
+        import hashlib
+        _dhash = hashlib.sha256(device_id.encode()).hexdigest()[:8]
+        self._territory_cache_file = os.path.join(
+            _TERRITORY_CACHE_DIR, f"territory_grid_{_dhash}.json"
+        )
 
         # -- connection metadata ----------------------------------- #
         self.protocol_connected: bool = False
 
         # -- freshness --------------------------------------------- #
+        # Must be initialized before _load_territory_cache (which calls _touch).
         self._last_update: Dict[str, float] = {}
+
+        self._load_territory_cache()
 
         # -- handler refs (for unsubscribe) ------------------------ #
         self._handlers: List[Tuple[str, Any]] = []
@@ -363,6 +379,22 @@ class GameState:
         with self._lock:
             return list(self._union_entities.values())
 
+    @property
+    def territory_grid(self) -> Dict[Tuple[int, int], Tuple[int, int, int]]:
+        """Territory grid: (row, col) -> (faction_id, cur_faction_id, legion_id). Empty dict if no snapshot."""
+        with self._lock:
+            return dict(self._territory_grid)
+
+    @property
+    def kvk_tower_troops(self) -> Dict[Tuple[int, int], int]:
+        """KvkBuilding troop counts observed from entity packets: (row,col) -> troop count.
+
+        Updated whenever a TOWER entity (MapUnitType=11) enters the player's viewport.
+        Empty list = 0.  Only covers towers seen since last login.
+        """
+        with self._lock:
+            return dict(self._kvk_tower_troops)
+
     def set_ally_monitoring(self, enabled: bool) -> None:
         """Enable or disable ally city tracking.  Called by run_auto_reinforce_ally."""
         with self._lock:
@@ -428,6 +460,8 @@ class GameState:
         self._sub("msg:ChatSendMsgNtf", self._on_chat_send_ntf)
         self._sub("msg:UnionEntitiesNtf", self._on_union_entities)
         self._sub("msg:UnionDelEntitiesNtf", self._on_del_union_entities)
+        self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
+        self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -895,6 +929,23 @@ class GameState:
             for ent in msg.entities:
                 eid = self._entity_id(ent) or id(ent)
                 self._entities[eid] = ent
+
+                # Extract KvkBuilding.troops for territory towers (MapUnitType.TOWER = 11).
+                # EntityInfo.field_5 = PropertyUnion; PropertyUnion.field_27 = KvkBuilding.
+                # KvkBuilding.troops (field 5, repeated int64) lists troop IDs at the tower.
+                etype = ent.get("field_2", ent.get("type", -1))
+                if etype == 11:
+                    x, z = self._entity_coords(ent)
+                    if x or z:
+                        row, col = z // 300000, x // 300000
+                        if 0 <= row < 24 and 0 <= col < 24:
+                            prop = ent.get("field_5")
+                            kvk_bld = prop.get("field_27") if isinstance(prop, dict) else None
+                            troops_raw = kvk_bld.get("troops") if isinstance(kvk_bld, dict) else None
+                            troop_count = len(troops_raw) if isinstance(troops_raw, list) else 0
+                            self._kvk_tower_troops[(row, col)] = troop_count
+                            log.debug("KvkBuilding entity (%d,%d) troops=%d", row, col, troop_count)
+
                 if self._ally_monitoring and self._is_ally_city(ent):
                     owner = ent.get("field_3") or ent.get("owner") or {}
                     name = owner.get("name", "?") if isinstance(owner, dict) else "?"
@@ -1045,6 +1096,8 @@ class GameState:
                 self._touch("lineups")
             if "rallies" in self._last_update:
                 self._touch("rallies")
+            if self._territory_grid:
+                self._touch("territory")
 
     def _on_union_entities(self, msg: Any) -> None:
         """msg:UnionEntitiesNtf — track ally PLAYER_CITY entities.
@@ -1104,6 +1157,82 @@ class GameState:
             ent = self._union_entities.get(eid)
             if ent:
                 self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
+
+    def _load_territory_cache(self) -> None:
+        """Load territory grid from disk cache, if available."""
+        try:
+            with open(self._territory_cache_file) as f:
+                data = json.load(f)
+            grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}
+            for key, val in data.items():
+                row, col = map(int, key.split(","))
+                # Support both old 3-element caches and new 4-element format.
+                grid[(row, col)] = (int(val[0]), int(val[1]), int(val[2]),
+                                    int(val[3]) if len(val) > 3 else 0)
+            with self._lock:
+                self._territory_grid = grid
+                self._touch("territory")
+            log.info("Territory cache loaded: %d squares from %s",
+                     len(grid), self._territory_cache_file)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("Failed to load territory cache: %s", e)
+
+    def _save_territory_cache(self) -> None:
+        """Save territory grid to disk for use across restarts."""
+        try:
+            os.makedirs(_TERRITORY_CACHE_DIR, exist_ok=True)
+            with self._lock:
+                grid = dict(self._territory_grid)
+            data = {f"{r},{c}": list(v) for (r, c), v in grid.items()}
+            with open(self._territory_cache_file, "w") as f:
+                json.dump(data, f)
+            log.info("Territory cache saved: %d squares", len(data))
+        except Exception as e:
+            log.warning("Failed to save territory cache: %s", e)
+
+    def _on_territory_info(self, msg: Any) -> None:
+        """msg:KvkTerritoryInfoAck — full territory grid snapshot."""
+        lands = msg.get("lands", []) if isinstance(msg, dict) else getattr(msg, "lands", [])
+        if not lands:
+            log.info("KvkTerritoryInfoAck: no lands")
+            return
+        new_grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}
+        for raw_land in lands:
+            land = LandInfo.from_dict(raw_land) if isinstance(raw_land, dict) else raw_land
+            if land.coord is None:
+                continue
+            row = land.coord.Z // 300000
+            col = land.coord.X // 300000
+            if 0 <= row < 24 and 0 <= col < 24:
+                new_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId, land.curLegionId)
+        with self._lock:
+            self._territory_grid = new_grid
+            self._touch("territory")
+        log.info("KvkTerritoryInfoAck: stored %d territory squares", len(new_grid))
+        self._save_territory_cache()
+
+    def _on_territory_ntf(self, msg: Any) -> None:
+        """msg:KvkTerritoryInfoNtf — single tower state change.
+
+        Always updates the grid (whether loaded from cache, Ack, or empty).
+        Saves cache periodically so incremental changes persist.
+        """
+        raw_land = msg.get("land") if isinstance(msg, dict) else getattr(msg, "land", None)
+        if raw_land is None:
+            return
+        land = LandInfo.from_dict(raw_land) if isinstance(raw_land, dict) else raw_land
+        if land.coord is None:
+            return
+        row = land.coord.Z // 300000
+        col = land.coord.X // 300000
+        if 0 <= row < 24 and 0 <= col < 24:
+            with self._lock:
+                self._territory_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId, land.curLegionId)
+                self._touch("territory")
+            log.debug("KvkTerritoryInfoNtf: (%d,%d) → faction=%d cur=%d legion=%d curlegion=%d",
+                      row, col, land.FactionId, land.curFactionId, land.legionId, land.curLegionId)
 
     def _on_del_union_entities(self, msg: Any) -> None:
         """msg:UnionDelEntitiesNtf — remove ally entities by ID."""

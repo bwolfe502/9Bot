@@ -2,6 +2,39 @@
 {% block title_suffix %} - Dashboard{% endblock %}
 
 {% block content %}
+<style>
+.help-badge {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%; background: #445; color: #aab;
+    font-size: 11px; font-weight: 700; cursor: pointer; margin-left: 6px;
+    flex-shrink: 0; vertical-align: middle; line-height: 1; user-select: none;
+}
+.help-badge:hover { background: #556; color: #dde; }
+.help-popup {
+    display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: #1e2030; border: 1px solid #445; border-radius: 10px;
+    padding: 16px 20px 14px; max-width: 320px; width: 85vw;
+    font-size: 13px; color: #bbc; line-height: 1.5; z-index: 9999;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.help-popup.show { display: block; }
+.help-popup-close {
+    position: absolute; top: 6px; right: 10px; cursor: pointer;
+    color: #e44; font-size: 16px; font-weight: 700; line-height: 1;
+}
+.help-popup-close:hover { color: #f66; }
+.help-popup-title { font-weight: 600; color: #dde; margin-bottom: 6px; }
+.help-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 9998;
+}
+.help-overlay.show { display: block; }
+</style>
+<div class="help-overlay" id="helpOverlay" onclick="closeHelp()"></div>
+<div class="help-popup" id="helpPopup">
+    <span class="help-popup-close" onclick="closeHelp()">&times;</span>
+    <div class="help-popup-title" id="helpTitle"></div>
+    <div id="helpBody"></div>
+</div>
 
 {% if not device_filter %}
 <!-- Access -->
@@ -166,7 +199,7 @@
                 {% for mode in group.modes %}
                     {% set task_key = dev.id ~ '_' ~ mode.key %}
                     <div class="auto-row" data-mode="{{ mode.key }}" data-device="{{ dev.id }}">
-                        <span class="auto-label">{{ mode.label }}</span>
+                        <span class="auto-label">{{ mode.label }}{% if mode.help %} <span class="help-badge" data-title="{{ mode.label }}" data-help="{{ mode.help }}" onclick="event.stopPropagation(); showHelp(this.dataset.title, this.dataset.help)">?</span>{% endif %}</span>
                         <button type="button" class="toggle{% if task_key in active_tasks %} on{% endif %}"
                                 onclick="toggleAutoMode('{{ mode.key }}', '{{ dev.id }}')"
                                 title="{{ mode.label }}"></button>
@@ -330,6 +363,23 @@
 
 {% block scripts %}
 <script>
+// Help popup
+function showHelp(title, body) {
+    document.getElementById('helpTitle').textContent = title;
+    document.getElementById('helpBody').textContent = body;
+    document.getElementById('helpPopup').classList.add('show');
+    document.getElementById('helpOverlay').classList.add('show');
+}
+function closeHelp() {
+    document.getElementById('helpPopup').classList.remove('show');
+    document.getElementById('helpOverlay').classList.remove('show');
+}
+
+// Hide help badges if tooltips disabled
+if (localStorage.getItem('show_tooltips') === '0') {
+    document.querySelectorAll('.help-badge').forEach(function(el) { el.style.display = 'none'; });
+}
+
 // API URL prefix — includes relay prefix + device scope
 {% if device_filter %}
 var API_PREFIX = RELAY_PREFIX + '/d/{{ device_hash }}';

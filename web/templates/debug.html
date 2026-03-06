@@ -67,12 +67,6 @@
     <button type="submit" class="action-chip action-chip-debug">{{ name }}</button>
 </form>
 {% endfor %}
-<form method="post" action="/tasks/start" class="device-form">
-    <input type="hidden" name="device" value="{{ devices|map(attribute='id')|join(',') }}">
-    <input type="hidden" name="task_name" value="debug_occupy">
-    <input type="hidden" name="task_type" value="auto">
-    <button type="submit" class="action-chip action-chip-debug">Debug Occupy</button>
-</form>
 </div>
 
 <div class="section-header" style="margin-top:24px">Reports</div>

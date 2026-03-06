@@ -8,6 +8,7 @@ Key exports:
     reinforce_throne    — reinforce the throne
     target              — target menu sequence
     teleport            — teleport to random location
+    teleport_to_tower   — teleport to a spot 65px adjacent to current map center
     teleport_benchmark  — A/B test harness for teleport strategies
     _detect_player_at_eg — player detection near EG positions
 """
@@ -17,6 +18,7 @@ import json
 import numpy as np
 import os
 import time
+import math
 import random
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -27,7 +29,8 @@ from botlog import get_logger, timed_action
 from vision import (tap_image, wait_for_image_and_tap, timed_wait,
                     load_screenshot, find_image, find_all_matches,
                     get_template, get_last_best, adb_tap, adb_swipe,
-                    logged_tap, clear_click_trail, save_failure_screenshot)
+                    adb_keyevent, logged_tap, clear_click_trail,
+                    save_failure_screenshot)
 from navigation import navigate, check_screen
 from troops import troops_avail, all_troops_home, heal_all
 
@@ -267,17 +270,31 @@ def _check_dead(screen, dead_img, device):
         return True
     return False
 
-def _find_green_pixel(screen, target_color, tolerance=20):
-    """Check the center of the screen for the green teleport circle.
+def _find_green_pixel(screen, target_color, tolerance=15):
+    """Check the screen for the green teleport placement circle.
 
-    Scans a large region (x:50-1000, y:100-800) to catch the circle regardless
-    of camera position.  Samples every 5th pixel for speed and requires at least
-    20 matching pixels to avoid false positives from small green UI elements.
+    Scans the full screen region. Uses tight color tolerance to match only the
+    saturated green placement circle hue — a quarter-arc is enough to confirm.
+    Samples every 5th pixel; min_pixels=5 means a small arc still triggers.
     """
-    region = screen[100:800:5, 50:1000:5].astype(np.int16)
+    region = screen[100:1800:5, 50:1000:5].astype(np.int16)
     diff = np.abs(region - np.array(target_color))
     matches = np.all(diff < tolerance, axis=2)
-    return int(np.sum(matches)) >= 20
+    count = int(np.sum(matches))
+    return count >= 5
+
+
+def _find_red_circle(screen, tolerance=15, min_pixels=5):
+    """Return True if a red placement circle is visible (invalid placement position).
+
+    Looks for saturated red pixels (BGR approx 0, 0, 220) with tight tolerance
+    so only the placement circle hue matches. A quarter-arc is enough to confirm.
+    """
+    region = screen[100:1800:5, 50:1000:5].astype(np.int16)
+    # BGR: B~0, G~0, R~220+
+    b, g, r = region[:, :, 0], region[:, :, 1], region[:, :, 2]
+    matches = (r > (220 - tolerance)) & (g < tolerance) & (b < tolerance)
+    return int(np.sum(matches)) >= min_pixels
 
 def _check_green_at_current_position(device, dead_img, stop_check=None):
     """Long-press to open context menu, tap TELEPORT, check for green circle.
@@ -472,6 +489,132 @@ def teleport(device, dry_run=False):
               attempt_count, time.time() - start_time)
     save_failure_screenshot(device, "teleport_timeout")
     return False
+
+
+def teleport_to_tower(device, tower_x, tower_z, stop_check=None):
+    """Teleport the castle to a spot adjacent to the target tower.
+
+    Uses a coordinate-based circle search — no zoom required. Navigates the map
+    camera to each candidate position (8 points at 45° intervals around the tower,
+    starting directly above at Y-15), then long-presses at screen center so the
+    Alliance Teleport castle preview lands exactly at the camera center. Checks for
+    a green boundary circle (valid) or red (invalid). Confirms on first valid spot.
+    Cardinals (above/right/below/left) use base radius; diagonals use radius+2.
+    If the full circle yields nothing, retries at radius 20 then 25.
+
+    Args:
+        tower_x: tower raw world X coordinate (e.g. col * 300000 + 150000)
+        tower_z: tower raw world Z coordinate (e.g. row * 300000 + 150000)
+
+    Returns True if teleport confirmed, False on failure.
+    """
+    from actions.reinforce_ally import navigate_to_coord as _nav_coord
+
+    log = get_logger("actions", device)
+
+    if not all_troops_home(device):
+        log.warning("teleport_to_tower: troops not home, aborting")
+        return False
+    if config.get_device_config(device, "auto_heal"):
+        heal_all(device)
+    if check_screen(device) != Screen.MAP:
+        log.warning("teleport_to_tower: not on MAP screen")
+        return False
+
+    dead_img = get_template("elements/dead.png")
+    target_color = (0, 255, 0)  # BGR green
+
+    # Display coords (what navigate_to_coord types into the search fields)
+    tx = tower_x // 1000
+    tz = tower_z // 1000
+
+    # Camera is already on the tower from the caller — check for alliance occupation.
+    _screen = load_screenshot(device)
+    if _screen is not None and find_image(_screen, "alliance_occupied.png", threshold=0.92):
+        log.info("teleport_to_tower: alliance_occupied.png detected at (%d,%d) — aborting", tx, tz)
+        return False
+
+    # 8 positions around the tower at 45° intervals, starting above (angle -90° = Y-r).
+    # Cardinals (above/right/below/left) use base radius; diagonals use radius+2
+    # to avoid corners that sit too close to the tower edges.
+    # Screen Y increases downward so -90° maps to (tx, tz-r) = directly above.
+    num_points = 8
+
+    for radius in (15, 20, 25):
+        log.debug("teleport_to_tower: trying radius=%d display-coords", radius)
+
+        for i in range(num_points):
+            if stop_check and stop_check():
+                return False
+
+            angle_deg = -90 + i * (360 // num_points)
+            angle_rad = math.radians(angle_deg)
+            # Odd indices are diagonals — push them out by 2 extra coords
+            r = radius + (2 if i % 2 == 1 else 0)
+            cx = tx + int(round(r * math.cos(angle_rad)))
+            cz = tz + int(round(r * math.sin(angle_rad)))
+
+            log.debug("teleport_to_tower: candidate coord (%d,%d) r=%d angle=%d°",
+                      cx, cz, radius, angle_deg)
+
+            if not _nav_coord(device, cx * 1000, cz * 1000, stop_check):
+                log.warning("navigate_to_coord failed for (%d,%d) — skipping", cx, cz)
+                continue
+            time.sleep(1)
+
+            # Long-press at screen center — castle preview lands at camera center = candidate
+            adb_swipe(device, 540, 960, 540, 960, 1000)
+            time.sleep(2)
+            logged_tap(device, 780, 960, "tp_btn")
+            time.sleep(2)
+
+            screen = load_screenshot(device)
+            if screen is None:
+                continue
+            if _check_dead(screen, dead_img, device):
+                return False
+
+            if _find_green_pixel(screen, target_color):
+                log.info("Green circle at (%d,%d) r=%d — confirming", cx, cz, radius)
+                save_failure_screenshot(device, "tp_green_found")
+                match = find_image(screen, "tp_use.png", threshold=0.7)
+                if match:
+                    _, max_loc, h, w = match
+                    logged_tap(device, max_loc[0] + w // 2, max_loc[1] + h // 2, "tp_use")
+                    time.sleep(2)
+                    return True
+                log.warning("tp_use.png not found in green screen — cancelling")
+                _cancel_teleport_ui(screen, device)
+                time.sleep(1)
+                continue
+
+            if _find_red_circle(screen):
+                log.debug("Red circle at (%d,%d) r=%d — skipping", cx, cz, radius)
+                _cancel_teleport_ui(screen, device)
+                time.sleep(1)
+                continue
+
+            # No circle detected — may have tapped a titan or other entity instead
+            # of opening the teleport UI. Dismiss with BACK key + cancel fallback.
+            log.debug("No circle at (%d,%d) — dismissing (possible entity tap)", cx, cz)
+            adb_keyevent(device, 4)  # BACK to close any unexpected dialog
+            time.sleep(0.5)
+            _cancel_teleport_ui(screen, device)
+            time.sleep(1)
+
+    log.warning("teleport_to_tower: no valid position found")
+    save_failure_screenshot(device, "teleport_to_tower_failed")
+    return False
+
+
+def _cancel_teleport_ui(screen, device):
+    """Tap cancel button to close the teleport placement UI."""
+    if screen is not None:
+        match = find_image(screen, "cancel.png")
+        if match:
+            _, max_loc, h, w = match
+            logged_tap(device, max_loc[0] + w // 2, max_loc[1] + h // 2, "tp_cancel")
+    time.sleep(1)
 
 
 # ============================================================

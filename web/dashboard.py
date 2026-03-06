@@ -97,31 +97,43 @@ TASK_FUNCTIONS = {
 # Home Server: Events, Farming, Combat
 AUTO_MODES_BL = [
     {"group": "Combat", "modes": [
-        {"key": "auto_pass",           "label": "Pass Battle"},
-        {"key": "auto_occupy",         "label": "Occupy Towers"},
-        {"key": "auto_reinforce",      "label": "Reinforce Throne"},
-        {"key": "auto_reinforce_ally", "label": "Reinforce Ally"},
+        {"key": "auto_pass",           "label": "Pass Battle",
+         "help": "Joins or starts pass rallies to capture mountain passes on the territory map."},
+        {"key": "frontline_occupy",    "label": "Frontline Occupy",
+         "help": "Teleports to empty frontline towers and deploys troops. Go to Settings to toggle between alliance reinforcement and attacking enemy towers. Also select which enemy(ies) you'd like to fight."},
+        {"key": "auto_reinforce",      "label": "Reinforce Throne",
+         "help": "Periodically sends a troop to reinforce your alliance throne in territory war."},
+        {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
+         "help": "Automatically reinforces nearby alliance castles in order of power level. Current area setting is roughly the area of battle around a tower. Can be changed in Settings."},
     ]},
     {"group": "Farming", "modes": [
-        {"key": "auto_quest",     "label": "Auto Quest"},
-        {"key": "auto_titan",     "label": "Rally Titans"},
+        {"key": "auto_quest",     "label": "Auto Quest",
+         "help": "Automatically completes alliance quests for you. Begins mining gold after quests are complete. Check Settings for level of gold mine, amount of troops available and if you want to use AP."},
+        {"key": "auto_titan",     "label": "Rally Titans",
+         "help": "Searches for and rallies Titans on the map. Restores AP if needed. AP usage can be set to on or off in Settings."},
         {"key": "auto_gold",      "label": "Gather Gold"},
-        {"key": "auto_mithril",   "label": "Mine Mithril"},
+        {"key": "auto_mithril",   "label": "Mine Mithril",
+         "help": "Sends troops to gather mithril at 19 minute intervals to avoid being attacked."},
     ]},
 ]
 
 AUTO_MODES_HS = [
     {"group": "Events", "modes": [
-        {"key": "auto_groot",     "label": "Join Groot"},
+        {"key": "auto_groot",     "label": "Join Groot",
+         "help": "Joins Groot rally events when they appear."},
     ]},
     {"group": "Farming", "modes": [
-        {"key": "auto_titan",     "label": "Rally Titans"},
+        {"key": "auto_titan",     "label": "Rally Titans",
+         "help": "Searches for and rallies Titans on the map. Restores AP if needed. AP usage can be set to on or off in Settings."},
         {"key": "auto_gold",      "label": "Gather Gold"},
-        {"key": "auto_mithril",   "label": "Mine Mithril"},
+        {"key": "auto_mithril",   "label": "Mine Mithril",
+         "help": "Sends troops to gather mithril at 19 minute intervals to avoid being attacked."},
     ]},
     {"group": "Combat", "modes": [
-        {"key": "auto_reinforce",      "label": "Reinforce Throne"},
-        {"key": "auto_reinforce_ally", "label": "Reinforce Ally"},
+        {"key": "auto_reinforce",      "label": "Reinforce Throne",
+         "help": "Periodically sends a troop to reinforce your alliance throne in territory war."},
+        {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
+         "help": "Automatically reinforces nearby alliance castles in order of power level. Current area setting is roughly the area of battle around a tower. Can be changed in Settings."},
     ]},
 ]
 
@@ -138,10 +150,10 @@ ONESHOT_DEBUG = ["Check Screen", "Check Troops", "Diagnose Grid",
 # ---------------------------------------------------------------------------
 
 from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
-                     run_auto_pass, run_auto_occupy, run_auto_reinforce,
+                     run_auto_pass, run_auto_reinforce,
                      run_auto_reinforce_ally,
                      run_auto_mithril, run_auto_gold, run_auto_esb,
-                     run_debug_occupy,
+                     run_frontline_occupy,
                      run_once, run_repeat,
                      launch_task, stop_task, stop_all_tasks_matching,
                      force_stop_all)
@@ -157,13 +169,12 @@ AUTO_RUNNERS = {
     "auto_titan":     lambda dev, se, s: run_auto_titan(dev, se, s.get("titan_interval", 30), s.get("variation", 0)),
     "auto_groot":     lambda dev, se, s: run_auto_groot(dev, se, s.get("groot_interval", 30), s.get("variation", 0)),
     "auto_pass":      lambda dev, se, s: run_auto_pass(dev, se, s.get("pass_mode", "Rally Joiner"), s.get("pass_interval", 30), s.get("variation", 0)),
-    "auto_occupy":    lambda dev, se, s: run_auto_occupy(dev, se),
+    "frontline_occupy":  lambda dev, se, s: run_frontline_occupy(dev, se),
     "auto_reinforce":      lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
     "auto_reinforce_ally": lambda dev, se, s: run_auto_reinforce_ally(dev, se),
     "auto_mithril":        lambda dev, se, s: run_auto_mithril(dev, se),
     "auto_gold":      lambda dev, se, s: run_auto_gold(dev, se),
     "auto_esb":       lambda dev, se, s: run_auto_esb(dev, se, 5, s.get("variation", 0)),
-    "debug_occupy":   lambda dev, se, s: run_debug_occupy(dev, se),
 }
 
 

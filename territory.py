@@ -14,7 +14,7 @@ from vision import (load_screenshot, tap_image, wait_for_image_and_tap,
                     save_failure_screenshot)
 from navigation import navigate
 from troops import troops_avail, all_troops_home, heal_all
-from actions import teleport
+from actions import teleport, teleport_to_tower, navigate_to_coord
 from botlog import get_logger, timed_action
 
 _log = get_logger("territory")
@@ -173,288 +173,43 @@ def _is_adjacent_to_my_territory(image, row, col, device=None):
 
 
 # ============================================================
-# TERRITORY SQUARE MANAGER GUI
-# ============================================================
-
-def open_territory_manager(device):
-    """Open a visual interface to manually select squares to attack or ignore"""
-    import tkinter as tk
-    import customtkinter as ctk
-    from PIL import Image, ImageTk
-
-    log = get_logger("territory", device)
-
-    # Take a screenshot of territory screen
-    if not navigate(Screen.TERRITORY, device):
-        log.warning("Failed to navigate to territory screen")
-        return
-
-    time.sleep(1)
-    full_image = load_screenshot(device)
-
-    if full_image is None:
-        log.error("Failed to load screenshot")
-        return
-
-    # Crop to just the grid area with small padding
-    grid_pixel_width = int(GRID_WIDTH * SQUARE_SIZE)
-    grid_pixel_height = int(GRID_HEIGHT * SQUARE_SIZE)
-    padding = 10
-
-    crop_x1 = max(0, GRID_OFFSET_X - padding)
-    crop_y1 = max(0, GRID_OFFSET_Y - padding)
-    crop_x2 = min(full_image.shape[1], GRID_OFFSET_X + grid_pixel_width + padding)
-    crop_y2 = min(full_image.shape[0], GRID_OFFSET_Y + grid_pixel_height + padding)
-
-    image = full_image[crop_y1:crop_y2, crop_x1:crop_x2]
-
-    # Adjust offsets for cropped image
-    adjusted_offset_x = GRID_OFFSET_X - crop_x1
-    adjusted_offset_y = GRID_OFFSET_Y - crop_y1
-
-    # Create manager window
-    manager = ctk.CTkToplevel()
-    manager.title(f"Territory Square Manager - {device}")
-    manager.configure(fg_color="#0c0c18")
-
-    # Instructions
-    ctk.CTkLabel(
-        manager,
-        text="Click squares: GREEN = Force Attack | RED = Ignore | None = Auto",
-        font=ctk.CTkFont(family="Segoe UI", size=11),
-        text_color="#e0e0f0", fg_color="#14142a",
-        corner_radius=6, height=30
-    ).pack(fill=tk.X, padx=6, pady=(6, 2))
-
-    # Stats display
-    stats_var = tk.StringVar()
-    stats_var.set(f"Attack: {len(config.MANUAL_ATTACK_SQUARES)} | Ignore: {len(config.MANUAL_IGNORE_SQUARES)}")
-    ctk.CTkLabel(manager, textvariable=stats_var,
-                 font=ctk.CTkFont(family="Segoe UI", size=10),
-                 text_color="#8899aa").pack(pady=2)
-
-    # Create canvas with the territory image
-    canvas_frame = ctk.CTkFrame(manager, fg_color="transparent")
-    canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-    # Scale down to 0.75x
-    display_scale = 0.75
-    display_image = cv2.resize(image, None, fx=display_scale, fy=display_scale, interpolation=cv2.INTER_LINEAR)
-    display_image = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
-
-    # Convert to PhotoImage
-    pil_image = Image.fromarray(display_image)
-    photo = ImageTk.PhotoImage(pil_image)
-
-    # Set window size based on image
-    window_width = display_image.shape[1] + 20
-    window_height = display_image.shape[0] + 120
-    manager.geometry(f"{window_width}x{window_height}")
-
-    canvas = tk.Canvas(
-        canvas_frame,
-        width=display_image.shape[1],
-        height=display_image.shape[0],
-        highlightthickness=0
-    )
-    canvas.pack()
-
-    # Set background image
-    canvas.create_image(0, 0, anchor=tk.NW, image=photo)
-    canvas.image = photo  # Keep a reference
-
-    # Draw grid overlay - store items in list for faster deletion
-    overlay_items = []
-
-    def draw_overlay():
-        """Draw colored overlays for manual selections"""
-        nonlocal overlay_items
-
-        # Clear existing overlays
-        for item_id in overlay_items:
-            canvas.delete(item_id)
-        overlay_items.clear()
-
-        for row in range(GRID_HEIGHT):
-            for col in range(GRID_WIDTH):
-                if (row, col) in THRONE_SQUARES:
-                    continue
-
-                x = int((adjusted_offset_x + col * SQUARE_SIZE) * display_scale)
-                y = int((adjusted_offset_y + row * SQUARE_SIZE) * display_scale)
-                w = int(SQUARE_SIZE * display_scale)
-                h = int(SQUARE_SIZE * display_scale)
-
-                color = None
-                if (row, col) in config.MANUAL_ATTACK_SQUARES:
-                    color = "green"
-                elif (row, col) in config.MANUAL_IGNORE_SQUARES:
-                    color = "red"
-
-                if color:
-                    rect_id = canvas.create_rectangle(
-                        x, y, x + w, y + h,
-                        outline=color,
-                        width=2,
-                        fill=color,
-                        stipple="gray50"
-                    )
-                    overlay_items.append(rect_id)
-
-    def on_canvas_click(event):
-        """Handle clicks on the canvas"""
-        # Convert click to grid position
-        click_x = event.x / display_scale
-        click_y = event.y / display_scale
-
-        col = int((click_x - adjusted_offset_x) / SQUARE_SIZE)
-        row = int((click_y - adjusted_offset_y) / SQUARE_SIZE)
-
-        # Validate bounds
-        if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
-            return
-
-        if (row, col) in THRONE_SQUARES:
-            _log.debug("Cannot select throne square (%d, %d)", row, col)
-            return
-
-        # Toggle state: None -> Attack -> Ignore -> None
-        if (row, col) in config.MANUAL_ATTACK_SQUARES:
-            config.MANUAL_ATTACK_SQUARES.remove((row, col))
-            config.MANUAL_IGNORE_SQUARES.add((row, col))
-            _log.debug("Square (%d, %d) set to IGNORE", row, col)
-        elif (row, col) in config.MANUAL_IGNORE_SQUARES:
-            config.MANUAL_IGNORE_SQUARES.remove((row, col))
-            _log.debug("Square (%d, %d) set to AUTO-DETECT", row, col)
-        else:
-            config.MANUAL_ATTACK_SQUARES.add((row, col))
-            _log.debug("Square (%d, %d) set to FORCE ATTACK", row, col)
-
-        # Update display
-        draw_overlay()
-        stats_var.set(f"Attack: {len(config.MANUAL_ATTACK_SQUARES)} | Ignore: {len(config.MANUAL_IGNORE_SQUARES)}")
-
-    canvas.bind("<Button-1>", on_canvas_click)
-
-    # Buttons
-    button_frame = ctk.CTkFrame(manager, fg_color="transparent")
-    button_frame.pack(pady=5)
-
-    def clear_all():
-        config.MANUAL_ATTACK_SQUARES.clear()
-        config.MANUAL_IGNORE_SQUARES.clear()
-        draw_overlay()
-        stats_var.set(f"Attack: {len(config.MANUAL_ATTACK_SQUARES)} | Ignore: {len(config.MANUAL_IGNORE_SQUARES)}")
-        _log.debug("Cleared all manual selections")
-
-    def clear_attack():
-        config.MANUAL_ATTACK_SQUARES.clear()
-        draw_overlay()
-        stats_var.set(f"Attack: {len(config.MANUAL_ATTACK_SQUARES)} | Ignore: {len(config.MANUAL_IGNORE_SQUARES)}")
-        _log.debug("Cleared manual attack selections")
-
-    def clear_ignore():
-        config.MANUAL_IGNORE_SQUARES.clear()
-        draw_overlay()
-        stats_var.set(f"Attack: {len(config.MANUAL_ATTACK_SQUARES)} | Ignore: {len(config.MANUAL_IGNORE_SQUARES)}")
-        _log.debug("Cleared manual ignore selections")
-
-    _btn_kw = dict(font=ctk.CTkFont(family="Segoe UI", size=10),
-                   fg_color="#1e3a5f", hover_color="#1a3a4a",
-                   text_color="#e0e0f0", corner_radius=8, height=28, width=90)
-    ctk.CTkButton(button_frame, text="Clear All", command=clear_all,
-                  fg_color="#c62828", hover_color="#d32f2f",
-                  font=ctk.CTkFont(family="Segoe UI", size=10),
-                  text_color="#ffffff", corner_radius=8, height=28, width=90).pack(side=tk.LEFT, padx=2)
-    ctk.CTkButton(button_frame, text="Clear Attack", command=clear_attack, **_btn_kw).pack(side=tk.LEFT, padx=2)
-    ctk.CTkButton(button_frame, text="Clear Ignore", command=clear_ignore, **_btn_kw).pack(side=tk.LEFT, padx=2)
-    ctk.CTkButton(button_frame, text="Close", command=manager.destroy, **_btn_kw).pack(side=tk.LEFT, padx=2)
-
-    # Draw initial overlay
-    draw_overlay()
-
-    # Just destroy on close
-    manager.protocol("WM_DELETE_WINDOW", manager.destroy)
-
-# ============================================================
 # TERRITORY ATTACK SYSTEM
 # ============================================================
 
-def scan_targets(device):
-    """Scan the territory grid and return prioritized target lists.
+def _build_target_lists(grid, image, device, my_team, enemy_teams, blocked,
+                        empty_enemy_squares=None, contested_by_us=None,
+                        empty_friendly_squares=None):
+    """Build prioritized target lists from a classified grid.
 
-    Must be called while on the TERRITORY screen.
+    Args:
+        grid: dict mapping (row, col) → team string or "throne"/"blocked"/None
+        image: screenshot (np.ndarray) for flag detection; may be None when
+               empty_enemy_squares/contested_by_us are provided by protocol data
+        device: ADB device ID (for flag detection logging)
+        my_team: own team color string
+        enemy_teams: list/set of enemy team color strings
+        blocked: set of (row, col) squares that are pass-blocked
+        empty_enemy_squares: set of (row, col) known to have no defender (protocol).
+               When provided, replaces _has_flag — empty → unflagged, defended → flagged,
+               contested by us → skipped entirely.
+        contested_by_us: set of (row, col) where our team is already contesting.
+               Squares in this set are skipped (already handled by our troop).
+        empty_friendly_squares: set of (row, col) of own-team squares with no defender
+               (protocol only — vision path cannot detect friendly defender status).
 
-    Returns dict with keys:
-        'unflagged_enemies': [(row, col), ...] — unflagged enemy squares adjacent to own territory
-        'flagged_enemies':   [(row, col), ...] — flagged enemy squares adjacent to own territory
-        'friendly':          [(row, col), ...] — own team squares adjacent to enemy territory (for reinforcement)
-        'image':             np.ndarray — the screenshot used for analysis
-    Returns None if screenshot fails.
+    Returns:
+        (unflagged_enemies, flagged_enemies, friendly_reinforce, unflagged_friendly)
+        unflagged_enemies  = empty enemy frontline squares (no defender).
+        flagged_enemies    = defended enemy frontline squares.
+        friendly_reinforce = all own frontline squares adjacent to enemy.
+        unflagged_friendly = own frontline squares with no defender (protocol) or all
+                             frontline squares (vision — can't distinguish defender status).
     """
-    log = get_logger("territory", device)
-    image = load_screenshot(device)
-    if image is None:
-        log.error("scan_targets: failed to load screenshot")
-        return None
-
-    my_team = config.get_device_config(device, "my_team")
-    enemy_teams = config.get_device_enemy_teams(device)
-    log.debug("Scanning grid — my_team=%s, enemies=%s", my_team, enemy_teams)
-
-    # --- First pass: classify every square ---
-    grid = {}
-    blocked = config.PASS_BLOCKED_SQUARES
-    zone_expected = config.ZONE_EXPECTED_TEAMS
-    zone_overrides = 0
-    for row in range(GRID_HEIGHT):
-        for col in range(GRID_WIDTH):
-            if (row, col) in THRONE_SQUARES:
-                grid[(row, col)] = "throne"
-                continue
-            if (row, col) in blocked:
-                grid[(row, col)] = "blocked"
-                continue
-            border_color = _get_border_color(image, row, col)
-            candidates = zone_expected.get((row, col))
-            team = _classify_square_team(border_color, device=device,
-                                         candidate_teams=candidates)
-            # Track when zone filtering changed the result
-            if candidates:
-                team_raw = _classify_square_team(border_color, device=device)
-                if team_raw != team:
-                    zone_overrides += 1
-            grid[(row, col)] = team
-    if zone_overrides:
-        log.info("Zone hints overrode %d square classifications", zone_overrides)
-
-    # --- Second pass: neighbor voting for isolated squares ---
-    # If a square's team has zero neighbors of the same team but the majority
-    # of neighbors are a different team, reclassify to the majority team.
-    all_teams_set = set(ALL_TEAMS)
-    fixes = 0
-    for (row, col), team in list(grid.items()):
-        if team not in all_teams_set:
-            continue
-        neighbors = [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]
-        neighbor_teams = [grid.get((nr, nc)) for nr, nc in neighbors
-                         if grid.get((nr, nc)) in all_teams_set]
-        if not neighbor_teams:
-            continue
-        if team not in neighbor_teams:
-            # This square's team has no adjacent match — likely misclassified
-            counts = Counter(neighbor_teams)
-            majority_team, majority_count = counts.most_common(1)[0]
-            if majority_count >= 2:
-                grid[(row, col)] = majority_team
-                fixes += 1
-    if fixes:
-        log.debug("Neighbor voting fixed %d squares", fixes)
-
-    # --- Build target lists from corrected grid ---
     unflagged_enemies = []
     flagged_enemies = []
     friendly_reinforce = []
+    unflagged_friendly = []
+    use_protocol_flags = empty_enemy_squares is not None
 
     for row in range(GRID_HEIGHT):
         for col in range(GRID_WIDTH):
@@ -463,43 +218,164 @@ def scan_targets(device):
             if (row, col) in config.MANUAL_IGNORE_SQUARES:
                 continue
 
-            team = grid[(row, col)]
+            team = grid.get((row, col))
 
             if team in enemy_teams:
-                # Check adjacency using corrected grid
+                # Skip if we already have a troop contesting this square
+                if contested_by_us and (row, col) in contested_by_us:
+                    continue
                 adj = False
                 for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
                     if grid.get((nr, nc)) == my_team:
                         adj = True
                         break
                 if adj:
-                    if _has_flag(image, row, col):
-                        flagged_enemies.append((row, col))
+                    if use_protocol_flags:
+                        if (row, col) in empty_enemy_squares:
+                            unflagged_enemies.append((row, col))
+                        else:
+                            flagged_enemies.append((row, col))
                     else:
-                        unflagged_enemies.append((row, col))
+                        if _has_flag(image, row, col):
+                            flagged_enemies.append((row, col))
+                        else:
+                            unflagged_enemies.append((row, col))
 
             elif team == my_team:
-                # Check if adjacent to enemy territory (frontline — worth reinforcing)
                 for nr, nc in [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]:
                     if grid.get((nr, nc)) in enemy_teams:
                         friendly_reinforce.append((row, col))
+                        # Protocol: only unflagged (no defender). Vision: include all.
+                        if empty_friendly_squares is not None:
+                            if (row, col) in empty_friendly_squares:
+                                unflagged_friendly.append((row, col))
+                        else:
+                            unflagged_friendly.append((row, col))
                         break
+
+    return unflagged_enemies, flagged_enemies, friendly_reinforce, unflagged_friendly
+
+
+def scan_targets(device):
+    """Scan the territory grid and return prioritized target lists.
+
+    Must be called while on the TERRITORY screen.
+
+    Returns dict with keys:
+        'unflagged_enemies': [(row, col), ...] — empty enemy squares adjacent to own territory
+                              (no defender = walk straight in; or unflagged when using vision)
+        'flagged_enemies':   [(row, col), ...] — defended enemy squares adjacent to own territory
+                              (need battle; or flagged when using vision)
+        'friendly':          [(row, col), ...] — own team squares adjacent to enemy territory (for reinforcement)
+        'image':             np.ndarray or None — screenshot used for vision path (None for protocol path)
+    Returns None if screenshot fails (vision path only).
+    """
+    log = get_logger("territory", device)
+    my_team = config.get_device_config(device, "my_team")
+    enemy_teams = config.get_device_enemy_teams(device)
+    blocked = config.PASS_BLOCKED_SQUARES
+    log.debug("Scanning grid — my_team=%s, enemies=%s", my_team, enemy_teams)
+
+    # --- Protocol fast path: no screenshot needed when fresh territory data available ---
+    try:
+        import startup
+        proto_grid = startup.get_protocol_territory_grid(device)
+    except Exception:
+        proto_grid = None
+
+    if proto_grid is not None:
+        # proto_grid: {(row,col): (owner_team, contester_team, has_defender)}
+        empty_enemy_squares = set()    # no defending troop — walk straight in
+        empty_friendly_squares = set() # own squares with no defender
+        contested_by_us = set()        # our troop already contesting — skip
+        grid = {}
+        for (row, col), (owner_team, contester_team, has_defender) in proto_grid.items():
+            if owner_team:
+                grid[(row, col)] = owner_team
+            if not has_defender and owner_team in enemy_teams:
+                empty_enemy_squares.add((row, col))
+            if not has_defender and owner_team == my_team:
+                empty_friendly_squares.add((row, col))
+            if contester_team == my_team:
+                contested_by_us.add((row, col))
+        for sq in THRONE_SQUARES:
+            grid[sq] = "throne"
+        for sq in blocked:
+            grid.setdefault(sq, "blocked")
+        log.info("scan_targets: protocol grid — %d towers, %d empty enemy, %d empty friendly, %d contested by us",
+                 len(proto_grid), len(empty_enemy_squares), len(empty_friendly_squares), len(contested_by_us))
+        unflagged_enemies, flagged_enemies, friendly_reinforce, unflagged_friendly = _build_target_lists(
+            grid, None, device, my_team, enemy_teams, blocked,
+            empty_enemy_squares=empty_enemy_squares, contested_by_us=contested_by_us,
+            empty_friendly_squares=empty_friendly_squares)
+        image = None
+    else:
+        # --- Vision path: take screenshot and classify every square ---
+        image = load_screenshot(device)
+        if image is None:
+            log.error("scan_targets: failed to load screenshot")
+            return None
+        zone_expected = config.ZONE_EXPECTED_TEAMS
+        zone_overrides = 0
+        grid = {}
+        for row in range(GRID_HEIGHT):
+            for col in range(GRID_WIDTH):
+                if (row, col) in THRONE_SQUARES:
+                    grid[(row, col)] = "throne"
+                    continue
+                if (row, col) in blocked:
+                    grid[(row, col)] = "blocked"
+                    continue
+                border_color = _get_border_color(image, row, col)
+                candidates = zone_expected.get((row, col))
+                team = _classify_square_team(border_color, device=device,
+                                             candidate_teams=candidates)
+                if candidates:
+                    team_raw = _classify_square_team(border_color, device=device)
+                    if team_raw != team:
+                        zone_overrides += 1
+                grid[(row, col)] = team
+        if zone_overrides:
+            log.info("Zone hints overrode %d square classifications", zone_overrides)
+
+        # --- Neighbor voting: fix isolated misclassified squares ---
+        all_teams_set = set(ALL_TEAMS)
+        fixes = 0
+        for (row, col), team in list(grid.items()):
+            if team not in all_teams_set:
+                continue
+            neighbors = [(row-1, col), (row+1, col), (row, col-1), (row, col+1)]
+            neighbor_teams = [grid.get((nr, nc)) for nr, nc in neighbors
+                             if grid.get((nr, nc)) in all_teams_set]
+            if not neighbor_teams:
+                continue
+            if team not in neighbor_teams:
+                counts = Counter(neighbor_teams)
+                majority_team, majority_count = counts.most_common(1)[0]
+                if majority_count >= 2:
+                    grid[(row, col)] = majority_team
+                    fixes += 1
+        if fixes:
+            log.debug("Neighbor voting fixed %d squares", fixes)
+
+        unflagged_enemies, flagged_enemies, friendly_reinforce, unflagged_friendly = _build_target_lists(
+            grid, image, device, my_team, enemy_teams, blocked)
 
     # Manual attack overrides replace auto-detected targets entirely
     if config.MANUAL_ATTACK_SQUARES:
-        # Still filter out pass-blocked squares from manual overrides
         unflagged_enemies = [s for s in config.MANUAL_ATTACK_SQUARES
                              if s not in blocked]
         flagged_enemies = []
         log.info("Using ONLY manual attack squares (%d)", len(unflagged_enemies))
 
-    log.info("Scan: %d unflagged enemies, %d flagged, %d friendly frontline",
-             len(unflagged_enemies), len(flagged_enemies), len(friendly_reinforce))
+    log.info("Scan: %d unflagged enemies, %d flagged, %d friendly frontline, %d unflagged friendly",
+             len(unflagged_enemies), len(flagged_enemies), len(friendly_reinforce), len(unflagged_friendly))
 
     return {
         "unflagged_enemies": unflagged_enemies,
         "flagged_enemies": flagged_enemies,
         "friendly": friendly_reinforce,
+        "unflagged_friendly": unflagged_friendly,
         "image": image,
     }
 
@@ -526,8 +402,29 @@ def _pick_target(scan_result):
     return None
 
 
+def _pick_frontline_target(scan_result, mode):
+    """Pick a frontline target based on mode setting.
+
+    "attack"    — targets only unflagged enemy squares (no defender).
+    "reinforce" — targets only unflagged friendly squares (no defender).
+
+    Returns (row, col, action_type) or None if no targets available.
+    """
+    if mode == "attack":
+        targets = scan_result["unflagged_enemies"]
+        action = "attack"
+    else:
+        targets = scan_result["unflagged_friendly"]
+        action = "reinforce"
+
+    if targets:
+        row, col = random.choice(targets)
+        return row, col, action
+    return None
+
+
 @timed_action("attack_territory")
-def attack_territory(device, debug=False):
+def attack_territory(device, debug=False, target_picker=None):
     """Scan territory grid and pick a target.
 
     Returns (row, col, action_type) on success, or None if no targets.
@@ -535,6 +432,9 @@ def attack_territory(device, debug=False):
 
     Side effect: stores target in config.LAST_ATTACKED_SQUARE[device]
     and taps the target square on the territory grid (camera trick).
+
+    target_picker: optional callable(scan_result) → (row, col, action_type) | None.
+                   Defaults to _pick_target (normal priority order).
     """
     log = get_logger("territory", device)
     log.info("Scanning territory for targets...")
@@ -549,7 +449,8 @@ def attack_territory(device, debug=False):
     if scan is None:
         return None
 
-    target = _pick_target(scan)
+    picker = target_picker or _pick_target
+    target = picker(scan)
     if target is None:
         log.warning("No valid targets found")
         return None
@@ -682,38 +583,180 @@ def _do_depart(device, log, action_type):
     return False
 
 
-@timed_action("auto_occupy")
-def auto_occupy_loop(device, stop_check, skip_troop_gate=False):
-    """Auto occupy loop — per-device, cooperative stop via stop_check callback.
+class _ProtocolDataPending(Exception):
+    """Raised when protocol is active but territory grid data hasn't arrived yet."""
 
-    Cycle:
-        1. Scan territory grid for targets (priority: unflagged > flagged > reinforce)
-        2. Tap target square on grid (camera trick — centers camera on tower)
-        3. Teleport near the tower
-        4. Navigate back to territory, tap target again (re-centers camera)
-        5. Tap tower → detect menu (attack or reinforce) → depart
-        6. Wait for troops → repeat
 
-    Handles: death recovery, navigation failures, teleport failures,
-    menu detection failures, depart_anyway fallback.
+def _grid_to_world(row, col):
+    """Convert territory grid (row, col) to world (x, z) coordinates.
+
+    Derived from the protocol formula: row = coord.Z // 300000, col = coord.X // 300000.
+    Returns center of the grid square.
+    """
+    return col * 300000 + 150000, row * 300000 + 150000
+
+
+def _wait_for_capture(device, row, col, my_team, log, stop_check,
+                      poll_interval=10):
+    """Poll protocol grid until tower (row, col) is owned by my_team.
+
+    Returns True when captured, False only if stopped.
+    Waits indefinitely — the bot stays until the tower flips.
+    """
+    import startup
+    while not stop_check():
+        grid = startup.get_protocol_territory_grid(device)
+        if grid is not None:
+            entry = grid.get((row, col))
+            if entry is not None:
+                owner_team = entry[0]
+                if owner_team == my_team:
+                    log.info("Tower (%d,%d) is now %s — captured!", row, col, my_team)
+                    return True
+        if _interruptible_sleep(poll_interval, stop_check):
+            return False
+    return False
+
+
+def _pick_frontline_target_from_protocol(device, mode, my_team, enemy_teams):
+    """Use protocol territory grid to pick a frontline target directly.
+
+    Returns (row, col, action_type, world_x, world_z) or None.
+    No territory screen navigation needed.
+    Returns None only when protocol is disabled or not active for this device.
+    Raises _ProtocolDataPending if protocol is active but data hasn't arrived yet.
+    """
+    if device not in config.PROTOCOL_ACTIVE_DEVICES:
+        return None
+    try:
+        import startup
+        proto_grid = startup.get_protocol_territory_grid(device)
+    except Exception as e:
+        get_logger("territory", device).debug("Protocol grid error: %s", e)
+        proto_grid = None
+
+    if proto_grid is None:
+        raise _ProtocolDataPending("Territory grid not ready yet")
+
+    log = get_logger("territory", device)
+    candidates = []
+    skip_team = skip_defender = skip_adj = 0
+
+    for (row, col), (owner_team, contester_team, has_defender) in proto_grid.items():
+        if (row, col) in config.THRONE_SQUARES:
+            continue
+        if (row, col) in config.MANUAL_IGNORE_SQUARES:
+            continue
+
+        if mode == "attack":
+            # Empty enemy frontline squares
+            if owner_team not in enemy_teams:
+                skip_team += 1
+                continue
+            if has_defender:
+                skip_defender += 1
+                continue
+            # Must be adjacent to our territory
+            adj = any(
+                proto_grid.get((row + dr, col + dc), (None,))[0] == my_team
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            )
+            if adj:
+                candidates.append((row, col, "attack"))
+            else:
+                skip_adj += 1
+        else:
+            # Empty friendly frontline squares (reinforce mode)
+            if owner_team != my_team:
+                skip_team += 1
+                continue
+            if has_defender:
+                skip_defender += 1
+                continue
+            # Must be adjacent to enemy territory
+            adj = any(
+                proto_grid.get((row + dr, col + dc), (None,))[0] in enemy_teams
+                for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            )
+            if adj:
+                candidates.append((row, col, "reinforce"))
+            else:
+                skip_adj += 1
+
+    log.info(
+        "Protocol scan (%s mode): grid=%d my_team=%s enemies=%s "
+        "skip_team=%d skip_defender=%d skip_adj=%d candidates=%d",
+        mode, len(proto_grid), my_team, enemy_teams,
+        skip_team, skip_defender, skip_adj, len(candidates)
+    )
+
+    if not candidates:
+        return None
+
+    row, col, action_type = random.choice(candidates)
+    world_x, world_z = _grid_to_world(row, col)
+    return row, col, action_type, world_x, world_z
+
+
+@timed_action("frontline_occupy")
+def frontline_occupy_loop(device, stop_check):
+    """Frontline occupy loop — targets only unflagged towers on the immediate border.
+
+    When protocol is active: derives world coordinates from the grid position
+    (col*300000+150000, row*300000+150000) and navigates directly via map search —
+    no territory screen needed.
+
+    When protocol is inactive: falls back to territory grid tap (same as auto-occupy).
+
+    Mode is read from the 'frontline_occupy_action' setting per device:
+        "attack"    — find empty enemy frontline towers, tap attack button.
+        "reinforce" — find empty friendly frontline towers, tap reinforce button.
+
+    Waits for all troops home before each cycle. If no targets are available,
+    waits 30s and rescans. No fallback to other target categories.
     """
     log = get_logger("territory", device)
-    log.info("Auto occupy started")
+    log.info("Frontline occupy started")
+
+    # Ensure we start from a known state regardless of which screen is active.
+    navigate(Screen.MAP, device)
 
     consecutive_tp_fails = 0
     _MAX_CONSECUTIVE_TP_FAILS = 3
-    _MAX_TOTAL_TP_FAILS = 5
+
+    # --- One-time protocol bootstrap (first-ever run only) ---
+    # Territory data is normally loaded from disk cache on startup.
+    # If no cache exists yet (very first run), open territory screen once to
+    # fetch the full grid from the game server. Subsequent restarts use the cache.
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
+        import startup
+        if not startup.get_protocol_territory_grid(device):
+            log.info("No territory cache — fetching from game server (one-time)...")
+            config.set_device_status(device, "Loading Territory Data...")
+            if navigate(Screen.TERRITORY, device):
+                for _ in range(15):
+                    if stop_check():
+                        break
+                    if startup.get_protocol_territory_grid(device) is not None:
+                        log.info("Territory data fetched and cached")
+                        break
+                    time.sleep(1)
+                navigate(Screen.MAP, device)
+            else:
+                log.warning("Could not reach TERRITORY screen for initial fetch")
+        if stop_check():
+            return
 
     while not stop_check():
         try:
             # --- Death check at start of each cycle ---
             revive_result = _check_and_revive(device, log, stop_check)
             if revive_result is None:
-                break  # Stopped
+                break
             if stop_check():
                 break
 
-            # --- Wait for troops ---
+            # --- Wait for all troops home ---
             config.set_device_status(device, "Checking Troops...")
             if not navigate(Screen.MAP, device):
                 log.warning("Cannot reach MAP — retrying in 10s")
@@ -725,11 +768,7 @@ def auto_occupy_loop(device, stop_check, skip_troop_gate=False):
             if config.get_device_config(device, "auto_heal"):
                 heal_all(device)
 
-            avail = troops_avail(device)
-            total = config.DEVICE_TOTAL_TROOPS.get(device, 5)
-            log.info("Troops: %d/%d home", avail, total)
-
-            if not skip_troop_gate and not all_troops_home(device):
+            if not all_troops_home(device):
                 config.set_device_status(device, "Waiting for Troops...")
                 if _interruptible_sleep(10, stop_check):
                     break
@@ -738,51 +777,138 @@ def auto_occupy_loop(device, stop_check, skip_troop_gate=False):
             if stop_check():
                 break
 
-            log.info("=== Starting auto occupy cycle ===")
+            mode = config.get_device_config(device, "frontline_occupy_action")
+            my_team = config.get_device_config(device, "my_team")
+            enemy_teams = config.get_device_enemy_teams(device)
 
-            # --- Step 1: Scan territory and pick target ---
-            config.set_device_status(device, "Scanning Territory...")
-            target_result = attack_territory(device)
+            # --- Protocol path: derive coords directly, skip territory screen ---
+            try:
+                proto_target = _pick_frontline_target_from_protocol(
+                    device, mode, my_team, enemy_teams)
+            except _ProtocolDataPending:
+                # No grid data — arrives on game login and is cached to disk.
+                # If missing, game may not have been restarted with protocol active.
+                log.warning("Territory data not available — waiting for game to send it "
+                            "(restart game if this persists)")
+                config.set_device_status(device, "Waiting for Territory Data...")
+                if _interruptible_sleep(10, stop_check):
+                    break
+                continue
 
-            if target_result is None:
-                log.warning("No targets found — waiting 30s before rescan")
+            if proto_target is not None:
+                target_row, target_col, action_type, world_x, world_z = proto_target
+                log.info("Protocol target: (%d,%d) %s — world (%d, %d)",
+                         target_row, target_col, action_type, world_x, world_z)
+                config.set_device_status(device, f"Targeting ({target_row},{target_col})...")
+                config.LAST_ATTACKED_SQUARE[device] = (target_row, target_col)
+
+                # Pan camera directly to tower via map search — no territory screen
+                config.set_device_status(device, "Navigating to Tower...")
+                if not navigate_to_coord(device, world_x, world_z, stop_check):
+                    log.warning("navigate_to_coord failed — skipping cycle")
+                    if _interruptible_sleep(5, stop_check):
+                        break
+                    continue
+
+                # Wait briefly for the game to send entity data for the now-visible tower.
+                # KvkBuilding.troops is the authoritative troop list — more reliable than
+                # LandInfo.legionId for allied troops.  Give the server ~2s to push entities.
+                if _interruptible_sleep(2, stop_check):
+                    break
+                import startup as _startup
+                tower_troops = _startup.get_protocol_kvk_tower_troops(device)
+                if tower_troops is not None:
+                    troop_count = tower_troops.get((target_row, target_col), -1)
+                    if troop_count > 0:
+                        log.info("Tower (%d,%d) has %d troop(s) per entity feed — skipping",
+                                 target_row, target_col, troop_count)
+                        if _interruptible_sleep(5, stop_check):
+                            break
+                        continue
+                    elif troop_count == -1:
+                        log.debug("Tower (%d,%d) not yet seen in entity feed — proceeding",
+                                  target_row, target_col)
+
+            elif device in config.PROTOCOL_ACTIVE_DEVICES:
+                # Protocol active, data is fresh, but no matching targets right now
+                log.info("No frontline targets (%s mode) via protocol — waiting 30s", mode)
                 config.set_device_status(device, "No Targets...")
                 if _interruptible_sleep(30, stop_check):
                     break
                 continue
 
-            target_row, target_col, action_type = target_result
-            config.set_device_status(
-                device,
-                f"Targeting ({target_row},{target_col})..."
-            )
+            else:
+                # --- Vision fallback (protocol disabled): territory grid scan + tap ---
+                log.info("Protocol disabled — using territory grid scan")
+                config.set_device_status(device, "Scanning Territory...")
+                target_result = attack_territory(
+                    device,
+                    target_picker=lambda sr: _pick_frontline_target(sr, mode)
+                )
+
+                if target_result is None:
+                    log.info("No frontline targets (%s mode) — waiting 30s", mode)
+                    config.set_device_status(device, "No Targets...")
+                    if _interruptible_sleep(30, stop_check):
+                        break
+                    continue
+
+                target_row, target_col, action_type = target_result
+                config.set_device_status(device, f"Targeting ({target_row},{target_col})...")
+
+                if stop_check():
+                    break
+                time.sleep(2)  # Let camera settle after territory grid tap
 
             if stop_check():
                 break
-            time.sleep(2)  # Let camera settle after territory grid tap
 
-            # --- Step 2: Teleport near the target ---
-            # The territory grid tap already centered camera on the tower.
-            # Now we're on MAP screen (tapping grid square switches to MAP).
-            # The camera trick: tap the tower to open info → camera pans down
-            # → close dialog → teleport from the better position below tower.
+            # --- Check for alliance occupation before teleporting ---
+            # Camera is centered on the tower — alliance_occupied.png (white hammer)
+            # is visible if an alliance member is already defending it.
+            _screen = load_screenshot(device)
+            if _screen is not None:
+                _occ_match = find_image(_screen, "alliance_occupied.png", threshold=0.0)
+                _occ_score = round(_occ_match[0], 3) if _occ_match else 0.0
+                log.info("Tower (%d,%d) alliance_occupied score=%.3f", target_row, target_col, _occ_score)
+            if _screen is not None and find_image(_screen, "alliance_occupied.png", threshold=0.92):
+                log.info("Tower (%d,%d) is alliance-occupied (visual) — skipping",
+                         target_row, target_col)
+                config.set_device_status(device, "Scanning Territory...")
+                if _interruptible_sleep(5, stop_check):
+                    break
+                continue
+
+            # --- Teleport adjacent to the target tower ---
+            # teleport_to_tower navigates to coordinate positions around the tower
+            # and checks for a valid (green) placement circle at each one.
+            # Compute world coords for vision fallback path (protocol path already has them).
+            if proto_target is None:
+                world_x = target_col * 300000 + 150000
+                world_z = target_row * 300000 + 150000
             config.set_device_status(device, "Teleporting...")
-            if not teleport(device):
+            if not teleport_to_tower(device, world_x, world_z, stop_check):
+                # If alliance-occupied was the reason, skip silently to next target.
+                _s = load_screenshot(device)
+                if _s is not None and find_image(_s, "alliance_occupied.png", threshold=0.92):
+                    log.info("Tower (%d,%d) occupied — moving to next target",
+                             target_row, target_col)
+                    if _interruptible_sleep(2, stop_check):
+                        break
+                    continue
                 consecutive_tp_fails += 1
                 log.warning("Teleport failed (%d consecutive)", consecutive_tp_fails)
-
                 if consecutive_tp_fails >= _MAX_CONSECUTIVE_TP_FAILS:
                     log.warning("Too many consecutive teleport fails — trying different target")
                     consecutive_tp_fails = 0
                     if _interruptible_sleep(5, stop_check):
                         break
                     continue
-
                 if _interruptible_sleep(10, stop_check):
                     break
                 continue
 
-            consecutive_tp_fails = 0  # Reset on success
+            consecutive_tp_fails = 0
 
             if stop_check():
                 break
@@ -793,125 +919,62 @@ def auto_occupy_loop(device, stop_check, skip_troop_gate=False):
             if revive_result is None:
                 break
             if revive_result:
-                continue  # Got killed during teleport — restart with new target
+                continue
 
             if stop_check():
                 break
 
-            # --- Step 3: Navigate back to territory, re-tap target square ---
-            config.set_device_status(
-                device,
-                f"{'Attacking' if action_type == 'attack' else 'Reinforcing'} Tower..."
-            )
+            # --- Recenter camera on tower using its world coordinates ---
+            label = "Attacking" if action_type == "attack" else "Reinforcing"
+            config.set_device_status(device, f"{label} Tower...")
 
-            if not navigate(Screen.TERRITORY, device):
-                log.warning("Cannot reach TERRITORY screen for tower interaction")
-                # Try BACK key recovery
-                adb_keyevent(device, 4)
-                time.sleep(2)
-                if not navigate(Screen.TERRITORY, device):
-                    log.warning("TERRITORY nav failed twice — skipping cycle")
-                    if _interruptible_sleep(10, stop_check):
-                        break
-                    continue
+            if not navigate_to_coord(device, world_x, world_z, stop_check):
+                log.warning("Cannot recenter on tower (%d,%d) — skipping cycle",
+                            target_row, target_col)
+                if _interruptible_sleep(10, stop_check):
+                    break
+                continue
 
             if stop_check():
                 break
             time.sleep(1)
 
-            # Re-tap the target square to center camera on tower again
-            click_x, click_y = _get_square_center(target_row, target_col)
-            log.debug("Re-tapping square (%d, %d) at (%d, %d)",
-                      target_row, target_col, click_x, click_y)
-            adb_tap(device, click_x, click_y)
-            time.sleep(2)  # Camera settles on MAP after grid tap
-
-            if stop_check():
-                break
-
-            # --- Step 4: Tap tower to open menu ---
+            # --- Open tower menu (tower is now at screen center) ---
             menu_type = _tap_tower_and_detect_menu(device, log, timeout=10)
-
             if menu_type is None:
                 log.warning("Tower menu did not open for (%d, %d) — skipping",
                             target_row, target_col)
-                save_failure_screenshot(device, "occupy_tower_menu_fail")
+                save_failure_screenshot(device, "frontline_occupy_menu_fail")
                 if _interruptible_sleep(5, stop_check):
                     break
                 continue
 
-            # Decide what to do based on menu vs what we expected
-            actual_action = menu_type  # "attack" or "reinforce"
-            if actual_action != action_type:
-                log.info("Expected %s but got %s — proceeding with %s",
-                         action_type, actual_action, actual_action)
-
             if stop_check():
                 break
 
-            # --- Step 5: Multi-attack loop then reinforce ---
-            min_troops = config.get_device_config(device, "min_troops")
-            attack_count = 0
+            # --- Depart with the configured action ---
+            config.set_device_status(device, f"Deploying ({label})...")
+            if _do_depart(device, log, action_type):
+                log.info("Cycle complete — %s (%d, %d)", action_type, target_row, target_col)
 
-            # Attack loop: keep attacking until tower flips to reinforce
-            while actual_action == "attack" and not stop_check():
-                troops = troops_avail(device)
-                if troops <= min_troops:
-                    log.warning("Not enough troops to attack (have %d, need >%d) — stopping attacks",
-                                troops, min_troops)
-                    adb_keyevent(device, 4)  # BACK to close menu
-                    time.sleep(1)
-                    break
-
-                attack_count += 1
-                config.set_device_status(
-                    device,
-                    f"Attacking Tower ({attack_count})..."
-                )
-
-                if not _do_depart(device, log, "attack"):
-                    log.warning("Attack depart failed — stopping attacks")
-                    adb_keyevent(device, 4)
-                    time.sleep(1)
-                    break
-
-                log.info("Attack %d deployed to (%d, %d)",
-                         attack_count, target_row, target_col)
+                # --- In attack mode: wait for capture, then recall ---
+                if action_type == "attack":
+                    config.set_device_status(device,
+                        f"Waiting for Capture ({target_row},{target_col})...")
+                    captured = _wait_for_capture(
+                        device, target_row, target_col, my_team, log, stop_check)
+                    if stop_check():
+                        break
+                    if captured:
+                        log.info("Tower (%d,%d) captured — recalling troop",
+                                 target_row, target_col)
+                        config.set_device_status(device, "Recalling Troop...")
+                        from actions.quests import recall_tower_troop
+                        recall_tower_troop(device, stop_check)
+            else:
+                log.warning("Depart failed for (%d, %d)", target_row, target_col)
+                adb_keyevent(device, 4)
                 time.sleep(1)
-
-                if stop_check():
-                    break
-
-                # Re-tap tower to check if it flipped to reinforce
-                menu_type = _tap_tower_and_detect_menu(device, log, timeout=8)
-                if menu_type is None:
-                    log.info("Tower menu didn't reopen after attack %d — done", attack_count)
-                    break
-                if menu_type == "reinforce":
-                    log.info("Tower flipped to reinforce after %d attack(s)", attack_count)
-                    actual_action = "reinforce"
-                    break
-                # Still "attack" — loop continues
-
-            if stop_check():
-                break
-
-            # Reinforce: capture the tower (spend even the last troop)
-            if actual_action == "reinforce":
-                troops = troops_avail(device)
-                if troops <= 0:
-                    log.warning("No troops left to reinforce — skipping")
-                    adb_keyevent(device, 4)
-                    time.sleep(1)
-                else:
-                    config.set_device_status(device, "Reinforcing Tower...")
-                    if _do_depart(device, log, "reinforce"):
-                        log.info("Cycle complete — reinforced (%d, %d) after %d attack(s)",
-                                 target_row, target_col, attack_count)
-                    else:
-                        log.warning("Reinforce depart failed")
-                        adb_keyevent(device, 4)
-                        time.sleep(1)
 
             # --- Wait before next cycle ---
             config.set_device_status(device, "Waiting for Troops...")
@@ -919,12 +982,13 @@ def auto_occupy_loop(device, stop_check, skip_troop_gate=False):
                 break
 
         except Exception as e:
-            log.error("Error in auto occupy loop: %s", e, exc_info=True)
-            save_failure_screenshot(device, "occupy_exception")
+            log.error("Error in frontline occupy loop: %s", e, exc_info=True)
+            save_failure_screenshot(device, "frontline_occupy_exception")
             if _interruptible_sleep(10, stop_check):
                 break
 
-    log.info("Auto occupy stopped")
+    log.info("Frontline occupy stopped")
+
 
 # ============================================================
 # DEBUG FUNCTIONS

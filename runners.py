@@ -10,7 +10,7 @@ Key exports:
     run_auto_titan        — Rally Titan loop with EG reset
     run_auto_groot        — Join Groot Rally loop
     run_auto_pass         — Pass battle (rally/reinforce/join war)
-    run_auto_occupy       — Territory auto-occupy wrapper
+    run_frontline_occupy  — Frontline occupy wrapper
     run_auto_reinforce    — Reinforce Throne loop
     run_auto_reinforce_ally — Reinforce ally castles from protocol viewport data
     run_auto_mithril      — Standalone mithril mining loop
@@ -42,7 +42,7 @@ from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop,
                      reinforce_ally_castle, capture_home_coords)
-from territory import auto_occupy_loop
+from territory import frontline_occupy_loop
 
 
 # ============================================================
@@ -385,18 +385,12 @@ def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
     dlog.info("Auto Pass Battle stopped")
 
 
-def run_auto_occupy(device, stop_event):
-    config.set_device_status(device, "Occupying Towers...")
-    auto_occupy_loop(device, stop_check=stop_event.is_set)
+def run_frontline_occupy(device, stop_event):
+    config.set_device_status(device, "Frontline Occupy...")
+    frontline_occupy_loop(device, stop_check=stop_event.is_set)
     config.clear_device_status(device)
-    get_logger("runner", device).info("Auto Occupy stopped")
+    get_logger("runner", device).info("Frontline Occupy stopped")
 
-
-def run_debug_occupy(device, stop_event):
-    config.set_device_status(device, "Debug Occupy...")
-    auto_occupy_loop(device, stop_check=stop_event.is_set, skip_troop_gate=True)
-    config.clear_device_status(device)
-    get_logger("runner", device).info("Debug Occupy stopped")
 
 
 def run_auto_reinforce(device, stop_event, interval, variation):
@@ -701,13 +695,12 @@ _MODE_LABELS = {
     "auto_titan":     "Rally Titans",
     "auto_groot":     "Join Groot",
     "auto_pass":      "Pass Battle",
-    "auto_occupy":    "Occupy Towers",
+    "frontline_occupy":  "Frontline Occupy",
     "auto_reinforce":      "Reinforce Throne",
     "auto_reinforce_ally": "Reinforce Ally",
     "auto_mithril":        "Mine Mithril",
     "auto_gold":      "Gather Gold",
     "auto_esb":       "Phantom Clash",
-    "debug_occupy":   "Debug Occupy",
 }
 
 
