@@ -346,6 +346,11 @@ SETTINGS_RULES = {
     "frontline_enemy_teams": {"type": list},  # list of team color strings (frontline occupy)
     "frontline_occupy_action": {"type": str, "choices": ["attack", "reinforce"]},
     "mode":                  {"type": str, "choices": ["bl", "rw"]},
+    # Territory zone data — dicts, validated structurally not per-field
+    "territory_passes":      {"type": dict},
+    "territory_mutual_zones": {"type": dict},
+    "territory_safe_zones":  {"type": dict},
+    "territory_home_zones":  {"type": dict},
 }
 
 

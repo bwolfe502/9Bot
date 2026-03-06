@@ -2,49 +2,7 @@
 
 import pytest
 from config import validate_settings, SETTINGS_RULES
-
-
-# Mirror of main.DEFAULTS — kept here so tests don't depend on main.py / tkinter
-DEFAULTS = {
-    "auto_heal": True,
-    "auto_restore_ap": False,
-    "ap_use_free": True,
-    "ap_use_potions": True,
-    "ap_allow_large_potions": True,
-    "ap_use_gems": False,
-    "ap_gem_limit": 0,
-    "min_troops": 0,
-    "variation": 0,
-    "titan_interval": 30,
-    "groot_interval": 30,
-    "reinforce_interval": 30,
-    "pass_interval": 30,
-    "pass_mode": "Rally Joiner",
-    "my_team": "yellow",
-    "enemy_team": "green",
-    "enemy_teams": ["yellow"],
-    "mode": "bl",
-    "verbose_logging": False,
-    "eg_rally_own": True,
-    "titan_rally_own": True,
-    "mithril_interval": 19,
-    "web_dashboard": False,
-    "gather_enabled": True,
-    "gather_mine_level": 4,
-    "gather_max_troops": 3,
-    "tower_quest_enabled": False,
-    "remote_access": True,
-    "auto_upload_logs": False,
-    "upload_interval_hours": 24,
-    "collect_training_data": False,
-    "protocol_enabled": False,
-    "home_x": 0,
-    "home_z": 0,
-    "max_reinforce_distance": 55,
-    "chat_mirror": True,
-    "chat_translate_enabled": False,
-    "chat_translate_api_key": "",
-}
+from settings import DEFAULTS
 
 
 class TestValidPassthrough:
@@ -208,20 +166,20 @@ class TestStringChoicesValidation:
     def test_str_invalid_choice(self):
         settings = {**DEFAULTS, "mode": "pvp"}
         cleaned, warnings = validate_settings(settings, DEFAULTS)
-        assert cleaned["mode"] == "bl"  # reset to default
+        assert cleaned["mode"] == DEFAULTS["mode"]  # reset to default
         assert len(warnings) == 1
         assert "mode" in warnings[0]
 
     def test_str_wrong_type_int(self):
         settings = {**DEFAULTS, "my_team": 1}
         cleaned, warnings = validate_settings(settings, DEFAULTS)
-        assert cleaned["my_team"] == "yellow"
+        assert cleaned["my_team"] == DEFAULTS["my_team"]
         assert len(warnings) == 1
 
     def test_str_case_sensitive(self):
         settings = {**DEFAULTS, "pass_mode": "rally joiner"}
         cleaned, warnings = validate_settings(settings, DEFAULTS)
-        assert cleaned["pass_mode"] == "Rally Joiner"  # reset to default
+        assert cleaned["pass_mode"] == DEFAULTS["pass_mode"]  # reset to default
         assert len(warnings) == 1
 
 
