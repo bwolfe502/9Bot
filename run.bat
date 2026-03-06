@@ -27,20 +27,26 @@ if not exist "platform-tools\adb.exe" (
   )
 )
 
-REM Check Python
-py -V >nul 2>&1
+REM Check Python 3.13
+py -3.13 -V >nul 2>&1
 if errorlevel 1 (
   echo.
-  echo ERROR: Python Launcher "py" not found.
-  echo Install Python from https://python.org and make sure "Python Launcher" is checked.
-  pause
-  exit /b 1
+  echo Python 3.13 not found. Installing...
+  winget install Python.Python.3.13 --accept-package-agreements --accept-source-agreements
+  if errorlevel 1 (
+    echo.
+    echo ERROR: Failed to install Python 3.13.
+    echo Install manually from https://python.org and make sure "Python Launcher" is checked.
+    pause
+    exit /b 1
+  )
+  echo Python 3.13 installed successfully.
 )
 REM Create venv if missing
 if not exist ".venv\Scripts\python.exe" (
   echo.
   echo Creating virtual environment...
-  py -m venv .venv
+  py -3.13 -m venv .venv
   if errorlevel 1 (
     echo ERROR: Failed to create venv.
     pause
@@ -51,9 +57,9 @@ echo.
 echo Activating venv...
 call ".venv\Scripts\activate.bat" >nul 2>&1
 
-REM Check if first-time setup (easyocr not installed yet)
+REM Check if first-time setup (paddleocr not installed yet)
 set FIRST_RUN=0
-py -c "import easyocr" >nul 2>&1
+py -c "import paddleocr" >nul 2>&1
 if errorlevel 1 set FIRST_RUN=1
 
 if %FIRST_RUN%==1 (
@@ -92,6 +98,37 @@ if %FIRST_RUN%==1 (
   )
 )
 echo Done!
+
+REM Protocol interception setup prompt (first run only)
+if not exist ".venv\.protocol_setup_done" (
+  echo.
+  echo ==========================================
+  echo To run properly 9Bot needs to have protocol
+  echo interception installed. Would you like to
+  echo continue?
+  echo ==========================================
+  echo.
+  choice /C YN /M "Install protocol interception"
+  if !errorlevel!==1 (
+    echo.
+    echo Starting protocol setup...
+    echo Make sure BlueStacks is up and running and that KG is installed.
+    echo Do not have the game running during this step. Just have BlueStacks open.
+    echo.
+    py protocol\patch_apk.py
+    if errorlevel 1 (
+      echo.
+      echo WARNING: Protocol setup failed. You can retry later from the Debug page.
+    ) else (
+      echo.
+      echo Protocol interception installed successfully!
+    )
+  ) else (
+    echo.
+    echo Skipped. You can set up protocol interception later from the Debug page.
+  )
+  echo. > ".venv\.protocol_setup_done"
+)
 
 echo.
 py updater.py
