@@ -477,7 +477,10 @@ def apply_settings(settings):
     config.MITHRIL_INTERVAL = settings.get("mithril_interval", 19)
     for dev_id, ts in settings.get("last_mithril_time", {}).items():
         try:
-            config.LAST_MITHRIL_TIME[dev_id] = float(ts)
+            ts_f = float(ts)
+            interval = config.get_device_config(dev_id, "mithril_interval")
+            if time.time() - ts_f < interval * 60:
+                config.LAST_MITHRIL_TIME[dev_id] = ts_f
         except (ValueError, TypeError):
             pass
     from botlog import set_console_verbose
