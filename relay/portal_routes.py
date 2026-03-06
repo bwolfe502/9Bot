@@ -581,6 +581,71 @@ body {
 }
 """
 
+# Minimal CSS for device cards when the bot's style.css can't be loaded.
+# The bot's stylesheet overrides these when available.
+_DASHBOARD_FALLBACK_CSS = """
+main { max-width: 600px; margin: 0 auto; padding: 12px; }
+.device-grid { display: flex; flex-direction: column; gap: 12px; }
+.card, .device-card {
+    background: #1a1a2e; border-radius: 12px; padding: 16px;
+    border: 1px solid rgba(255,255,255,0.06);
+}
+.device-card-offline { opacity: 0.6; }
+.device-top { margin-bottom: 8px; }
+.device-name-row { display: flex; align-items: center; justify-content: space-between; }
+.device-name-row strong { font-size: 15px; }
+.device-troops { font-size: 12px; color: #889; }
+.device-status-bar { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.status-text { font-size: 12px; color: #889; }
+.status-offline { color: #666; }
+.status-active { color: #64d8ff; }
+.status-stopping { color: #ff6b6b; }
+.status-waiting { color: #ffb74d; }
+.section-label { font-size: 11px; color: #556; font-weight: 600; margin: 8px 0 4px; }
+.troop-slots, .quest-tracking { min-height: 20px; }
+.troop-summary { display: inline-block; font-size: 11px; padding: 2px 8px;
+    border-radius: 6px; margin: 2px; background: rgba(255,255,255,0.05); }
+.controls-header, .events-header { display: flex; align-items: center;
+    justify-content: space-between; padding: 8px 0; cursor: pointer;
+    font-size: 12px; font-weight: 600; color: #889; }
+.auto-columns { display: flex; gap: 12px; }
+.auto-column { flex: 1; }
+.auto-subheader { font-size: 10px; color: #556; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px; }
+.auto-row { display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 0; }
+.auto-label { font-size: 12px; color: #aab; }
+.toggle { width: 36px; height: 20px; border-radius: 10px; border: none;
+    background: #333; cursor: pointer; position: relative; transition: background 0.2s; }
+.toggle.on { background: #2196f3; }
+.toggle::after { content: ''; position: absolute; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; top: 2px; left: 2px; transition: left 0.2s; }
+.toggle.on::after { left: 18px; }
+.control-pill { display: inline-block; font-size: 10px; padding: 3px 8px;
+    border-radius: 6px; margin: 2px; background: rgba(255,255,255,0.04);
+    color: #667; cursor: pointer; }
+.control-pill.pill-on { background: rgba(33,150,243,0.15); color: #64d8ff; }
+.bottom-bar { display: flex; gap: 8px; }
+.bottom-btn { padding: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+    background: #1a1a2e; color: #aab; font-size: 12px; font-weight: 600; cursor: pointer; }
+.bottom-btn-danger { background: rgba(255,80,80,0.08); color: #ff6b6b;
+    border-color: rgba(255,80,80,0.15); }
+.live-view-section { margin-top: 8px; }
+.live-view-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.live-view-toggle, .manual-control-toggle, .chat-view-toggle, .restart-game-btn,
+.emu-step-btn { padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08);
+    background: #1a1a2e; color: #889; font-size: 11px; cursor: pointer; }
+.actions-section { margin-top: 16px; }
+.offline-section-header { display: flex; align-items: center; justify-content: space-between;
+    padding: 8px 0; cursor: pointer; color: #556; font-size: 12px; }
+.muted { color: #556; font-size: 12px; }
+.btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer;
+    font-size: 13px; font-weight: 600; text-decoration: none; display: inline-block; }
+.btn-primary { background: rgba(100,216,255,0.12); color: #64d8ff; }
+.btn-outline { background: transparent; border: 1px solid rgba(255,255,255,0.1); color: #aab; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+"""
+
 
 def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csrf: str = "",
                             css_bot: str = "") -> str:
@@ -613,7 +678,8 @@ def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csr
         '</div></a>'
     )
 
-    css_link = f'<link rel="stylesheet" href="/{css_bot}/static/style.css?v=96">' if css_bot else ""
+    bot_online = css_bot and css_bot in _active_bots and not _active_bots[css_bot].closed
+    css_link = f'<link rel="stylesheet" href="/{css_bot}/static/style.css?v=96">' if bot_online else ""
 
     return (
         f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
@@ -622,6 +688,7 @@ def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csr
         f"<meta name='apple-mobile-web-app-capable' content='yes'>"
         f"<title>{title} — 9Bot Portal</title>"
         f"<style>{_PORTAL_NAV_CSS}</style>"
+        f"<style>{_DASHBOARD_FALLBACK_CSS}</style>"
         f"{css_link}"
         f"</head><body>"
         f'<div class="portal-nav">{logo}{nav_links}</div>'
@@ -794,12 +861,14 @@ async def page_dashboard(request: web.Request) -> web.Response:
     offline_cards = ""
     for bot_name, dhash, label, state in all_devices:
         api_base = f"/{bot_name}/d/{dhash}"
-        if state == "online":
-            cards_html += _device_card_online(dhash, api_base, label, "", pills, toggles, events)
-        elif state == "offline":
-            offline_cards += _device_card_offline(dhash, api_base, label, "")
-        else:
+        if state == "disconnected":
             offline_cards += _device_card_disconnected(dhash, label, "")
+        elif state == "offline":
+            # Render full card so JS can populate sections when device comes online
+            offline_cards += _device_card_online(
+                dhash, api_base, label, "", pills, toggles, events, offline=True)
+        else:
+            cards_html += _device_card_online(dhash, api_base, label, "", pills, toggles, events)
 
     offline_section = _offline_section_html(
         [(s,) for _, _, _, s in all_devices],
@@ -984,7 +1053,10 @@ function refreshAllDevices() {
         var apiBase = card.getAttribute('data-api');
         var dh = card.getAttribute('data-dhash');
         fetch(apiBase + '/api/status', {credentials:'include'})
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) throw new Error(r.status);
+                return r.json();
+            })
             .then(function(data) {
                 if (!data.devices || !data.devices[0]) return;
                 var dev = data.devices[0];
@@ -1109,7 +1181,14 @@ function refreshAllDevices() {
                     else { if (running) pill.classList.add('pill-on'); else pill.classList.remove('pill-on'); }
                 });
             })
-            .catch(function() {});
+            .catch(function() {
+                // Device unreachable (404/502/network error) — show as offline
+                card.classList.add('device-card-offline');
+                var st = card.querySelector('.status-text');
+                if (st) { st.textContent = 'Offline'; st.className = 'status-text status-offline'; }
+                card.querySelectorAll('.device-auto-modes,.device-events-section,.live-view-section,.troop-label,.troop-slots,.quest-header,.quest-tracking,.chat-feed,.bottom-bar').forEach(function(el) { el.style.display = 'none'; });
+                _moveToOffline(card);
+            });
     });
 }
 refreshAllDevices();
@@ -1627,13 +1706,15 @@ def _build_card_controls() -> tuple[str, str, str]:
 def _device_card_online(
     dhash: str, api_base: str, label: str, bot_label: str,
     pills: str, toggles: str, events: str,
+    offline: bool = False,
 ) -> str:
     bot_label_html = (
         f'<span style="font-size:10px;color:#556;font-weight:600">{bot_label}</span>'
         if bot_label else ""
     )
+    offline_cls = " device-card-offline" if offline else ""
     return (
-        f'<div class="card device-card" data-dhash="{dhash}" data-api="{api_base}">'
+        f'<div class="card device-card{offline_cls}" data-dhash="{dhash}" data-api="{api_base}">'
         f'<div class="device-top">'
         f'<div class="device-name-row">'
         f'<strong>{label}</strong>'
@@ -1856,12 +1937,14 @@ async def _page_dashboard_admin(
     offline_cards = ""
     for bot_name, bot_label, dhash, label, state in all_devices:
         api_base = f"/{bot_name}/d/{dhash}"
-        if state == "online":
-            cards_html += _device_card_online(dhash, api_base, label, bot_label, pills, toggles, events)
-        elif state == "offline":
-            offline_cards += _device_card_offline(dhash, api_base, label, bot_label)
-        else:
+        if state == "disconnected":
             offline_cards += _device_card_disconnected(dhash, label, bot_label)
+        elif state == "offline":
+            # Render full card so JS can populate sections when device comes online
+            offline_cards += _device_card_online(
+                dhash, api_base, label, bot_label, pills, toggles, events, offline=True)
+        else:
+            cards_html += _device_card_online(dhash, api_base, label, bot_label, pills, toggles, events)
 
     offline_section = _offline_section_html(
         [(s,) for _, _, _, _, s in all_devices],  # just need state as last element
