@@ -38,6 +38,7 @@ from __future__ import annotations
 import collections
 import logging
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -76,6 +77,9 @@ _GADGET_PORT = 27042
 # Reconnect delays (seconds).
 _RECONNECT_DELAY_FAILED = 10.0
 _RECONNECT_DELAY_LOST = 5.0
+_RECONNECT_DELAY_MAX = 120.0       # cap for exponential backoff
+_RECONNECT_BACKOFF_FACTOR = 2.0    # multiplier per consecutive failure
+_MAX_PERMANENT_FAILURES = 3        # give up on version-mismatch errors
 
 # CompressedMessage msg_id (BKDR hash of bare "CompressedMessage").
 _COMPRESSED_MSG_NAME = "CompressedMessage"
@@ -256,9 +260,14 @@ class ProtocolInterceptor:
             log.info("Hooks loaded — interception active")
             return True
 
-        except Exception:
-            log.exception("Failed to start Frida interception")
+        except Exception as exc:
             self._cleanup()
+            # Re-raise ProtocolError (version mismatch) — caller should
+            # not retry indefinitely on these.
+            _frida = sys.modules.get("frida")
+            if _frida and isinstance(exc, _frida.ProtocolError):
+                raise
+            log.exception("Failed to start Frida interception")
             return False
 
     def stop(self) -> None:
@@ -674,6 +683,10 @@ class InterceptorThread(threading.Thread):
         """Main loop: connect, handle disconnects, auto-reconnect."""
         log.info("InterceptorThread started (%s)", self.name)
 
+        consecutive_fails = 0
+        permanent_fails = 0
+        delay = _RECONNECT_DELAY_FAILED
+
         while not self._stop_event.is_set():
             if self._pre_connect is not None:
                 try:
@@ -687,19 +700,57 @@ class InterceptorThread(threading.Thread):
                 event_bus=self.event_bus,
             )
 
-            success = self._interceptor.start()
+            try:
+                success = self._interceptor.start()
+            except Exception as exc:
+                # ProtocolError = version mismatch or incompatible gadget.
+                # These won't fix themselves — limit retries.
+                success = False
+                permanent_fails += 1
+                if permanent_fails == 1:
+                    log.error(
+                        "Frida protocol error (attempt %d/%d): %s",
+                        permanent_fails, _MAX_PERMANENT_FAILURES, exc,
+                    )
+                if permanent_fails >= _MAX_PERMANENT_FAILURES:
+                    log.error(
+                        "Giving up after %d permanent failures — "
+                        "re-patch the APK or update the frida Python package "
+                        "to match the Gadget version",
+                        permanent_fails,
+                    )
+                    break
 
             if not success:
-                log.warning(
-                    "Failed to connect — retrying in %.0fs",
-                    _RECONNECT_DELAY_FAILED,
-                )
+                consecutive_fails += 1
                 self._interceptor = None
-                if self._stop_event.wait(timeout=_RECONNECT_DELAY_FAILED):
+
+                # Log full message on first failure, one-liner afterwards.
+                if consecutive_fails == 1:
+                    log.warning(
+                        "Failed to connect — retrying in %.0fs", delay,
+                    )
+                elif consecutive_fails % 10 == 0:
+                    log.warning(
+                        "Still failing to connect (%d attempts) — "
+                        "retrying in %.0fs",
+                        consecutive_fails, delay,
+                    )
+
+                if self._stop_event.wait(timeout=delay):
                     break
+
+                # Exponential backoff, capped.
+                delay = min(delay * _RECONNECT_BACKOFF_FACTOR,
+                            _RECONNECT_DELAY_MAX)
                 continue
 
-            # Connected — wait until disconnect or stop signal.
+            # Connected — reset backoff state.
+            consecutive_fails = 0
+            permanent_fails = 0
+            delay = _RECONNECT_DELAY_FAILED
+
+            # Wait until disconnect or stop signal.
             while (
                 not self._stop_event.is_set()
                 and self._interceptor is not None
