@@ -76,6 +76,11 @@ if not errorlevel 1 (
   py -m pip uninstall easyocr torch torchvision torchaudio -y -qq 2>nul
   echo Done.
 )
+REM Remove chardet if >= 6.0 (triggers requests compatibility warning)
+py -c "import chardet; exit(0 if int(chardet.__version__.split('.')[0])>=6 else 1)" >nul 2>&1
+if not errorlevel 1 (
+  py -m pip uninstall chardet -y -qq 2>nul
+)
 
 REM Check if first-time setup (paddleocr not installed yet)
 set FIRST_RUN=0
