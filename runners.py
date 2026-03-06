@@ -41,7 +41,7 @@ from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      check_quests, rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop,
-                     reinforce_ally_castle, capture_home_coords,
+                     reinforce_ally_castle, capture_home_coords, ensure_shield,
                      get_eg_rally_state, rally_eg_resume)
 from territory import frontline_occupy_loop
 
@@ -537,6 +537,15 @@ def run_auto_reinforce_ally(device, stop_event):
         config.clear_device_status(device)
         return
 
+    # Apply shield before sending troops out.
+    config.set_device_status(device, "Checking Shield...")
+    with lock:
+        ensure_shield(device, stop_check)
+
+    if stop_check():
+        config.clear_device_status(device)
+        return
+
     def _on_spotted(entity):
         power = entity.get("_power", 0)
         pending.put((-power, time.monotonic(), entity))
@@ -585,6 +594,11 @@ def run_auto_reinforce_ally(device, stop_event):
                 dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) dist=%.1f — reinforcing", name or eid, power, x, z, dist)
             else:
                 dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) — reinforcing", name or eid, power, x, z)
+            # Re-check shield before dispatching (periodic, skips if recently applied).
+            with lock:
+                ensure_shield(device, stop_check)
+            if stop_check():
+                break
             config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)

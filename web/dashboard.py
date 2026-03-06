@@ -1211,6 +1211,20 @@ def create_app():
             })
         return jsonify({"devices": devices_status})
 
+    @app.route("/api/shield-status")
+    def api_shield_status():
+        """Check shield status for a device via protocol entity data."""
+        device_id = request.args.get("device_id")
+        if not device_id:
+            return jsonify({"error": "device_id required"}), 400
+        from startup import get_protocol_shield_status
+        remaining = get_protocol_shield_status(device_id)
+        return jsonify({
+            "device_id": device_id,
+            "shield_remaining_s": remaining,
+            "shield_active": remaining is not None and remaining > 0,
+        })
+
     @app.route("/api/protocol-message-counts")
     def api_protocol_message_counts():
         """Return full protocol message-type counters for a specific device."""
