@@ -587,16 +587,18 @@ def create_app():
 
     # Cache device list to avoid spamming ADB on every poll
     _device_cache = {"devices": [], "instances": {}, "emu_running": {}, "ts": 0}
+    _device_cache_lock = threading.Lock()
     _DEVICE_CACHE_TTL = 15  # seconds
 
     def _cached_devices():
-        now = time.time()
-        if now - _device_cache["ts"] > _DEVICE_CACHE_TTL:
-            _device_cache["devices"] = get_devices()
-            _device_cache["instances"] = get_emulator_instances()
-            _device_cache["emu_running"] = get_bluestacks_running()
-            _device_cache["ts"] = now
-        return _device_cache["devices"], _device_cache["instances"]
+        with _device_cache_lock:
+            now = time.time()
+            if now - _device_cache["ts"] > _DEVICE_CACHE_TTL:
+                _device_cache["devices"] = get_devices()
+                _device_cache["instances"] = get_emulator_instances()
+                _device_cache["emu_running"] = get_bluestacks_running()
+                _device_cache["ts"] = now
+            return _device_cache["devices"], _device_cache["instances"]
 
     def _device_status_info(d, instances):
         """Build status dict for a single device."""
