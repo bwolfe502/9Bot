@@ -320,6 +320,7 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
     # Falls through to legacy token auth (backward compat) if no portal session
     portal_access = None
     portal_user = None
+    portal_role = None
     # Extract device_hash from URL if present (e.g. /bot/d/<hash>/...)
     _device_hash = None
     _sub_parts = sub_path.strip("/").split("/")
@@ -329,7 +330,7 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
         from portal_routes import check_portal_access, _get_user
         result = await check_portal_access(request, bot_name, _device_hash)
         if result:
-            portal_access, portal_user = result
+            portal_access, portal_user, portal_role = result
 
         # Subscription gating: if user is logged in but has no active sub,
         # redirect to pricing.  Admins and legacy token users bypass.
@@ -400,6 +401,8 @@ async def handle_http(request: web.Request) -> web.StreamResponse:
         fwd_headers["X-Portal-Access"] = portal_access
     if portal_user:
         fwd_headers["X-Portal-User"] = portal_user
+    if portal_role:
+        fwd_headers["X-Portal-Role"] = portal_role
 
     envelope = {
         "id": req_id,

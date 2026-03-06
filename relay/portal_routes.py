@@ -4794,10 +4794,11 @@ async def api_stripe_webhook(request: web.Request) -> web.Response:
 
 async def check_portal_access(
     request: web.Request, bot_name: str, device_hash: str | None = None,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str] | None:
     """Check if the request has portal-based access to a bot/device.
 
-    Returns (access_level, username) if authorized, or None if no portal session.
+    Returns (access_level, username, role) if authorized, or None if no portal session.
+    role is "owner", "admin", or "member".
     This does NOT check legacy token auth — that's handled separately.
     Shared/community devices grant full access to any logged-in user.
     """
@@ -4805,13 +4806,23 @@ async def check_portal_access(
     if not user:
         return None
 
+    # Determine role
+    if user["is_admin"]:
+        role = "admin"
+    else:
+        bot = await asyncio.to_thread(db.get_bot, bot_name)
+        if bot and bot.get("owner_id") == user["user_id"]:
+            role = "owner"
+        else:
+            role = "member"
+
     # Check if this is a shared/community device — full access for any logged-in user
     if device_hash:
         is_shared = await asyncio.to_thread(db.is_device_shared, bot_name, device_hash)
         if is_shared:
-            return "full", user["username"]
+            return "full", user["username"], role
 
     access = await asyncio.to_thread(db.check_access, user["user_id"], bot_name, device_hash)
     if access:
-        return access, user["username"]
+        return access, user["username"], role
     return None

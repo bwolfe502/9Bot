@@ -1898,9 +1898,11 @@ def create_app():
             # Check portal header first (injected by relay proxy)
             portal_access = request.headers.get("X-Portal-Access")
             if portal_access in ("full", "readonly"):
+                portal_role = request.headers.get("X-Portal-Role", "member")
                 kwargs["device"] = device
                 kwargs["token"] = ""
                 kwargs["readonly"] = (portal_access == "readonly")
+                kwargs["is_owner"] = portal_role in ("owner", "admin")
                 return f(dhash, *args, **kwargs)
             # Fall back to legacy token auth
             token = request.args.get("token", "")
@@ -1911,6 +1913,7 @@ def create_app():
             kwargs["device"] = device
             kwargs["token"] = token
             kwargs["readonly"] = (access == "readonly")
+            kwargs["is_owner"] = (access == "full")
             return f(dhash, *args, **kwargs)
         return wrapper
 
@@ -1932,7 +1935,7 @@ def create_app():
 
     @app.route("/d/<dhash>")
     @require_device_token
-    def device_index(dhash, device=None, token=None, readonly=False):
+    def device_index(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Friend's filtered dashboard — single device only."""
         cleanup_dead_tasks()
         devs, instances = _cached_devices()
@@ -1973,17 +1976,18 @@ def create_app():
         mode = settings.get("mode", "bl")
         auto_groups = AUTO_MODES_BL if mode == "bl" else AUTO_MODES_HS
 
-        # Filter by shared permissions
-        dev_settings = settings.get("device_settings", {}).get(device, {})
-        allowed_modes = dev_settings.get("shared_modes")  # None = all
+        # Filter by shared permissions (owners/admins see all)
+        if not is_owner:
+            dev_settings = settings.get("device_settings", {}).get(device, {})
+            allowed_modes = dev_settings.get("shared_modes")  # None = all
 
-        if allowed_modes is not None:
-            allowed_set = set(allowed_modes)
-            auto_groups = []
-            for grp in (AUTO_MODES_BL if mode == "bl" else AUTO_MODES_HS):
-                filtered = [m for m in grp["modes"] if m["key"] in allowed_set]
-                if filtered:
-                    auto_groups.append({"group": grp["group"], "modes": filtered})
+            if allowed_modes is not None:
+                allowed_set = set(allowed_modes)
+                auto_groups = []
+                for grp in (AUTO_MODES_BL if mode == "bl" else AUTO_MODES_HS):
+                    filtered = [m for m in grp["modes"] if m["key"] in allowed_set]
+                    if filtered:
+                        auto_groups.append({"group": grp["group"], "modes": filtered})
 
         return render_template("index.html",
                                devices=device_info,
@@ -2002,7 +2006,7 @@ def create_app():
 
     @app.route("/d/<dhash>/api/status")
     @require_device_token
-    def device_api_status(dhash, device=None, token=None, readonly=False):
+    def device_api_status(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Status for one device only."""
         cleanup_dead_tasks()
         devs, instances = _cached_devices()
@@ -2048,7 +2052,7 @@ def create_app():
     @app.route("/d/<dhash>/tasks/start", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_start_task(dhash, device=None, token=None, readonly=False):
+    def device_start_task(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Start task on this device only."""
         task_name = request.form.get("task_name")
         task_type = request.form.get("task_type", "oneshot")
@@ -2059,16 +2063,17 @@ def create_app():
         if device not in known:
             abort(404)
 
-        # Enforce shared permissions
-        dev_settings = settings.get("device_settings", {}).get(device, {})
-        if task_type == "auto":
-            allowed_modes = dev_settings.get("shared_modes")
-            if allowed_modes is not None and task_name not in allowed_modes:
-                abort(403)
-        else:
-            allowed_actions = dev_settings.get("shared_actions")
-            if allowed_actions is not None and task_name not in allowed_actions:
-                abort(403)
+        # Enforce shared permissions (owners/admins bypass)
+        if not is_owner:
+            dev_settings = settings.get("device_settings", {}).get(device, {})
+            if task_type == "auto":
+                allowed_modes = dev_settings.get("shared_modes")
+                if allowed_modes is not None and task_name not in allowed_modes:
+                    abort(403)
+            else:
+                allowed_actions = dev_settings.get("shared_actions")
+                if allowed_actions is not None and task_name not in allowed_actions:
+                    abort(403)
 
         if task_type == "auto":
             mode_key = task_name
@@ -2104,7 +2109,7 @@ def create_app():
     @app.route("/d/<dhash>/tasks/stop", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_stop_task(dhash, device=None, token=None, readonly=False):
+    def device_stop_task(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Stop a specific task on this device."""
         task_key = request.form.get("task_key", "")
         # Only allow stopping tasks belonging to this device
@@ -2115,7 +2120,7 @@ def create_app():
     @app.route("/d/<dhash>/tasks/stop-mode", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_stop_mode(dhash, device=None, token=None, readonly=False):
+    def device_stop_mode(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Stop an auto-mode on this device."""
         mode_key = request.form.get("mode_key")
         if mode_key:
@@ -2130,7 +2135,7 @@ def create_app():
     @app.route("/d/<dhash>/tasks/stop-all", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_stop_all(dhash, device=None, token=None, readonly=False):
+    def device_stop_all(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Stop all tasks on this device only."""
         for key in list(running_tasks.keys()):
             if key.startswith(device):
@@ -2141,7 +2146,7 @@ def create_app():
     @app.route("/d/<dhash>/api/restart-game", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_restart_game(dhash, device=None, token=None, readonly=False):
+    def device_restart_game(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Force-stop and relaunch the game on this device."""
         for key in list(running_tasks.keys()):
             if key.startswith(device):
@@ -2153,20 +2158,20 @@ def create_app():
     @app.route("/d/<dhash>/api/emulator/start", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_emulator_start(dhash, device=None, token=None, readonly=False):
+    def device_emulator_start(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Start emulator for this device."""
         return _do_emulator_start(device_id=device)
 
     @app.route("/d/<dhash>/api/emulator/stop", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_emulator_stop(dhash, device=None, token=None, readonly=False):
+    def device_emulator_stop(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Stop emulator for this device."""
         return _do_emulator_stop(device_id=device)
 
     @app.route("/d/<dhash>/api/chat")
     @require_device_token
-    def device_api_chat(dhash, device=None, token=None, readonly=False):
+    def device_api_chat(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Chat messages for this device (with mirroring from protocol-active devices)."""
         channel = request.args.get("channel")
         from startup import get_protocol_chat_messages
@@ -2221,7 +2226,7 @@ def create_app():
 
     @app.route("/d/<dhash>/api/screenshot")
     @require_device_token
-    def device_screenshot(dhash, device=None, token=None, readonly=False):
+    def device_screenshot(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Screenshot of this device. Returns JPEG if quality param set, else PNG."""
         import io
         import cv2
@@ -2246,7 +2251,7 @@ def create_app():
     @app.route("/d/<dhash>/api/tap", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_tap(dhash, device=None, token=None, readonly=False):
+    def device_tap(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Forward a screen tap to this device via ADB (full access only)."""
         data = request.get_json(silent=True) or {}
         try:
@@ -2265,7 +2270,7 @@ def create_app():
 
     @app.route("/d/<dhash>/api/stream")
     @require_device_token
-    def device_stream(dhash, device=None, token=None, readonly=False):
+    def device_stream(dhash, device=None, token=None, readonly=False, is_owner=False):
         """MJPEG stream for this device (friend view)."""
         import cv2
         from flask import Response
@@ -2300,7 +2305,7 @@ def create_app():
     @app.route("/d/<dhash>/settings")
     @require_device_token
     @require_full_access
-    def device_settings(dhash, device=None, token=None, readonly=False):
+    def device_settings(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Per-device settings page accessible via shared token."""
         detected, instances = _cached_devices()
         settings = _load_settings()
@@ -2327,12 +2332,13 @@ def create_app():
                                device_hash=dhash,
                                device_token=token,
                                schedule_modes=schedule_modes,
-                               device_troop_count=device_troop_count)
+                               device_troop_count=device_troop_count,
+                               is_owner=is_owner)
 
     @app.route("/d/<dhash>/settings", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_settings_save(dhash, device=None, token=None, readonly=False):
+    def device_settings_save(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Save per-device settings from shared token view."""
         detected = _cached_devices()[0]
         if device not in detected:
@@ -2368,13 +2374,30 @@ def create_app():
                 if val is not None:
                     overrides[key] = val
 
-        # Preserve shared_modes/shared_actions from existing overrides
-        # (shared users cannot edit their own permissions)
         existing = ds.get(device, {})
-        if "shared_modes" in existing:
-            overrides["shared_modes"] = existing["shared_modes"]
-        if "shared_actions" in existing:
-            overrides["shared_actions"] = existing["shared_actions"]
+        if is_owner:
+            # Owner can edit shared permissions
+            perm_val = request.form.get("permissions_enabled", "")
+            if perm_val and perm_val != "":
+                shared_modes = []
+                for key in ALL_AUTO_MODE_KEYS:
+                    if f"perm_mode_{key}" in request.form:
+                        shared_modes.append(key)
+                overrides["shared_modes"] = shared_modes
+                shared_actions = []
+                for name in ONESHOT_FARM + ONESHOT_WAR:
+                    safe = name.replace(" ", "_")
+                    if f"perm_action_{safe}" in request.form:
+                        shared_actions.append(name)
+                overrides["shared_actions"] = shared_actions
+            else:
+                pass  # no permissions_enabled = allow everything (remove restriction)
+        else:
+            # Shared users cannot edit their own permissions
+            if "shared_modes" in existing:
+                overrides["shared_modes"] = existing["shared_modes"]
+            if "shared_actions" in existing:
+                overrides["shared_actions"] = existing["shared_actions"]
 
         ds[device] = overrides
         from config import validate_settings
@@ -2388,7 +2411,7 @@ def create_app():
     @app.route("/d/<dhash>/settings/reset", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_settings_reset(dhash, device=None, token=None, readonly=False):
+    def device_settings_reset(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Reset per-device overrides from shared token view."""
         detected = _cached_devices()[0]
         if device not in detected:
@@ -2416,7 +2439,7 @@ def create_app():
     @app.route("/d/<dhash>/api/settings/save", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_api_settings_save(dhash, device=None, token=None, readonly=False):
+    def device_api_settings_save(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Save a single per-device override via AJAX (friend view)."""
         data = request.get_json(silent=True) or {}
         key = data.get("key")
@@ -2431,7 +2454,7 @@ def create_app():
     @app.route("/d/<dhash>/api/settings/reset-key", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_api_settings_reset_key(dhash, device=None, token=None, readonly=False):
+    def device_api_settings_reset_key(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Reset a single per-device override (friend view)."""
         data = request.get_json(silent=True) or {}
         key = data.get("key")
@@ -2453,7 +2476,7 @@ def create_app():
     @app.route("/d/<dhash>/api/settings/reset-all", methods=["POST"])
     @require_device_token
     @require_full_access
-    def device_api_settings_reset_all(dhash, device=None, token=None, readonly=False):
+    def device_api_settings_reset_all(dhash, device=None, token=None, readonly=False, is_owner=False):
         """Reset all per-device overrides (friend view)."""
         from config import validate_settings
         with _settings_lock:

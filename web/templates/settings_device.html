@@ -187,7 +187,7 @@
     </div>
 
     <!-- Shared User Permissions (owner only) -->
-    {% if not device_filter %}
+    {% if not device_filter or (is_owner is defined and is_owner) %}
     <form method="post" action="{{ form_action|default('/settings/device/' + device_id) }}">
     <div class="card settings-card">
         <div class="settings-card-header">Shared Permissions</div>
