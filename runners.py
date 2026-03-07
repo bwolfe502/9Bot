@@ -618,7 +618,8 @@ def run_auto_reinforce_ally(device, stop_event):
                     dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
                     continue
 
-            # Troop reserve: keep 2 free for defense unless ally is under attack.
+            # Troop reserve: keep 2 free for normal reinforcement.
+            # Under-attack allies skip the reserve — use all available troops.
             if not is_urgent:
                 home = troops_avail(device)
                 if home <= _TROOP_RESERVE:
@@ -630,21 +631,6 @@ def run_auto_reinforce_ally(device, stop_event):
             dist_str = f" dist={dist:.1f}" if dist is not None else ""
             dlog.info("Ally %s %s: %s (power=%s) at (%s, %s)%s — reinforcing",
                       tag, name or eid, name, power, x, z, dist_str)
-
-            # If under attack and fewer than 2 troops home, recall defenders.
-            if is_urgent:
-                home = troops_avail(device)
-                if home < _TROOP_RESERVE:
-                    need = _TROOP_RESERVE - home
-                    dlog.info("Only %d troops home — recalling %d defenders for %s",
-                              home, need, name or eid)
-                    config.set_device_status(device, "Recalling Troops...")
-                    with lock:
-                        recalled = recall_defending_troops(device, count=need, stop_check=stop_check)
-                    if recalled:
-                        time.sleep(3)
-                    if stop_check():
-                        break
 
             # Re-check shield before dispatching (periodic, skips if recently applied).
             with lock:
@@ -668,6 +654,24 @@ def run_auto_reinforce_ally(device, stop_event):
                 if is_urgent:
                     attack_reinforced.add(eid)
             _log_reinforce_stat(device, name, power, dist, success)
+
+            # After urgent dispatch: replenish reserve by recalling from non-attacked castles.
+            # Skip recall if all deployed troops are at attacked castles (keep all 5 out).
+            if is_urgent and success:
+                home = troops_avail(device)
+                # Check if there are more urgent items queued — if so, don't recall yet,
+                # send reserves to those first.
+                urgent_queued = sum(1 for item in list(pending.queue) if item[0] == _PRIO_ATTACK)
+                if home < _TROOP_RESERVE and urgent_queued == 0:
+                    need = _TROOP_RESERVE - home
+                    dlog.info("Replenishing reserve: %d home, need %d — recalling defenders",
+                              home, need)
+                    config.set_device_status(device, "Recalling Troops...")
+                    with lock:
+                        recalled = recall_defending_troops(device, count=need, stop_check=stop_check)
+                    if recalled:
+                        time.sleep(3)
+
             config.set_device_status(device, "Watching for Allies...")
     except Exception as e:
         dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)
