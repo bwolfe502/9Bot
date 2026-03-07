@@ -98,23 +98,23 @@ TASK_FUNCTIONS = {
 AUTO_MODES_BL = [
     {"group": "Combat", "modes": [
         {"key": "auto_pass",           "label": "Pass Battle",
-         "help": "Joins or starts pass rallies to capture mountain passes on the territory map."},
+         "help": "Marker must be set on the target pass. Reinforces the pass if your team owns it, joins rallies if the enemy owns it. Mode can be switched between Rally Joiner and Rally Starter in Settings."},
         {"key": "auto_occupy",         "label": "Occupy Towers",
-         "help": "Scans the territory grid for enemy towers adjacent to your territory and deploys troops to capture them. Select your team and enemies in Settings."},
+         "help": "Scans the territory grid for enemy towers adjacent to your territory, teleports to them, and attacks. Owned passes must be set on the Territory Grid page or unreachable zones will be skipped. Configure your team and enemies in Settings."},
         {"key": "auto_reinforce",      "label": "Reinforce Throne",
-         "help": "Periodically sends a troop to reinforce your alliance throne in territory war."},
+         "help": "Periodically sends a troop to reinforce your alliance throne in territory war. The throne must be centered on screen before starting."},
         {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
-         "help": "Automatically reinforces nearby alliance castles in order of power level. Current area setting is roughly the area of battle around a tower. Can be changed in Settings."},
+         "help": "Automatically reinforces nearby alliance castles in order of power level. Requires protocol to be enabled. Max distance can be changed in Settings."},
     ]},
     {"group": "Farming", "modes": [
         {"key": "auto_quest",     "label": "Auto Quest",
-         "help": "Automatically completes alliance quests for you. Begins mining gold after quests are complete. Check Settings for level of gold mine, amount of troops available and if you want to use AP."},
+         "help": "Automatically completes alliance quests for you. Begins mining gold after quests are complete. Markers must be set for tower and PVP quests to work. Check Settings for gold mine level, troop count, and AP usage."},
         {"key": "auto_titan",     "label": "Rally Titans",
          "help": "Searches for and rallies Titans on the map. Restores AP if needed. AP usage can be set to on or off in Settings."},
         {"key": "auto_gold",      "label": "Gather Gold",
-         "help": "Sends troops to gather gold from gold mines on the map. Mine level and troop count configurable in Settings."},
+         "help": "Sends all troops to gather gold from mines. Mine level and max troops can be configured in Settings."},
         {"key": "auto_mithril",   "label": "Mine Mithril",
-         "help": "Sends troops to gather mithril at configurable intervals to avoid being attacked."},
+         "help": "Sends troops to gather mithril on a configurable timer. Pulls them out before the 20-minute vulnerability window. Interval can be changed in Settings."},
     ]},
 ]
 
@@ -124,22 +124,18 @@ AUTO_MODES_HS = [
          "help": "Joins Groot rally events when they appear."},
     ]},
     {"group": "Farming", "modes": [
-<<<<<<< HEAD
-        {"key": "auto_titan",     "label": "Rally Titans"},
-        {"key": "auto_gold",      "label": "Gather Gold"},
-        {"key": "auto_mithril",   "label": "Mine Mithril"},
-=======
         {"key": "auto_titan",     "label": "Rally Titans",
          "help": "Searches for and rallies Titans on the map. Restores AP if needed. AP usage can be set to on or off in Settings."},
+        {"key": "auto_gold",      "label": "Gather Gold",
+         "help": "Sends all troops to gather gold from mines. Mine level and max troops can be configured in Settings."},
         {"key": "auto_mithril",   "label": "Mine Mithril",
-         "help": "Sends troops to gather mithril at 19 minute intervals to avoid being attacked."},
->>>>>>> f22b6c7 (feat: help badges on dashboard mode toggles with tooltips setting)
+         "help": "Sends troops to gather mithril on a configurable timer. Pulls them out before the 20-minute vulnerability window. Interval can be changed in Settings."},
     ]},
     {"group": "Combat", "modes": [
         {"key": "auto_reinforce",      "label": "Reinforce Throne",
-         "help": "Periodically sends a troop to reinforce your alliance throne in territory war."},
+         "help": "Periodically sends a troop to reinforce your alliance throne in territory war. The throne must be centered on screen before starting."},
         {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
-         "help": "Automatically reinforces nearby alliance castles in order of power level. Current area setting is roughly the area of battle around a tower. Can be changed in Settings."},
+         "help": "Automatically reinforces nearby alliance castles in order of power level. Requires protocol to be enabled. Max distance can be changed in Settings."},
     ]},
 ]
 
