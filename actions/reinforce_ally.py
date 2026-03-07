@@ -60,52 +60,93 @@ def detect_shield_visual(device) -> bool:
 
 
 
+# Per-device home shield expiry: {device: expiry_timestamp}
+_shield_expiry = {}
+_SHIELD_DURATION_S = 8 * 3600  # 8 hours
+
+
 def _get_shield_remaining(device):
-    """Get shield remaining seconds from protocol countdown. Returns float or None."""
-    try:
-        from startup import get_protocol_shield_status
-    except ImportError:
+    """Get home shield remaining seconds from local countdown. Returns float or None."""
+    expiry = _shield_expiry.get(device)
+    if expiry is None:
+        # Try loading from persisted settings.
+        expiry = config.get_device_config(device, "shield_expiry")
+        if expiry:
+            _shield_expiry[device] = expiry
+    if expiry is None:
         return None
-    return get_protocol_shield_status(device)
+    return max(0.0, expiry - time.time())
+
+
+def _save_shield_expiry(device, expiry_ts):
+    """Persist shield expiry timestamp to device settings."""
+    _shield_expiry[device] = expiry_ts
+    from settings import load_settings, save_settings, DEFAULTS
+    from config import validate_settings, set_device_overrides
+    settings = load_settings()
+    ds = settings.setdefault("device_settings", {})
+    dev = ds.setdefault(device, {})
+    dev["shield_expiry"] = expiry_ts
+    settings, _ = validate_settings(settings, DEFAULTS)
+    save_settings(settings)
+    existing = config._DEVICE_CONFIG.get(device, {})
+    existing["shield_expiry"] = expiry_ts
+    set_device_overrides(device, existing)
+
+
+_RECENTER_ICON_HALF_W = 54  # 108 / 2
+_RECENTER_ICON_HALF_H = 49  # 98 / 2
+
+
+def _tap_recenter_icon(device) -> bool:
+    """Check for recenter_icon.png and tap its center. Returns True if found."""
+    screen = load_screenshot(device)
+    if screen is None:
+        return False
+    match = find_image(screen, "recenter_icon.png", threshold=0.7)
+    if not match:
+        return False
+    _, (x, y) = match[0], match[1]
+    cx = x + _RECENTER_ICON_HALF_W
+    cy = y + _RECENTER_ICON_HALF_H
+    adb_tap(device, cx, cy)
+    return True
 
 
 def _center_on_home_castle(device, stop_check=None):
-    """Center camera on home castle by switching screens. Returns True on success."""
+    """Center camera on home castle. Returns True on success.
+
+    First checks for recenter_icon.png — if found, taps its center to
+    jump home instantly.  Otherwise falls back to screen-switch method.
+    """
     log = get_logger("actions", device)
     if check_screen(device) != Screen.MAP:
         if not navigate(Screen.MAP, device):
             log.warning("ensure_shield: failed to reach MAP")
             return False
-    # Quick screen switch centers on home castle.
+    # Try recenter icon first.
+    if _tap_recenter_icon(device):
+        _interruptible_sleep(1.0, stop_check)
+        return True
+    # Fallback: screen switch centers on home castle.
     adb_tap(device, 452, 1841)
     _interruptible_sleep(0.5, stop_check)
     adb_tap(device, 987, 1841)
     _interruptible_sleep(0.8, stop_check)
+    _interruptible_sleep(1.0, stop_check)
+    # Recenter icon may reappear after screen switch — tap it if present.
+    if _tap_recenter_icon(device):
+        _interruptible_sleep(1.0, stop_check)
     return True
 
 
-def _query_shield_via_ui(device, stop_check=None):
-    """Open shield menu to trigger GetShieldInfoAck, then close.
+def _open_shield_menu(device, stop_check=None):
+    """Tap shield button in castle menu to open the shield panel.
 
-    The game sends GetShieldInfoAck when the shield menu opens.
-    Protocol handler captures ShieldEndTs for the countdown.
+    Caller must have already tapped the castle to open the castle menu.
     """
-    log = get_logger("actions", device)
-
-    # Tap castle at center.
-    adb_tap(device, 540, 960)
-    _interruptible_sleep(1.0, stop_check)
-
-    # Tap shield button in castle menu.
     adb_tap(device, 530, 1050)
     _interruptible_sleep(1.0, stop_check)
-
-    # GetShieldInfoAck should now be captured by protocol handler.
-    # Single tap exits shield screen.
-    adb_tap(device, 452, 1841)
-    _interruptible_sleep(0.5, stop_check)
-
-    log.debug("Shield menu queried — protocol should have ShieldEndTs now")
 
 
 def _apply_shield_via_ui(device, stop_check=None):
@@ -119,84 +160,70 @@ def _apply_shield_via_ui(device, stop_check=None):
     if stop_check and stop_check():
         return
 
-    # Tap shield button in castle menu.
-    adb_tap(device, 530, 1050)
-    _interruptible_sleep(2.0, stop_check)
+    # Tap shield button to open shield panel.
+    _open_shield_menu(device, stop_check)
 
     if stop_check and stop_check():
         return
 
-    # Tap 8-hour shield button.
-    adb_tap(device, 200, 965)
-    _interruptible_sleep(0.5, stop_check)
+    # Tap 8-hour shield button, wait 2s, verify via vision. Repeat until confirmed.
+    from vision import adb_swipe
+    for attempt in range(1, 16):
+        if stop_check and stop_check():
+            return
+        adb_swipe(device, 200, 965, 200, 965, duration_ms=150)
+        _interruptible_sleep(2.0, stop_check)
 
-    # Check for confirmation popup — tap confirm if present.
-    screen = load_screenshot(device)
-    if screen is not None and find_image(screen, "checked.png", threshold=0.7) is not None:
-        adb_tap(device, 540, 1200)
-        _interruptible_sleep(0.5, stop_check)
+        # Check for confirmation popup — tap confirm if present.
+        screen = load_screenshot(device)
+        if screen is not None and find_image(screen, "checked.png", threshold=0.7) is not None:
+            adb_tap(device, 540, 1200)
+            _interruptible_sleep(0.5, stop_check)
+            screen = load_screenshot(device)
 
-    log.info("8-hour shield applied")
+        # Vision check: green bar with shield icon confirms shield applied.
+        if screen is not None and find_image(screen, "succesful_shield.png", threshold=0.7) is not None:
+            _save_shield_expiry(device, time.time() + _SHIELD_DURATION_S)
+            log.info("8-hour shield applied on attempt %d (expires in 8h)", attempt)
+            break
+    else:
+        log.warning("Shield button tapped %d times but no shield confirmed", 15)
 
     # Single tap exits shield screen.
     adb_tap(device, 452, 1841)
     _interruptible_sleep(0.5, stop_check)
 
 
-# Buffer: re-apply shield when less than 1 hour remains.
-_SHIELD_BUFFER_S = 3600
-
-
 def ensure_shield(device, stop_check=None) -> bool:
-    """Ensure castle has an active shield. Uses protocol countdown.
+    """Ensure home castle has an active shield.
 
-    Flow:
-    1. Check protocol countdown — if shield has >1hr left, skip.
-    2. If no countdown data yet, open shield menu to trigger GetShieldInfoAck.
-    3. If shield expired or expiring soon, apply 8-hour shield via UI.
+    Uses a local countdown set when a shield is applied. On first call
+    (no countdown yet) or when the countdown reaches zero, applies an
+    8-hour shield via UI and starts a new countdown.
 
     Returns True if shield is active, False on failure.
     """
     log = get_logger("actions", device)
 
-    # Check existing countdown from protocol.
     remaining = _get_shield_remaining(device)
 
-    if remaining is not None and remaining > _SHIELD_BUFFER_S:
-        log.info("Shield active: %.0f min remaining — no action needed",
+    if remaining is not None and remaining > 0:
+        log.info("Home shield active: %.0f min remaining — skipping",
                  remaining / 60)
         return True
-
-    # Ensure we're on MAP centered on home castle.
-    if check_screen(device) != Screen.MAP:
-        if not _center_on_home_castle(device, stop_check):
-            return False
 
     if stop_check and stop_check():
         return False
 
-    # If we have no shield data yet, query it first.
-    if remaining is None:
-        _query_shield_via_ui(device, stop_check)
-        _interruptible_sleep(0.5, stop_check)
-        remaining = _get_shield_remaining(device)
-        if remaining is not None and remaining > _SHIELD_BUFFER_S:
-            log.info("Shield confirmed active: %.0f min remaining", remaining / 60)
-            return True
+    # Center on home castle before applying.
+    if not _center_on_home_castle(device, stop_check):
+        return False
 
-    # Shield expired or expiring soon — apply.
-    if remaining is not None:
-        log.info("Shield expiring (%.0f min left) — applying 8hr shield", remaining / 60)
-    else:
-        log.info("Shield status unknown — applying 8hr shield")
+    if stop_check and stop_check():
+        return False
 
+    log.info("Home shield expired — applying 8hr shield")
     _apply_shield_via_ui(device, stop_check)
-
-    # Verify: wait for protocol to pick up new ShieldEndTs.
-    _interruptible_sleep(2.0, stop_check)
-    remaining = _get_shield_remaining(device)
-    if remaining is not None and remaining > 0:
-        log.info("Shield verified: %.0f min remaining", remaining / 60)
     return True
 
 
