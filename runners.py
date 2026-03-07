@@ -504,6 +504,8 @@ def run_auto_reinforce_ally(device, stop_event):
     stop_check = stop_event.is_set
     lock = config.get_device_lock(device)
     reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
+    attack_reinforced = set()  # entity_ids already reinforced for an attack event
+    _TROOP_RESERVE = 2  # keep 2 troops free for defense unless under attack
     pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
     try:
@@ -591,6 +593,10 @@ def run_auto_reinforce_ally(device, stop_event):
             if not is_urgent and same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
                 dlog.debug("Ally %s on cooldown at same position, skipping", eid)
                 continue
+            # Don't reinforce the same castle twice for an attack event.
+            if is_urgent and eid in attack_reinforced:
+                dlog.debug("Ally %s already reinforced for attack, skipping", eid)
+                continue
 
             owner = entity.get("field_3") or entity.get("owner") or {}
             name = owner.get("name", "") if isinstance(owner, dict) else getattr(owner, "name", "")
@@ -610,6 +616,14 @@ def run_auto_reinforce_ally(device, stop_event):
                     continue
                 if not is_urgent and max_dist and dist > max_dist:
                     dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
+                    continue
+
+            # Troop reserve: keep 2 free for defense unless ally is under attack.
+            if not is_urgent:
+                home = troops_avail(device)
+                if home <= _TROOP_RESERVE:
+                    dlog.debug("Ally %s: only %d troops home (reserve %d) — skipping",
+                               name or eid, home, _TROOP_RESERVE)
                     continue
 
             tag = "UNDER ATTACK" if is_urgent else "spotted"
@@ -635,6 +649,8 @@ def run_auto_reinforce_ally(device, stop_event):
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
                 reinforced[eid] = (time.monotonic(), x, z)
+                if is_urgent:
+                    attack_reinforced.add(eid)
             _log_reinforce_stat(device, name, power, dist, success)
             config.set_device_status(device, "Watching for Allies...")
     except Exception as e:
