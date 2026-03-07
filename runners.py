@@ -41,7 +41,7 @@ from actions import (attack, phantom_clash_attack, reinforce_throne, target,
                      check_quests, rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop,
-                     reinforce_ally_castle, capture_home_coords, ensure_shield,
+                     reinforce_ally_castle, capture_home_coords, ensure_shield, recall_defending_troops,
                      get_eg_rally_state, rally_eg_resume)
 from territory import frontline_occupy_loop
 
@@ -630,6 +630,21 @@ def run_auto_reinforce_ally(device, stop_event):
             dist_str = f" dist={dist:.1f}" if dist is not None else ""
             dlog.info("Ally %s %s: %s (power=%s) at (%s, %s)%s — reinforcing",
                       tag, name or eid, name, power, x, z, dist_str)
+
+            # If under attack and no troops home, recall defenders from non-attacked castles.
+            if is_urgent:
+                home = troops_avail(device)
+                if home == 0:
+                    dlog.info("No troops home — recalling defenders for %s", name or eid)
+                    config.set_device_status(device, "Recalling Troops...")
+                    with lock:
+                        recalled = recall_defending_troops(device, count=2, stop_check=stop_check)
+                    if recalled:
+                        # Wait for troops to start returning.
+                        time.sleep(3)
+                    if stop_check():
+                        break
+
             # Re-check shield before dispatching (periodic, skips if recently applied).
             with lock:
                 ensure_shield(device, stop_check)

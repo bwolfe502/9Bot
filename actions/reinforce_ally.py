@@ -14,7 +14,8 @@ from config import Screen
 from botlog import get_logger, timed_action
 from vision import (
     tap_image, wait_for_image_and_tap, load_screenshot, find_image,
-    adb_tap, adb_keyevent, logged_tap, save_failure_screenshot, read_text,
+    find_all_matches, adb_tap, adb_keyevent, logged_tap,
+    save_failure_screenshot, read_text,
 )
 from navigation import navigate, check_screen
 from troops import troops_avail, heal_all
@@ -401,3 +402,63 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
     save_failure_screenshot(device, "ally_reinforce_depart_missing")
     navigate(Screen.MAP, device)
     return False
+
+
+def recall_defending_troops(device, count=2, stop_check=None) -> int:
+    """Recall up to *count* defending troops via the MAP troop panel.
+
+    Flow per troop:
+    1. Find defending.png icons on the troop panel (left side of MAP).
+    2. Tap the icon — centers map on that castle.
+    3. Tap return.png to recall.
+
+    Returns number of troops successfully recalled.
+    """
+    log = get_logger("actions", device)
+
+    if check_screen(device) != Screen.MAP:
+        if not navigate(Screen.MAP, device):
+            log.warning("recall_defending: failed to reach MAP")
+            return 0
+
+    recalled = 0
+    for attempt in range(count):
+        if stop_check and stop_check():
+            break
+
+        screen = load_screenshot(device)
+        if screen is None:
+            break
+
+        # Find defending icons on the troop panel.
+        matches = find_all_matches(screen, "defending.png", threshold=0.7, min_distance=30, device=device)
+        if not matches:
+            log.debug("recall_defending: no more defending.png icons found")
+            break
+
+        # Tap the first (topmost) defending icon.
+        mx, my = matches[0]
+        log.info("Recalling defending troop %d/%d at panel (%d, %d)", attempt + 1, count, mx, my)
+        adb_tap(device, mx, my)
+        _interruptible_sleep(1.5, stop_check)
+
+        if stop_check and stop_check():
+            break
+
+        # Tap return button on the castle info popup.
+        if wait_for_image_and_tap("return.png", device, timeout=3, threshold=0.75):
+            recalled += 1
+            log.info("Defending troop %d recalled", attempt + 1)
+            _interruptible_sleep(1.0, stop_check)
+        else:
+            log.warning("recall_defending: return.png not found after tapping defending icon")
+            save_failure_screenshot(device, "recall_defending_no_return")
+            # Tap away to dismiss any popup.
+            adb_tap(device, 540, 960)
+            _interruptible_sleep(0.5, stop_check)
+
+    if recalled:
+        log.info("Recalled %d defending troop(s)", recalled)
+        # Wait for troops to start returning.
+        _interruptible_sleep(2.0, stop_check)
+    return recalled
