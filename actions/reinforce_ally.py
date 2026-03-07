@@ -130,6 +130,10 @@ def navigate_to_coord(device, x: int, z: int, stop_check=None) -> bool:
     x_disp = x // 1000
     z_disp = z // 1000
 
+    if x_disp == 0 and z_disp == 0:
+        log.warning("navigate_to_coord: display coords would be (0,0) — aborting")
+        return False
+
     def _type_digits(val: int) -> None:
         """Type each digit individually via keyevents (KEYCODE_0=7 … KEYCODE_9=16)."""
         for ch in str(val):

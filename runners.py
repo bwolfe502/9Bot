@@ -561,6 +561,9 @@ def run_auto_reinforce_ally(device, stop_event):
             if not x and not z:
                 dlog.debug("Ally %s has no coordinates (0,0) — skipping", eid)
                 continue
+            if x // 1000 == 0 and z // 1000 == 0:
+                dlog.debug("Ally %s coords (%s,%s) too small for display — skipping", eid, x, z)
+                continue
             same_pos = (last_x == x and last_z == z)
             if same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
                 dlog.debug("Ally %s on cooldown at same position, skipping", eid)

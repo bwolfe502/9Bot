@@ -918,7 +918,7 @@ class GameState:
                             ent["Z"] = z
                         log.debug("EntitiesNtf ally city spotted id=%s name=%s x=%s z=%s",
                                   eid, name, ent.get("X", 0), ent.get("Z", 0))
-                        if x or z:
+                        if (x or z) and (x // 1000 or z // 1000):
                             new_city_ids.append(eid)
             self._touch("entities")
         for eid in new_city_ids:
@@ -972,6 +972,22 @@ class GameState:
                             else:
                                 log.debug("PositionNtf ally city teleport id=%s x=%s z=%s",
                                           pi.ID, ent.get("X"), ent.get("Z"))
+                    elif pi.ID and pi.ID in self._union_entities:
+                        # Union-only entity (from UnionEntitiesNtf, not in _entities).
+                        ent = self._union_entities[pi.ID]
+                        old_x = ent.get("X", 0)
+                        old_z = ent.get("Z", 0)
+                        if pi.coord:
+                            ent["X"] = pi.coord.X
+                            ent["Z"] = pi.coord.Z
+                        if pi.pos_raw:
+                            ent["pos_raw"] = pi.pos_raw
+                        new_x = ent.get("X", 0)
+                        new_z = ent.get("Z", 0)
+                        if (not old_x and not old_z) and (new_x or new_z):
+                            log.info("PositionNtf deferred union-only ally id=%s now has coords x=%s z=%s",
+                                     pi.ID, new_x, new_z)
+                            deferred_ally_emit.append(pi.ID)
                 self._touch("entities")
             # Emit deferred ally spotted events outside lock.
             for eid in deferred_ally_emit:
@@ -1125,10 +1141,10 @@ class GameState:
                     ent_dict["_power"] = power  # pre-computed for priority queue
                     log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s",
                              eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0))
-                    if x or z:
+                    if (x or z) and (x // 1000 or z // 1000):
                         new_city_ids.append(eid)
                     else:
-                        log.debug("Ally city %s has no coords yet — waiting for PositionNtf", eid)
+                        log.debug("Ally city %s has no/tiny coords (%s,%s) — waiting for PositionNtf", eid, x, z)
             self._touch("entities")
 
         # Emit outside lock.
