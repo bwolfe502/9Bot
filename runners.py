@@ -558,6 +558,9 @@ def run_auto_reinforce_ally(device, stop_event):
             last_t, last_x, last_z = reinforced.get(eid, (0, None, None))
             x = entity.get("X", 0)
             z = entity.get("Z", 0)
+            if not x and not z:
+                dlog.debug("Ally %s has no coordinates (0,0) — skipping", eid)
+                continue
             same_pos = (last_x == x and last_z == z)
             if same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
                 dlog.debug("Ally %s on cooldown at same position, skipping", eid)

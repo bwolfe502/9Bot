@@ -918,7 +918,8 @@ class GameState:
                             ent["Z"] = z
                         log.debug("EntitiesNtf ally city spotted id=%s name=%s x=%s z=%s",
                                   eid, name, ent.get("X", 0), ent.get("Z", 0))
-                        new_city_ids.append(eid)
+                        if x or z:
+                            new_city_ids.append(eid)
             self._touch("entities")
         for eid in new_city_ids:
             ent = self._union_entities.get(eid)
@@ -946,10 +947,13 @@ class GameState:
             # Typed: iterate PosInfo objects.
             if not msg.postions:
                 return
+            deferred_ally_emit = []
             with self._lock:
                 for pi in msg.postions:
                     if pi.ID and pi.ID in self._entities:
                         ent = self._entities[pi.ID]
+                        old_x = ent.get("X", 0)
+                        old_z = ent.get("Z", 0)
                         if pi.coord:
                             ent["X"] = pi.coord.X
                             ent["Z"] = pi.coord.Z
@@ -958,9 +962,22 @@ class GameState:
                         # Keep _union_entities in sync — ally cities move on teleport.
                         if pi.ID in self._union_entities:
                             self._union_entities[pi.ID] = ent
-                            log.debug("PositionNtf ally city teleport id=%s x=%s z=%s",
-                                      pi.ID, ent.get("X"), ent.get("Z"))
+                            new_x = ent.get("X", 0)
+                            new_z = ent.get("Z", 0)
+                            # First real coords arrived — emit deferred ally spotted event.
+                            if (not old_x and not old_z) and (new_x or new_z):
+                                log.info("PositionNtf deferred ally city id=%s now has coords x=%s z=%s",
+                                         pi.ID, new_x, new_z)
+                                deferred_ally_emit.append(pi.ID)
+                            else:
+                                log.debug("PositionNtf ally city teleport id=%s x=%s z=%s",
+                                          pi.ID, ent.get("X"), ent.get("Z"))
                 self._touch("entities")
+            # Emit deferred ally spotted events outside lock.
+            for eid in deferred_ally_emit:
+                ent = self._union_entities.get(eid)
+                if ent and self._ally_monitoring:
+                    self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
             return
         # Fallback for raw dicts (backward compat).
         positions = getattr(msg, "postions", None) or getattr(msg, "positions", None)
@@ -1108,7 +1125,10 @@ class GameState:
                     ent_dict["_power"] = power  # pre-computed for priority queue
                     log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s",
                              eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0))
-                    new_city_ids.append(eid)
+                    if x or z:
+                        new_city_ids.append(eid)
+                    else:
+                        log.debug("Ally city %s has no coords yet — waiting for PositionNtf", eid)
             self._touch("entities")
 
         # Emit outside lock.
