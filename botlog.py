@@ -119,7 +119,7 @@ def setup_logging(verbose=False):
     # Rotating file handler — rich format for AI/human post-mortem analysis
     log_file = os.path.join(LOG_DIR, "9bot.log")
     file_handler = logging.handlers.RotatingFileHandler(
-        log_file, maxBytes=5 * 1024 * 1024, backupCount=3,
+        log_file, maxBytes=20 * 1024 * 1024, backupCount=3,
         encoding="utf-8"
     )
     file_handler.setLevel(logging.DEBUG)
