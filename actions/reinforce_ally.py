@@ -9,6 +9,9 @@ Key exports:
 import re
 import time
 
+import cv2
+import numpy as np
+
 import config
 from config import Screen
 from botlog import get_logger, timed_action
@@ -25,6 +28,34 @@ _log = get_logger("actions")
 
 # Time to wait for the map to pan to the new coordinate after confirming.
 _MAP_PAN_WAIT_S = 2.0
+
+# Shield visual detection: gold pixel density threshold in ring zone around castle.
+_SHIELD_GOLD_THRESHOLD = 70.0
+
+
+def detect_shield_visual(device) -> bool:
+    """Detect a peace shield dome on the centered castle via gold pixel ring analysis.
+
+    After navigate_to_coord, the castle is roughly centered on screen.
+    The shield dome creates a dense ring of gold-hue pixels around the castle
+    that is absent on unshielded castles (~88% vs ~47%).
+    """
+    screen = load_screenshot(device)
+    if screen is None:
+        return False
+    hsv = cv2.cvtColor(screen, cv2.COLOR_BGR2HSV)
+    cy, cx = 780, 540
+    Y, X = np.ogrid[:screen.shape[0], :screen.shape[1]]
+    dist = np.sqrt((X - cx) ** 2 + ((Y - cy) * 1.5) ** 2)
+    ring_mask = (dist >= 120) & (dist <= 220)
+    ring_hsv = hsv[ring_mask]
+    h, s, v = ring_hsv[:, 0], ring_hsv[:, 1], ring_hsv[:, 2]
+    gold = (h >= 10) & (h <= 30) & (s >= 80) & (v >= 150)
+    gold_pct = 100.0 * np.sum(gold) / len(h) if len(h) > 0 else 0.0
+    log = get_logger("actions", device)
+    log.debug("Shield visual check: gold_pct=%.1f%% (threshold=%.0f%%)",
+              gold_pct, _SHIELD_GOLD_THRESHOLD)
+    return gold_pct >= _SHIELD_GOLD_THRESHOLD
 
 
 def _minimize_quest_dialog(device, stop_check=None) -> bool:
@@ -205,6 +236,11 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
         return False
 
     if stop_check and stop_check():
+        return False
+
+    # Visual shield check — skip reinforcing shielded castles.
+    if detect_shield_visual(device):
+        log.info("Ally %s has a shield — skipping reinforce", label)
         return False
 
     # Tap a 3x3 grid across the castle area to find and open the castle detail panel.
