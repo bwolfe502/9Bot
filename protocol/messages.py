@@ -34,6 +34,7 @@ __all__ = [
     "LineupState",
     # Leaf dataclasses
     "Coord",
+    "LandInfo",
     "Power",
     "Quest",
     "Asset",
@@ -267,6 +268,39 @@ class Coord:
         return cls(
             X=d.get("X", 0),
             Z=d.get("Z", 0),
+        )
+
+
+@dataclass
+class LandInfo:
+    """Territory tower state from KvkTerritoryInfoAck / KvkTerritoryInfoNtf."""
+    coord: Optional[Coord] = None
+    type: int = 0
+    unionId: int = 0
+    FactionId: int = 0       # owning faction: 1=red, 2=blue, 3=green, 4=yellow; 0=unowned
+    curFactionId: int = 0    # faction currently contesting this tower
+    cfgId: int = 0
+    buildAt: int = 0
+    curId: int = 0
+    legionId: int = 0
+    curLegionId: int = 0
+
+    @classmethod
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> "LandInfo":
+        if not d:
+            return cls()
+        coord_raw = d.get("coord")
+        return cls(
+            coord=Coord.from_dict(coord_raw) if coord_raw else None,
+            type=d.get("type", 0),
+            unionId=d.get("unionId", 0),
+            FactionId=d.get("FactionId", 0),
+            curFactionId=d.get("curFactionId", 0),
+            cfgId=d.get("cfgId", 0),
+            buildAt=d.get("buildAt", 0),
+            curId=d.get("curId", 0),
+            legionId=d.get("legionId", 0),
+            curLegionId=d.get("curLegionId", 0),
         )
 
 

@@ -409,6 +409,41 @@ def get_protocol_ally_cities(device=None):
         return None
 
 
+_FACTION_TO_TEAM = {1: "red", 2: "blue", 3: "green", 4: "yellow"}
+
+
+def get_protocol_territory_grid(device=None):
+    """Return territory grid from protocol, or None.
+
+    Returns None when protocol is off, data not yet received, or data is stale.
+
+    Returns dict mapping (row, col) -> (owner_team, contester_team, has_defender):
+        owner_team:     team string ("red"/"blue"/"green"/"yellow") or None if unowned
+        contester_team: team currently attacking this tower, or None
+        has_defender:   True if a troop is occupying/defending this tower
+    Only towers with at least an owner or a contester are included.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("territory", max_age_s=30.0):
+            return None
+        raw_grid = state.territory_grid
+        if not raw_grid:
+            return None
+        result = {}
+        for (row, col), (faction_id, cur_faction_id, legion_id) in raw_grid.items():
+            owner_team = _FACTION_TO_TEAM.get(faction_id)
+            contester_team = _FACTION_TO_TEAM.get(cur_faction_id) if cur_faction_id else None
+            has_defender = bool(legion_id)
+            if owner_team or contester_team:
+                result[(row, col)] = (owner_team, contester_team, has_defender)
+        return result
+    except Exception:
+        return None
+
+
 def get_protocol_troop_snapshot(device):
     """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
     state = _get_device_state(device)

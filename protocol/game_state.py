@@ -52,6 +52,7 @@ from .messages import (
     HeartBeatAck,
     Intelligence,
     IntelligencesNtf,
+    LandInfo,
     Lineup,
     LineupsNtf,
     NewLineupStateInfo,
@@ -82,7 +83,7 @@ _AP_ASSET_ID = 11171002  # AssetNtf recover ID for Action Points
 # Categories for freshness tracking.
 CATEGORIES = (
     "ap", "rallies", "quests", "resources", "entities",
-    "attacks", "chat", "buffs", "heartbeat", "lineups",
+    "attacks", "chat", "buffs", "heartbeat", "lineups", "territory",
 )
 
 # ------------------------------------------------------------------ #
@@ -246,6 +247,7 @@ class GameState:
         self._lineup_states: Dict[int, NewLineupStateInfo] = {}  # lineupID -> state
         self._union_entities: Dict[Any, dict] = {}           # entity_id -> raw dict (ally PLAYER_CITY only)
         self._own_union_id: int = 0                          # populated from UnionNtf
+        self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id)
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
 
         # -- connection metadata ----------------------------------- #
@@ -363,6 +365,12 @@ class GameState:
         with self._lock:
             return list(self._union_entities.values())
 
+    @property
+    def territory_grid(self) -> Dict[Tuple[int, int], Tuple[int, int, int]]:
+        """Territory grid: (row, col) -> (faction_id, cur_faction_id, legion_id). Empty dict if no snapshot."""
+        with self._lock:
+            return dict(self._territory_grid)
+
     def set_ally_monitoring(self, enabled: bool) -> None:
         """Enable or disable ally city tracking.  Called by run_auto_reinforce_ally."""
         with self._lock:
@@ -428,6 +436,8 @@ class GameState:
         self._sub("msg:ChatSendMsgNtf", self._on_chat_send_ntf)
         self._sub("msg:UnionEntitiesNtf", self._on_union_entities)
         self._sub("msg:UnionDelEntitiesNtf", self._on_del_union_entities)
+        self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
+        self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -1045,6 +1055,8 @@ class GameState:
                 self._touch("lineups")
             if "rallies" in self._last_update:
                 self._touch("rallies")
+            if self._territory_grid:
+                self._touch("territory")
 
     def _on_union_entities(self, msg: Any) -> None:
         """msg:UnionEntitiesNtf — track ally PLAYER_CITY entities.
@@ -1104,6 +1116,44 @@ class GameState:
             ent = self._union_entities.get(eid)
             if ent:
                 self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
+
+    def _on_territory_info(self, msg: Any) -> None:
+        """msg:KvkTerritoryInfoAck — full territory grid snapshot."""
+        lands = msg.get("lands", []) if isinstance(msg, dict) else getattr(msg, "lands", [])
+        if not lands:
+            log.info("KvkTerritoryInfoAck: no lands")
+            return
+        new_grid: Dict[Tuple[int, int], Tuple[int, int, int]] = {}
+        for raw_land in lands:
+            land = LandInfo.from_dict(raw_land) if isinstance(raw_land, dict) else raw_land
+            if land.coord is None:
+                continue
+            row = land.coord.Z // 300000
+            col = land.coord.X // 300000
+            if 0 <= row < 24 and 0 <= col < 24:
+                new_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId)
+        with self._lock:
+            self._territory_grid = new_grid
+            self._touch("territory")
+        log.info("KvkTerritoryInfoAck: stored %d territory squares", len(new_grid))
+
+    def _on_territory_ntf(self, msg: Any) -> None:
+        """msg:KvkTerritoryInfoNtf — single tower state change."""
+        raw_land = msg.get("land") if isinstance(msg, dict) else getattr(msg, "land", None)
+        if raw_land is None:
+            return
+        land = LandInfo.from_dict(raw_land) if isinstance(raw_land, dict) else raw_land
+        if land.coord is None:
+            return
+        row = land.coord.Z // 300000
+        col = land.coord.X // 300000
+        if 0 <= row < 24 and 0 <= col < 24:
+            with self._lock:
+                if self._territory_grid:  # only update after full snapshot received
+                    self._territory_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId)
+                    self._touch("territory")
+            log.debug("KvkTerritoryInfoNtf: (%d,%d) → faction=%d cur=%d legion=%d",
+                      row, col, land.FactionId, land.curFactionId, land.legionId)
 
     def _on_del_union_entities(self, msg: Any) -> None:
         """msg:UnionDelEntitiesNtf — remove ally entities by ID."""
