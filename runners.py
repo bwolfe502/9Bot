@@ -508,7 +508,7 @@ def run_auto_reinforce_ally(device, stop_event):
 
     try:
         from startup import get_protocol_event_bus, set_protocol_ally_monitoring
-        from protocol.events import EVT_ALLY_CITY_SPOTTED
+        from protocol.events import EVT_ALLY_CITY_SPOTTED, EVT_ALLY_UNDER_ATTACK
     except ImportError:
         dlog.error("Protocol not available — Auto Reinforce Ally requires protocol enabled")
         config.clear_device_status(device)
@@ -546,24 +546,35 @@ def run_auto_reinforce_ally(device, stop_event):
         config.clear_device_status(device)
         return
 
+    # Priority tiers: 0 = under attack (urgent), 1 = normal spotted.
+    _PRIO_ATTACK = 0
+    _PRIO_NORMAL = 1
+
     def _on_spotted(entity):
         power = entity.get("_power", 0)
-        pending.put((-power, time.monotonic(), entity))
+        pending.put((_PRIO_NORMAL, -power, time.monotonic(), entity))
+
+    def _on_under_attack(entity):
+        power = entity.get("_power", 0)
+        pending.put((_PRIO_ATTACK, -power, time.monotonic(), entity))
 
     set_protocol_ally_monitoring(device, True)
     bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
+    bus.on(EVT_ALLY_UNDER_ATTACK, _on_under_attack)
     dlog.info("Ally monitoring enabled (home X=%d Y=%d)", home_x, home_z)
     config.set_device_status(device, "Watching for Allies...")
 
     try:
         while not stop_check():
             try:
-                _neg_power, _arrival, entity = pending.get(timeout=1.0)
+                prio, _neg_power, _arrival, entity = pending.get(timeout=1.0)
             except _queue.Empty:
                 continue
 
             if stop_check():
                 break
+
+            is_urgent = (prio == _PRIO_ATTACK)
 
             # EntityInfo: field_1=ID, field_3=owner (OwnerInfo with named keys)
             eid = entity.get("field_1") or entity.get("id") or entity.get("ID")
@@ -577,7 +588,7 @@ def run_auto_reinforce_ally(device, stop_event):
                 dlog.debug("Ally %s has no coordinates — skipping", eid)
                 continue
             same_pos = (last_x == x and last_z == z)
-            if same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
+            if not is_urgent and same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
                 dlog.debug("Ally %s on cooldown at same position, skipping", eid)
                 continue
 
@@ -588,19 +599,23 @@ def run_auto_reinforce_ally(device, stop_event):
             power = lookup_player_power(pid)
 
             # Distance filter — entity coords are raw (1000x display units).
+            # Under-attack allies skip distance filter.
             max_dist = config.get_device_config(device, "max_reinforce_distance")
+            dist = None
             if home_x and home_z and x and z:
                 dist = math.sqrt((x / 1000 - home_x) ** 2 + (z / 1000 - home_z) ** 2)
                 # Skip own castle (distance ≈ 0 from home).
                 if dist < 2:
                     dlog.debug("Skipping own castle %s (dist=%.1f)", name or eid, dist)
                     continue
-                if max_dist and dist > max_dist:
+                if not is_urgent and max_dist and dist > max_dist:
                     dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
                     continue
-                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) dist=%.1f — reinforcing", name or eid, power, x, z, dist)
-            else:
-                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) — reinforcing", name or eid, power, x, z)
+
+            tag = "UNDER ATTACK" if is_urgent else "spotted"
+            dist_str = f" dist={dist:.1f}" if dist is not None else ""
+            dlog.info("Ally %s %s: %s (power=%s) at (%s, %s)%s — reinforcing",
+                      tag, name or eid, name, power, x, z, dist_str)
             # Re-check shield before dispatching (periodic, skips if recently applied).
             with lock:
                 ensure_shield(device, stop_check)
@@ -611,17 +626,22 @@ def run_auto_reinforce_ally(device, stop_event):
                 heal_all(device)
             if stop_check():
                 break
-            config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
+            if is_urgent:
+                status = f"Defending {name}!" if name else "Defending Ally!"
+            else:
+                status = f"Reinforcing {name}..." if name else "Reinforcing Ally..."
+            config.set_device_status(device, status)
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
                 reinforced[eid] = (time.monotonic(), x, z)
-            _log_reinforce_stat(device, name, power, dist if (home_x and home_z and x and z) else None, success)
+            _log_reinforce_stat(device, name, power, dist, success)
             config.set_device_status(device, "Watching for Allies...")
     except Exception as e:
         dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)
     finally:
         bus.off(EVT_ALLY_CITY_SPOTTED, _on_spotted)
+        bus.off(EVT_ALLY_UNDER_ATTACK, _on_under_attack)
         set_protocol_ally_monitoring(device, False)
 
     config.clear_device_status(device)

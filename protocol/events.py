@@ -78,6 +78,7 @@ EVT_BUFF_CHANGED: str = "game:buff_changed"
 EVT_TROOPS_CHANGED: str = "game:troops_changed"
 EVT_BROADCAST: str = "game:broadcast"
 EVT_ALLY_CITY_SPOTTED: str = "game:ally_city_spotted"
+EVT_ALLY_UNDER_ATTACK: str = "game:ally_under_attack"
 
 
 # ------------------------------------------------------------------ #

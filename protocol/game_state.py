@@ -27,6 +27,7 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 from .events import (
     EVT_ALLY_CITY_SPOTTED,
+    EVT_ALLY_UNDER_ATTACK,
     EVT_AP_CHANGED,
     EVT_ATTACK_INCOMING,
     EVT_BATTLE_RESULT,
@@ -585,6 +586,7 @@ class GameState:
         self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
         self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
         self._sub("msg:GetShieldInfoAck", self._on_shield_info)
+        self._sub("msg:MarchingLineListNtf", self._on_marching_lines)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -1414,6 +1416,67 @@ class GameState:
                      remaining_s, si.ShieldEndTs)
         else:
             log.info("Shield status captured: no shield active")
+
+    def _on_marching_lines(self, msg: Any) -> None:
+        """msg:MarchingLineListNtf — detect enemy marches targeting ally castles.
+
+        MarchingLine fields: start (Coord), end (Coord), unitId, unionId, tarId.
+        If end coord matches a known ally castle AND unionId differs from own,
+        emit EVT_ALLY_UNDER_ATTACK with the ally entity dict.
+        """
+        lines = None
+        if isinstance(msg, dict):
+            lines = msg.get("lines", [])
+        else:
+            lines = getattr(msg, "lines", None)
+        if not lines:
+            return
+        if not self._ally_monitoring:
+            return
+
+        with self._lock:
+            own_uid = self._own_union_id
+            if not own_uid:
+                return
+            # Build coord → entity lookup from known ally castles.
+            ally_by_coord = {}
+            for eid, ent in self._union_entities.items():
+                ex = ent.get("X", 0)
+                ez = ent.get("Z", 0)
+                if ex or ez:
+                    ally_by_coord[(ex, ez)] = ent
+
+        if not ally_by_coord:
+            return
+
+        attacked = []
+        for line in lines:
+            if isinstance(line, dict):
+                march_uid = line.get("unionId", 0)
+                end = line.get("end") or {}
+                end_x = end.get("X", 0) if isinstance(end, dict) else 0
+                end_z = end.get("Z", 0) if isinstance(end, dict) else 0
+            else:
+                march_uid = getattr(line, "unionId", 0)
+                end = getattr(line, "end", None)
+                end_x = getattr(end, "X", 0) if end else 0
+                end_z = getattr(end, "Z", 0) if end else 0
+
+            # Skip own alliance marches (reinforcements, not attacks).
+            if march_uid == own_uid:
+                continue
+
+            # Match end coord to ally castle.
+            ent = ally_by_coord.get((end_x, end_z))
+            if ent:
+                owner = ent.get("field_3") or ent.get("owner") or {}
+                name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                log.warning("Ally %s at (%d, %d) under attack! (march unionId=%d)",
+                            name, end_x, end_z, march_uid)
+                attacked.append(ent)
+
+        for ent in attacked:
+            self._bus.emit(EVT_ALLY_UNDER_ATTACK, ent)
 
     def _on_connected(self, *args: Any) -> None:
         """EVT_CONNECTED — mark protocol as live."""
