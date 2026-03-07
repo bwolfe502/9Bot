@@ -1223,43 +1223,43 @@ class GameState:
         new_city_ids = []
         with self._lock:
             for ent in msg.entities:
-                eid = self._entity_id(ent) or id(ent)
-                self._entities[eid] = ent
+                try:
+                    eid = self._entity_id(ent) or id(ent)
+                    self._entities[eid] = ent
 
-                # Extract KvkBuilding.troops for territory towers (MapUnitType.TOWER = 11).
-                # EntityInfo.field_5 = PropertyUnion; PropertyUnion.field_27 = KvkBuilding.
-                # KvkBuilding.troops (field 5, repeated int64) lists troop IDs at the tower.
-                etype = ent.get("field_2", ent.get("type", -1))
-                if etype == 11:
-                    x, z = self._entity_coords(ent)
-                    if x or z:
-                        row, col = z // 300000, x // 300000
-                        if 0 <= row < 24 and 0 <= col < 24:
-                            prop = ent.get("field_5")
-                            kvk_bld = prop.get("field_27") if isinstance(prop, dict) else None
-                            troops_raw = kvk_bld.get("troops") if isinstance(kvk_bld, dict) else None
-                            troop_count = len(troops_raw) if isinstance(troops_raw, list) else 0
-                            self._kvk_tower_troops[(row, col)] = troop_count
-                            log.debug("KvkBuilding entity (%d,%d) troops=%d", row, col, troop_count)
-
-                if self._is_ally_city(ent):
-                    owner = ent.get("field_3") or ent.get("owner") or {}
-                    name = owner.get("name", "?") if isinstance(owner, dict) else "?"
-                    shielded = self._is_shielded(ent)
-                    if shielded:
-                        log.info("Ally %s has shield", name)
-                    is_new = eid not in self._union_entities
-                    self._union_entities[eid] = ent
-                    # Pre-extract coordinates so runner can use X/Z immediately.
-                    if is_new:
+                    # Extract KvkBuilding.troops for territory towers (MapUnitType.TOWER = 11).
+                    etype = ent.get("field_2", ent.get("type", -1))
+                    if etype == 11:
                         x, z = self._entity_coords(ent)
                         if x or z:
-                            ent["X"] = x
-                            ent["Z"] = z
-                        log.debug("EntitiesNtf ally city spotted id=%s name=%s x=%s z=%s shielded=%s",
-                                  eid, name, ent.get("X", 0), ent.get("Z", 0), shielded)
-                        if self._ally_monitoring and not shielded:
-                            new_city_ids.append(eid)
+                            row, col = z // 300000, x // 300000
+                            if 0 <= row < 24 and 0 <= col < 24:
+                                prop = ent.get("field_5")
+                                kvk_bld = prop.get("field_27") if isinstance(prop, dict) else None
+                                troops_raw = kvk_bld.get("troops") if isinstance(kvk_bld, dict) else None
+                                troop_count = len(troops_raw) if isinstance(troops_raw, list) else 0
+                                self._kvk_tower_troops[(row, col)] = troop_count
+                                log.debug("KvkBuilding entity (%d,%d) troops=%d", row, col, troop_count)
+
+                    if self._is_ally_city(ent):
+                        owner = ent.get("field_3") or ent.get("owner") or {}
+                        name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                        shielded = self._is_shielded(ent)
+                        if shielded:
+                            log.info("Ally %s has shield", name)
+                        is_new = eid not in self._union_entities
+                        self._union_entities[eid] = ent
+                        if is_new:
+                            x, z = self._entity_coords(ent)
+                            if x or z:
+                                ent["X"] = x
+                                ent["Z"] = z
+                            log.debug("EntitiesNtf ally city spotted id=%s name=%s x=%s z=%s shielded=%s",
+                                      eid, name, ent.get("X", 0), ent.get("Z", 0), shielded)
+                            if self._ally_monitoring and not shielded:
+                                new_city_ids.append(eid)
+                except Exception:
+                    log.warning("Error processing entity", exc_info=True)
             self._touch("entities")
         for eid in new_city_ids:
             ent = self._union_entities.get(eid)
@@ -1442,53 +1442,40 @@ class GameState:
                         log.info("Bootstrapped own_union_id=%d from UnionEntitiesNtf", uid)
                         break
 
-            # Incrementally cache alliance members from entity owners.
-            # UnionEntitiesNtf is server-filtered to own alliance, so every
-            # entity owner here is guaranteed to be an alliance member.
-            _member_pids = []
             for ent in entities:
-                ed = ent if isinstance(ent, dict) else vars(ent)
-                owner = ed.get("field_3") or ed.get("owner") or {}
-                if isinstance(owner, dict):
-                    pid = owner.get("ID", 0)
-                    if pid:
-                        _member_pids.append(pid)
-            if _member_pids:
-                added = add_alliance_members_batch(_member_pids)
-                if added:
-                    log.info("Cached %d new alliance members from entities", added)
-
-            for ent in entities:
-                ent_dict = ent if isinstance(ent, dict) else vars(ent)
-                eid = self._entity_id(ent_dict) or id(ent_dict)
-                if not self._is_ally_city(ent_dict):
-                    continue
-                owner = ent_dict.get("field_3") or ent_dict.get("owner") or {}
-                name = owner.get("name", "?") if isinstance(owner, dict) else "?"
-                shielded = self._is_shielded(ent_dict)
-                if shielded:
-                    log.info("Ally %s has shield", name)
-                is_new = eid not in self._union_entities
-                self._union_entities[eid] = ent_dict
-                # Also store in _entities so PositionNtf can update coords.
-                self._entities[eid] = ent_dict
-                if is_new:
-                    x, z = self._entity_coords(ent_dict)
-                    if x or z:
-                        ent_dict["X"] = x
-                        ent_dict["Z"] = z
-                    pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
-                    power = lookup_player_power(pid)
-                    ent_dict["_power"] = power  # pre-computed for priority queue
-                    log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s shielded=%s",
-                             eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0), shielded)
-                    if self._ally_monitoring and not shielded:
-                        # Only queue for emission if we have coordinates.
-                        # Entities without coords will be emitted when PositionNtf arrives.
-                        if ent_dict.get("X") or ent_dict.get("Z"):
-                            new_city_ids.append(eid)
-                        else:
-                            log.debug("Ally %s has no coords yet — waiting for PositionNtf", name)
+                try:
+                    ent_dict = ent if isinstance(ent, dict) else vars(ent)
+                    eid = self._entity_id(ent_dict) or id(ent_dict)
+                    if not self._is_ally_city(ent_dict):
+                        continue
+                    owner = ent_dict.get("field_3") or ent_dict.get("owner") or {}
+                    name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                    shielded = self._is_shielded(ent_dict)
+                    if shielded:
+                        log.info("Ally %s has shield", name)
+                    is_new = eid not in self._union_entities
+                    self._union_entities[eid] = ent_dict
+                    # Also store in _entities so PositionNtf can update coords.
+                    self._entities[eid] = ent_dict
+                    if is_new:
+                        x, z = self._entity_coords(ent_dict)
+                        if x or z:
+                            ent_dict["X"] = x
+                            ent_dict["Z"] = z
+                        pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+                        power = lookup_player_power(pid)
+                        ent_dict["_power"] = power  # pre-computed for priority queue
+                        log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s shielded=%s",
+                                 eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0), shielded)
+                        if self._ally_monitoring and not shielded:
+                            # Only queue for emission if we have coordinates.
+                            # Entities without coords will be emitted when PositionNtf arrives.
+                            if ent_dict.get("X") or ent_dict.get("Z"):
+                                new_city_ids.append(eid)
+                            else:
+                                log.debug("Ally %s has no coords yet — waiting for PositionNtf", name)
+                except Exception:
+                    log.warning("Error processing union entity", exc_info=True)
             self._touch("entities")
 
         # Emit outside lock.
@@ -1673,9 +1660,16 @@ class GameState:
             self.protocol_connected = True
 
     def _on_disconnected(self, *args: Any) -> None:
-        """EVT_DISCONNECTED — mark protocol as down."""
+        """EVT_DISCONNECTED — mark protocol as down and invalidate freshness.
+
+        Clearing ``_last_update`` forces all ``is_fresh()`` checks to return
+        ``False`` until new messages arrive post-reconnect.  Data dicts
+        (lineups, entities, etc.) are preserved so the heartbeat keepalive
+        can re-validate them once the connection is restored.
+        """
         with self._lock:
             self.protocol_connected = False
+            self._last_update.clear()
 
     def __repr__(self) -> str:
         with self._lock:

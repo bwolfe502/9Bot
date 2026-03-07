@@ -150,13 +150,27 @@ def _setup_frida_forward_for_device(device_id, host_port):
         if _run_forward():
             log.debug("ADB forward tcp:%d -> tcp:27042 for %s", host_port, device_id)
             return
-        # Forward failed — try reconnecting ADB first (TCP devices only).
+        # Forward failed — clean up stale state and reconnect ADB (TCP devices only).
         if ":" in device_id:
             log.warning("ADB forward failed for %s — reconnecting ADB", device_id)
+            # Remove stale forward rule if any.
+            subprocess.run(
+                [config.adb_path, "-s", device_id, "forward", "--remove",
+                 f"tcp:{host_port}"],
+                capture_output=True, timeout=5,
+            )
+            # Disconnect then reconnect for a clean ADB session.
+            subprocess.run(
+                [config.adb_path, "disconnect", device_id],
+                capture_output=True, timeout=5,
+            )
+            import time as _time
+            _time.sleep(1.0)
             subprocess.run(
                 [config.adb_path, "connect", device_id],
                 capture_output=True, timeout=5,
             )
+            _time.sleep(1.0)
             if _run_forward():
                 log.info("ADB forward tcp:%d -> tcp:27042 for %s (after reconnect)",
                          host_port, device_id)

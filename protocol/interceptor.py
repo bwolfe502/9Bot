@@ -74,8 +74,8 @@ _FIELD_MAP_PATH = Path(__file__).resolve().parent / "proto_field_map.json"
 _GADGET_PORT = 27042
 
 # Reconnect delays (seconds).
-_RECONNECT_DELAY_FAILED = 10.0
-_RECONNECT_DELAY_LOST = 5.0
+_RECONNECT_DELAY_FAILED = 5.0
+_RECONNECT_DELAY_LOST = 2.0
 
 # Watchdog: if no messages arrive for this many seconds while connected,
 # force a reconnect.  Game heartbeats arrive every ~10s, so 60s silence
@@ -752,6 +752,7 @@ class InterceptorThread(threading.Thread):
                             "Watchdog: no messages for %.0fs — forcing reconnect",
                             silence,
                         )
+                        self.event_bus.emit(EVT_DISCONNECTED, "watchdog")
                         self._interceptor.stop()
                         self._interceptor = None
                         break

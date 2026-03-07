@@ -102,8 +102,10 @@ def setup_logging(verbose=False):
     root = logging.getLogger()
     root.setLevel(logging.DEBUG)
 
-    # Prevent duplicate handlers if called multiple times
-    if root.handlers:
+    # Prevent duplicate handlers if called multiple times.
+    # Check for our file handler specifically — third-party libraries may
+    # add their own handlers before setup_logging() is called.
+    if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
         return
 
     # Console handler — clean format matching current output style
