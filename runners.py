@@ -498,6 +498,8 @@ def run_auto_reinforce_ally(device, stop_event):
     stop_check = stop_event.is_set
     lock = config.get_device_lock(device)
     reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
+    active_coords = set()  # (x_disp, z_disp) tuples where we currently have a troop
+    _TROOP_RESERVE = 1  # keep 1 troop free for other tasks
     pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
     try:
@@ -577,20 +579,41 @@ def run_auto_reinforce_ally(device, stop_event):
 
             # Distance filter — entity coords are raw (1000x display units).
             max_dist = config.get_device_config(device, "max_reinforce_distance")
+            dist = None
             if home_x and home_z and x and z:
                 dist = math.sqrt((x / 1000 - home_x) ** 2 + (z / 1000 - home_z) ** 2)
+                # Skip own castle (distance ≈ 0 from home).
+                if dist < 2:
+                    dlog.debug("Skipping own castle %s (dist=%.1f)", name or eid, dist)
+                    continue
                 if max_dist and dist > max_dist:
                     dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
                     continue
-                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) dist=%.1f — reinforcing", name or eid, power, x, z, dist)
-            else:
-                dlog.info("Ally city spotted: %s (power=%s) at (%s, %s) — reinforcing", name or eid, power, x, z)
+
+            # Troop reserve: keep 1 free for other tasks.
+            home_troops = troops_avail(device)
+            if home_troops <= _TROOP_RESERVE:
+                dlog.debug("Ally %s: only %d troops home (reserve %d) — skipping",
+                           name or eid, home_troops, _TROOP_RESERVE)
+                continue
+
+            # Coordinate dedup: don't send another troop to the same location.
+            display_coord = (x // 1000, z // 1000)
+            if display_coord in active_coords:
+                dlog.debug("Already have troop at (%d, %d) — skipping %s",
+                           display_coord[0], display_coord[1], name or eid)
+                continue
+
+            dist_str = f" dist={dist:.1f}" if dist is not None else ""
+            dlog.info("Ally city spotted: %s (power=%s) at (%s, %s)%s — reinforcing",
+                      name or eid, power, x, z, dist_str)
             config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
                 reinforced[eid] = (time.monotonic(), x, z)
-            _log_reinforce_stat(device, name, power, dist if (home_x and home_z and x and z) else None, success)
+                active_coords.add(display_coord)
+            _log_reinforce_stat(device, name, power, dist, success)
             config.set_device_status(device, "Watching for Allies...")
     except Exception as e:
         dlog.error("ERROR in Auto Reinforce Ally: %s", e, exc_info=True)
