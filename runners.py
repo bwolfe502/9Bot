@@ -505,6 +505,7 @@ def run_auto_reinforce_ally(device, stop_event):
     lock = config.get_device_lock(device)
     reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
     attack_reinforced = set()  # entity_ids already reinforced for an attack event
+    active_coords = set()  # (x, z) tuples where we currently have a troop stationed
     _TROOP_RESERVE = 2  # keep 2 troops free for defense unless under attack
     pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
@@ -565,12 +566,19 @@ def run_auto_reinforce_ally(device, stop_event):
     bus.on(EVT_ALLY_UNDER_ATTACK, _on_under_attack)
     dlog.info("Ally monitoring enabled (home X=%d Y=%d)", home_x, home_z)
     config.set_device_status(device, "Watching for Allies...")
+    _HEAL_INTERVAL = 10  # seconds between idle heal checks
+    _last_idle_heal = 0.0
 
     try:
         while not stop_check():
             try:
                 prio, _neg_power, _arrival, entity = pending.get(timeout=1.0)
             except _queue.Empty:
+                now = time.monotonic()
+                if now - _last_idle_heal >= _HEAL_INTERVAL:
+                    _last_idle_heal = now
+                    with lock:
+                        heal_all(device)
                 continue
 
             if stop_check():
@@ -627,6 +635,13 @@ def run_auto_reinforce_ally(device, stop_event):
                                name or eid, home, _TROOP_RESERVE)
                     continue
 
+            # Coordinate dedup: don't send another troop to the same location.
+            display_coord = (x // 1000, z // 1000)
+            if display_coord in active_coords:
+                dlog.debug("Already have troop at (%s, %s) — skipping %s",
+                           display_coord[0], display_coord[1], name or eid)
+                continue
+
             tag = "UNDER ATTACK" if is_urgent else "spotted"
             dist_str = f" dist={dist:.1f}" if dist is not None else ""
             dlog.info("Ally %s %s: %s (power=%s) at (%s, %s)%s — reinforcing",
@@ -651,6 +666,7 @@ def run_auto_reinforce_ally(device, stop_event):
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
                 reinforced[eid] = (time.monotonic(), x, z)
+                active_coords.add(display_coord)
                 if is_urgent:
                     attack_reinforced.add(eid)
             _log_reinforce_stat(device, name, power, dist, success)
@@ -664,12 +680,26 @@ def run_auto_reinforce_ally(device, stop_event):
                 urgent_queued = sum(1 for item in list(pending.queue) if item[0] == _PRIO_ATTACK)
                 if home < _TROOP_RESERVE and urgent_queued == 0:
                     need = _TROOP_RESERVE - home
-                    dlog.info("Replenishing reserve: %d home, need %d — recalling defenders",
-                              home, need)
-                    config.set_device_status(device, "Recalling Troops...")
-                    with lock:
-                        recalled = recall_defending_troops(device, count=need, stop_check=stop_check)
-                    if recalled:
+                    # Pick non-attacked castles to recall from (oldest first).
+                    non_attacked = [(rid, ts, rx, rz) for rid, (ts, rx, rz) in reinforced.items()
+                                    if rid not in attack_reinforced]
+                    non_attacked.sort(key=lambda t: t[1])  # oldest first
+                    recall_targets = non_attacked[:need]
+                    if recall_targets:
+                        dlog.info("Replenishing reserve: %d home, need %d — recalling from %d castle(s)",
+                                  home, need, len(recall_targets))
+                        config.set_device_status(device, "Recalling Troops...")
+                        with lock:
+                            for rid, _, rx, rz in recall_targets:
+                                if stop_check():
+                                    break
+                                ok = recall_defending_troops(device, coords=(rx, rz),
+                                                            stop_check=stop_check)
+                                if ok:
+                                    rc = (rx // 1000, rz // 1000)
+                                    active_coords.discard(rc)
+                                    reinforced.pop(rid, None)
+                                    dlog.info("Recalled troop from (%d, %d)", rc[0], rc[1])
                         time.sleep(3)
 
             config.set_device_status(device, "Watching for Allies...")

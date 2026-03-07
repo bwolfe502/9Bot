@@ -980,12 +980,47 @@ class GameState:
             self._touch("chat")
 
     def _on_attack_incoming(self, msg: Any) -> None:
-        """EVT_ATTACK_INCOMING — payload is an IntelligencesNtf."""
+        """EVT_ATTACK_INCOMING — payload is an IntelligencesNtf.
+
+        Also cross-references incoming attack targets against known ally
+        castles and emits EVT_ALLY_UNDER_ATTACK when a match is found.
+        """
         if not isinstance(msg, IntelligencesNtf):
             return
+        attacked_allies = []
         with self._lock:
             self._attacks = list(msg.intelligences)
             self._touch("attacks")
+
+            if self._ally_monitoring and self._union_entities:
+                # Build coord → entity lookup from known ally castles.
+                ally_by_coord = {}
+                for eid, ent in self._union_entities.items():
+                    ex = ent.get("X", 0)
+                    ez = ent.get("Z", 0)
+                    if ex or ez:
+                        ally_by_coord[(ex, ez)] = ent
+                if ally_by_coord:
+                    for intel in self._attacks:
+                        d = intel if isinstance(intel, dict) else vars(intel) if hasattr(intel, '__dict__') else {}
+                        to_coord = d.get("to") or d.get("field_14") or {}
+                        if isinstance(to_coord, dict):
+                            tx = to_coord.get("X", 0)
+                            tz = to_coord.get("Z", 0)
+                        else:
+                            tx = getattr(to_coord, "X", 0)
+                            tz = getattr(to_coord, "Z", 0)
+                        if not tx and not tz:
+                            continue
+                        ent = ally_by_coord.get((tx, tz))
+                        if ent:
+                            attacked_allies.append(ent)
+
+        for ent in attacked_allies:
+            owner = ent.get("field_3") or ent.get("owner") or {}
+            name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+            log.warning("Ally %s under attack (IntelligencesNtf)!", name)
+            self._bus.emit(EVT_ALLY_UNDER_ATTACK, ent)
 
     @staticmethod
     def _entity_id(ent: dict) -> Any:
@@ -1040,6 +1075,22 @@ class GameState:
             return False  # entity has no alliance
         return entity_union_id == own_uid
 
+    @staticmethod
+    def _is_shielded(ent: dict) -> bool:
+        """Return True if the entity has an active peace shield.
+
+        EntityInfo.field_5 = PropertyUnion; PropertyUnion.field_3 = MapCityInfo;
+        MapCityInfo.onShield (int64) — non-zero means shield is active.
+        """
+        prop = ent.get("field_5")
+        if not isinstance(prop, dict):
+            return False
+        map_city = prop.get("field_3")
+        if not isinstance(map_city, dict):
+            return False
+        on_shield = map_city.get("onShield", 0)
+        return bool(on_shield and on_shield > 0)
+
     def _on_entity_spawned(self, msg: Any) -> None:
         """EVT_ENTITY_SPAWNED — payload is an EntitiesNtf (raw dicts).
 
@@ -1075,6 +1126,9 @@ class GameState:
                 if self._ally_monitoring and self._is_ally_city(ent):
                     owner = ent.get("field_3") or ent.get("owner") or {}
                     name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                    if self._is_shielded(ent):
+                        log.info("Ally %s has shield — skipping reinforcement", name)
+                        continue
                     is_new = eid not in self._union_entities
                     self._union_entities[eid] = ent
                     # Pre-extract coordinates so runner can use X/Z immediately.
@@ -1277,6 +1331,11 @@ class GameState:
                 eid = self._entity_id(ent_dict) or id(ent_dict)
                 is_ally = self._is_ally_city(ent_dict)
                 if not is_ally:
+                    continue
+                if self._is_shielded(ent_dict):
+                    owner_s = ent_dict.get("field_3") or ent_dict.get("owner") or {}
+                    name_s = owner_s.get("name", "?") if isinstance(owner_s, dict) else "?"
+                    log.info("Ally %s has shield — skipping reinforcement", name_s)
                     continue
                 is_new = eid not in self._union_entities
                 self._union_entities[eid] = ent_dict

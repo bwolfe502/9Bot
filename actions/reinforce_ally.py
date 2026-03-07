@@ -277,7 +277,7 @@ def navigate_to_coord(device, x: int, z: int, stop_check=None) -> bool:
         """Type each digit individually via keyevents (KEYCODE_0=7 … KEYCODE_9=16)."""
         for ch in str(val):
             adb_keyevent(device, 7 + int(ch))
-            time.sleep(0.1)  # per-keystroke delay, too short to interrupt
+            time.sleep(0.15)  # per-keystroke delay
 
     # Tap X input field, clear, type value.
     adb_tap(device, 348, 902)
@@ -290,7 +290,7 @@ def navigate_to_coord(device, x: int, z: int, stop_check=None) -> bool:
 
     # Tap Y input field, clear, type value.
     adb_tap(device, 772, 896)
-    _interruptible_sleep(0.2, stop_check)
+    _interruptible_sleep(0.3, stop_check)
     for _ in range(4):
         adb_keyevent(device, 67)  # KEYCODE_DEL (backspace)
     time.sleep(0.1)
@@ -404,13 +404,14 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
     return False
 
 
-def recall_defending_troops(device, count=2, stop_check=None) -> int:
-    """Recall up to *count* defending troops via the MAP troop panel.
+def recall_defending_troops(device, count=2, coords=None, stop_check=None) -> int:
+    """Recall defending troops.
 
-    Flow per troop:
-    1. Find defending.png icons on the troop panel (left side of MAP).
-    2. Tap the icon — centers map on that castle.
-    3. Tap return.png to recall.
+    If *coords* is given as (x, z) raw coordinates, navigates to that castle
+    and recalls the troop there.  Returns 1 on success, 0 on failure.
+
+    If *coords* is None, falls back to panel-based recall: finds defending.png
+    icons on the MAP troop panel and recalls up to *count* troops.
 
     Returns number of troops successfully recalled.
     """
@@ -421,6 +422,35 @@ def recall_defending_troops(device, count=2, stop_check=None) -> int:
             log.warning("recall_defending: failed to reach MAP")
             return 0
 
+    # -- Coordinate-based recall (single troop) --
+    if coords is not None:
+        rx, rz = coords
+        log.info("Recalling troop from coords (%d, %d)", rx // 1000, rz // 1000)
+        if not navigate_to_coord(device, rx, rz, stop_check):
+            log.warning("recall_defending: failed to navigate to (%d, %d)", rx, rz)
+            return 0
+        # Tap center to select the castle.
+        adb_tap(device, 540, 960)
+        _interruptible_sleep(1.0, stop_check)
+        if stop_check and stop_check():
+            return 0
+        if wait_for_image_and_tap("recall_troop.png", device, timeout=3, threshold=0.75):
+            _interruptible_sleep(0.5, stop_check)
+            # Confirm the recall popup.
+            adb_tap(device, 300, 1070)
+            _interruptible_sleep(1.0, stop_check)
+            # Return to map screen.
+            adb_tap(device, 460, 1840)
+            log.info("Recalled troop from (%d, %d)", rx // 1000, rz // 1000)
+            _interruptible_sleep(2.0, stop_check)
+            return 1
+        log.warning("recall_defending: recall_troop.png not found at (%d, %d)", rx // 1000, rz // 1000)
+        save_failure_screenshot(device, "recall_defending_coord_no_recall")
+        adb_tap(device, 540, 960)
+        _interruptible_sleep(0.5, stop_check)
+        return 0
+
+    # -- Panel-based recall (fallback) --
     recalled = 0
     for attempt in range(count):
         if stop_check and stop_check():
