@@ -1246,19 +1246,25 @@ class GameState:
 
         new_city_ids = []
         with self._lock:
+            # Bootstrap _own_union_id from first entity before filtering.
+            # UnionEntitiesNtf is server-filtered to own alliance only, so
+            # the first entity's unionID is trustworthy.
+            if not self._own_union_id:
+                for ent in entities:
+                    ed = ent if isinstance(ent, dict) else vars(ent)
+                    owner = ed.get("field_3") or ed.get("owner") or {}
+                    uid = owner.get("unionID", 0) if isinstance(owner, dict) else 0
+                    if uid:
+                        self._own_union_id = int(uid)
+                        log.info("Bootstrapped own_union_id=%d from UnionEntitiesNtf", uid)
+                        break
+
             for ent in entities:
                 ent_dict = ent if isinstance(ent, dict) else vars(ent)
                 eid = self._entity_id(ent_dict) or id(ent_dict)
                 is_ally = self._is_ally_city(ent_dict)
                 if not is_ally:
                     continue
-                # Bootstrap own_union_id from the first confirmed ally entity.
-                if not self._own_union_id:
-                    owner = ent_dict.get("field_3") or ent_dict.get("owner") or {}
-                    uid = owner.get("unionID", 0) if isinstance(owner, dict) else 0
-                    if uid:
-                        self._own_union_id = int(uid)
-                        log.info("Bootstrapped own_union_id=%d from UnionEntitiesNtf", uid)
                 is_new = eid not in self._union_entities
                 self._union_entities[eid] = ent_dict
                 if is_new:
