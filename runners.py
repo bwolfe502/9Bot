@@ -606,6 +606,11 @@ def run_auto_reinforce_ally(device, stop_event):
                 ensure_shield(device, stop_check)
             if stop_check():
                 break
+            # Always heal before sending troops out.
+            with lock:
+                heal_all(device)
+            if stop_check():
+                break
             config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)

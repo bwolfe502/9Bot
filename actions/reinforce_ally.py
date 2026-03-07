@@ -325,7 +325,8 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
     label = player_name or f"({x},{z})"
     log.info("Reinforcing ally %s at (%d, %d)", label, x, z)
 
-    heal_all(device)
+    if config.get_device_config(device, "auto_heal"):
+        heal_all(device)
 
     if stop_check and stop_check():
         return False
