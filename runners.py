@@ -460,6 +460,41 @@ def _log_reinforce_stat(device, name, power, dist, success):
         get_logger("runner", device).debug("Failed to save reinforce stat: %s", e)
 
 
+def _save_reinforced_state(device, reinforced, active_coords):
+    """Persist reinforced coordinates so recalls survive restarts."""
+    from settings import load_settings, save_settings, DEFAULTS
+    from config import validate_settings, set_device_overrides
+    settings = load_settings()
+    ds = settings.setdefault("device_settings", {})
+    dev = ds.setdefault(device, {})
+    # Convert to JSON-serializable format: {eid: [timestamp, x, z]}
+    dev["reinforced_allies"] = {str(k): list(v) for k, v in reinforced.items()}
+    dev["active_reinforce_coords"] = [list(c) for c in active_coords]
+    settings, _ = validate_settings(settings, DEFAULTS)
+    save_settings(settings)
+    existing = config._DEVICE_CONFIG.get(device, {})
+    existing["reinforced_allies"] = dev["reinforced_allies"]
+    existing["active_reinforce_coords"] = dev["active_reinforce_coords"]
+    set_device_overrides(device, existing)
+
+
+def _load_reinforced_state(device):
+    """Load persisted reinforced coordinates. Returns (reinforced_dict, active_coords_set)."""
+    saved = config.get_device_config(device, "reinforced_allies")
+    coords = config.get_device_config(device, "active_reinforce_coords")
+    reinforced = {}
+    if saved and isinstance(saved, dict):
+        for eid, vals in saved.items():
+            if isinstance(vals, (list, tuple)) and len(vals) == 3:
+                reinforced[eid] = (vals[0], vals[1], vals[2])
+    active = set()
+    if coords and isinstance(coords, list):
+        for c in coords:
+            if isinstance(c, (list, tuple)) and len(c) == 2:
+                active.add((c[0], c[1]))
+    return reinforced, active
+
+
 def _save_home_coords(device, x, z):
     """Persist captured home coords to settings as device overrides."""
     from settings import load_settings, save_settings
@@ -503,9 +538,10 @@ def run_auto_reinforce_ally(device, stop_event):
     dlog.info("Auto Reinforce Ally started")
     stop_check = stop_event.is_set
     lock = config.get_device_lock(device)
-    reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
+    reinforced, active_coords = _load_reinforced_state(device)
+    if reinforced:
+        dlog.info("Loaded %d reinforced allies from previous session", len(reinforced))
     attack_reinforced = set()  # entity_ids already reinforced for an attack event
-    active_coords = set()  # (x, z) tuples where we currently have a troop stationed
     _TROOP_RESERVE = 1  # keep 1 troop free for defense unless under attack
     pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
@@ -590,7 +626,7 @@ def run_auto_reinforce_ally(device, stop_event):
             eid = entity.get("field_1") or entity.get("id") or entity.get("ID")
             if eid is None:
                 continue
-            now = time.monotonic()
+            now = time.time()
             last_t, last_x, last_z = reinforced.get(eid, (0, None, None))
             x = entity.get("X", 0)
             z = entity.get("Z", 0)
@@ -665,8 +701,9 @@ def run_auto_reinforce_ally(device, stop_event):
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
             if success:
-                reinforced[eid] = (time.monotonic(), x, z)
+                reinforced[eid] = (time.time(), x, z)
                 active_coords.add(display_coord)
+                _save_reinforced_state(device, reinforced, active_coords)
                 if is_urgent:
                     attack_reinforced.add(eid)
             _log_reinforce_stat(device, name, power, dist, success)
@@ -699,6 +736,7 @@ def run_auto_reinforce_ally(device, stop_event):
                                     rc = (rx // 1000, rz // 1000)
                                     active_coords.discard(rc)
                                     reinforced.pop(rid, None)
+                                    _save_reinforced_state(device, reinforced, active_coords)
                                     dlog.info("Recalled troop from (%d, %d)", rc[0], rc[1])
                         time.sleep(3)
 
