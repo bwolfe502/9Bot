@@ -129,17 +129,39 @@ def _allocate_port():
 
 
 def _setup_frida_forward_for_device(device_id, host_port):
-    """Set ADB forward for a single device: host_port -> 27042 (gadget port)."""
+    """Set ADB forward for a single device: host_port -> 27042 (gadget port).
+
+    If the forward fails (e.g., ADB connection dropped), tries ``adb connect``
+    to re-establish the connection and retries the forward once.
+    """
     import subprocess
     from botlog import get_logger
     log = get_logger("startup")
-    try:
-        subprocess.run(
+
+    def _run_forward():
+        result = subprocess.run(
             [config.adb_path, "-s", device_id, "forward",
              f"tcp:{host_port}", "tcp:27042"],
             capture_output=True, timeout=5,
         )
-        log.debug("ADB forward tcp:%d -> tcp:27042 for %s", host_port, device_id)
+        return result.returncode == 0
+
+    try:
+        if _run_forward():
+            log.debug("ADB forward tcp:%d -> tcp:27042 for %s", host_port, device_id)
+            return
+        # Forward failed — try reconnecting ADB first (TCP devices only).
+        if ":" in device_id:
+            log.warning("ADB forward failed for %s — reconnecting ADB", device_id)
+            subprocess.run(
+                [config.adb_path, "connect", device_id],
+                capture_output=True, timeout=5,
+            )
+            if _run_forward():
+                log.info("ADB forward tcp:%d -> tcp:27042 for %s (after reconnect)",
+                         host_port, device_id)
+                return
+        log.warning("ADB forward failed for %s (port %d)", device_id, host_port)
     except Exception:
         log.warning("Failed to set ADB forward for %s", device_id, exc_info=True)
 
