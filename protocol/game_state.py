@@ -1030,12 +1030,13 @@ class GameState:
         owner = ent.get("field_3") or ent.get("owner")
         if not isinstance(owner, dict):
             return False
-        # Accept when own union ID unknown yet (0) — still better than missing it.
         entity_union_id = owner.get("unionID", 0)
         own_uid = self._own_union_id
-        if own_uid and entity_union_id and entity_union_id != own_uid:
-            return False
-        return bool(entity_union_id)  # must have some unionID to be an alliance member
+        if not own_uid:
+            return False  # own alliance unknown — can't confirm ally, reject to be safe
+        if not entity_union_id:
+            return False  # entity has no alliance
+        return entity_union_id == own_uid
 
     def _on_entity_spawned(self, msg: Any) -> None:
         """EVT_ENTITY_SPAWNED — payload is an EntitiesNtf (raw dicts).
