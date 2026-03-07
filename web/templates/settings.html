@@ -153,8 +153,13 @@
                     onclick="saveSetting('frontline_occupy_action', 'reinforce'); this.classList.add('on'); this.closest('.card').querySelector('[data-action=attack]').classList.remove('on');"
                     data-action="reinforce"></button>
         </div>
+    </div>
+
+    <!-- Reinforce Ally -->
+    <div class="card settings-card">
+        <div class="settings-card-header">Reinforce Ally</div>
         <div class="settings-row settings-row-inline" data-key="max_reinforce_distance">
-            <span class="settings-row-label">Max Reinforce Distance</span>
+            <span class="settings-row-label">Max Distance</span>
             <input type="number" class="settings-input" value="{{ settings.max_reinforce_distance }}"
                    min="0" max="500" step="5" style="width:70px;text-align:center;"
                    onchange="saveSetting('max_reinforce_distance', parseInt(this.value) || 0)">
