@@ -499,7 +499,6 @@ def run_auto_reinforce_ally(device, stop_event):
     lock = config.get_device_lock(device)
     reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
     active_coords = set()  # (x_disp, z_disp) tuples where we currently have a troop
-    _TROOP_RESERVE = 1  # keep 1 troop free for other tasks
     pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
     try:
@@ -597,11 +596,12 @@ def run_auto_reinforce_ally(device, stop_event):
                     dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
                     continue
 
-            # Troop reserve: keep 1 free for other tasks.
+            # Troop reserve: respect min_troops setting.
+            min_troops = config.get_device_config(device, "min_troops")
             home_troops = troops_avail(device)
-            if home_troops <= _TROOP_RESERVE:
-                dlog.debug("Ally %s: only %d troops home (reserve %d) — skipping",
-                           name or eid, home_troops, _TROOP_RESERVE)
+            if home_troops <= min_troops:
+                dlog.debug("Ally %s: only %d troops home (min_troops=%d) — skipping",
+                           name or eid, home_troops, min_troops)
                 continue
 
             # Coordinate dedup: don't send another troop to the same location.
