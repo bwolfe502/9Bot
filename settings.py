@@ -109,11 +109,25 @@ DEFAULTS = {
 
 
 def load_settings():
-    """Load settings from disk, merging with defaults and validating."""
+    """Load settings from disk, merging with defaults and validating.
+
+    Unknown keys (not in DEFAULTS) are stripped with a warning log.
+    This prevents stale keys from accumulating across version upgrades.
+    The 'device_settings' key is always preserved (per-device overrides).
+    """
     _log = get_logger("settings")
+    # Keys that are allowed even though they're not in DEFAULTS
+    _EXTRA_ALLOWED = {"device_settings"}
     try:
         with open(SETTINGS_FILE, "r") as f:
             saved = json.load(f)
+        # Strip unknown keys
+        unknown = set(saved.keys()) - set(DEFAULTS.keys()) - _EXTRA_ALLOWED
+        if unknown:
+            _log.warning("Removing %d unknown settings key(s): %s",
+                         len(unknown), ", ".join(sorted(unknown)))
+            for k in unknown:
+                del saved[k]
         merged = {**DEFAULTS, **saved}
         merged, warnings = validate_settings(merged, DEFAULTS)
         for w in warnings:
