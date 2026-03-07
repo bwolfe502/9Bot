@@ -541,12 +541,19 @@ def run_auto_reinforce_ally(device, stop_event):
     bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
     dlog.info("Ally monitoring enabled (home X=%d Y=%d)", home_x, home_z)
     config.set_device_status(device, "Watching for Allies...")
+    _HEAL_INTERVAL = 10  # seconds between idle heal checks
+    _last_idle_heal = 0.0
 
     try:
         while not stop_check():
             try:
                 _neg_power, _arrival, entity = pending.get(timeout=1.0)
             except _queue.Empty:
+                now = time.monotonic()
+                if now - _last_idle_heal >= _HEAL_INTERVAL:
+                    _last_idle_heal = now
+                    with lock:
+                        heal_all(device)
                 continue
 
             if stop_check():
@@ -607,6 +614,11 @@ def run_auto_reinforce_ally(device, stop_event):
             dist_str = f" dist={dist:.1f}" if dist is not None else ""
             dlog.info("Ally city spotted: %s (power=%s) at (%s, %s)%s — reinforcing",
                       name or eid, power, x, z, dist_str)
+            # Always heal before sending troops out.
+            with lock:
+                heal_all(device)
+            if stop_check():
+                break
             config.set_device_status(device, f"Reinforcing {name}..." if name else "Reinforcing Ally...")
             with lock:
                 success = reinforce_ally_castle(device, x, z, name, stop_check)
