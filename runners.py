@@ -506,7 +506,7 @@ def run_auto_reinforce_ally(device, stop_event):
     reinforced = {}  # entity_id -> (timestamp, x, z) of last successful reinforce
     attack_reinforced = set()  # entity_ids already reinforced for an attack event
     active_coords = set()  # (x, z) tuples where we currently have a troop stationed
-    _TROOP_RESERVE = 2  # keep 2 troops free for defense unless under attack
+    _TROOP_RESERVE = 1  # keep 1 troop free for defense unless under attack
     pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
     try:
