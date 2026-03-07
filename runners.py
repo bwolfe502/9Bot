@@ -573,6 +573,9 @@ def run_auto_reinforce_ally(device, stop_event):
             last_t, last_x, last_z = reinforced.get(eid, (0, None, None))
             x = entity.get("X", 0)
             z = entity.get("Z", 0)
+            if not x and not z:
+                dlog.debug("Ally %s has no coordinates — skipping", eid)
+                continue
             same_pos = (last_x == x and last_z == z)
             if same_pos and now - last_t < _ALLY_REINFORCE_COOLDOWN_S:
                 dlog.debug("Ally %s on cooldown at same position, skipping", eid)
@@ -588,6 +591,10 @@ def run_auto_reinforce_ally(device, stop_event):
             max_dist = config.get_device_config(device, "max_reinforce_distance")
             if home_x and home_z and x and z:
                 dist = math.sqrt((x / 1000 - home_x) ** 2 + (z / 1000 - home_z) ** 2)
+                # Skip own castle (distance ≈ 0 from home).
+                if dist < 2:
+                    dlog.debug("Skipping own castle %s (dist=%.1f)", name or eid, dist)
+                    continue
                 if max_dist and dist > max_dist:
                     dlog.info("Ally %s at dist %.1f > max %d — skipping", name or eid, dist, max_dist)
                     continue

@@ -1111,6 +1111,7 @@ class GameState:
             # Typed: iterate PosInfo objects.
             if not msg.postions:
                 return
+            newly_located = []
             with self._lock:
                 for pi in msg.postions:
                     if pi.ID and pi.ID in self._entities:
@@ -1122,10 +1123,20 @@ class GameState:
                             ent["pos_raw"] = pi.pos_raw
                         # Keep _union_entities in sync — ally cities move on teleport.
                         if pi.ID in self._union_entities:
+                            had_coords = bool(self._union_entities[pi.ID].get("X") or
+                                              self._union_entities[pi.ID].get("Z"))
                             self._union_entities[pi.ID] = ent
-                            log.debug("PositionNtf ally city teleport id=%s x=%s z=%s",
-                                      pi.ID, ent.get("X"), ent.get("Z"))
+                            # Emit spotted event if this is the first time coords are available.
+                            if not had_coords and (ent.get("X") or ent.get("Z")):
+                                newly_located.append(pi.ID)
+                            log.debug("PositionNtf ally city id=%s x=%s z=%s (new_coords=%s)",
+                                      pi.ID, ent.get("X"), ent.get("Z"), not had_coords)
                 self._touch("entities")
+            # Emit ally spotted events outside lock for entities that just got coords.
+            for eid in newly_located:
+                ent = self._union_entities.get(eid)
+                if ent and self._ally_monitoring:
+                    self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
             return
         # Fallback for raw dicts (backward compat).
         positions = getattr(msg, "postions", None) or getattr(msg, "positions", None)
@@ -1267,6 +1278,8 @@ class GameState:
                     continue
                 is_new = eid not in self._union_entities
                 self._union_entities[eid] = ent_dict
+                # Also store in _entities so PositionNtf can update coords.
+                self._entities[eid] = ent_dict
                 if is_new:
                     x, z = self._entity_coords(ent_dict)
                     if x or z:
@@ -1279,7 +1292,12 @@ class GameState:
                     ent_dict["_power"] = power  # pre-computed for priority queue
                     log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s",
                              eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0))
-                    new_city_ids.append(eid)
+                    # Only queue for emission if we have coordinates.
+                    # Entities without coords will be emitted when PositionNtf arrives.
+                    if ent_dict.get("X") or ent_dict.get("Z"):
+                        new_city_ids.append(eid)
+                    else:
+                        log.debug("Ally %s has no coords yet — waiting for PositionNtf", name)
             self._touch("entities")
 
         # Emit outside lock.
