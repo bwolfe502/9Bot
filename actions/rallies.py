@@ -25,7 +25,7 @@ from navigation import navigate, check_screen, DEBUG_DIR
 from troops import (troops_avail, heal_all, read_panel_statuses,
                     TroopAction, capture_departing_portrait)
 
-from actions._helpers import _last_depart_slot, _interruptible_sleep
+from actions._helpers import _last_depart_slot, _interruptible_sleep, check_depart_anyway, tap_depart_anyway
 
 _log = get_logger("actions")
 
@@ -240,7 +240,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 log.debug("Protocol: %d joinable rallies (%d non-blacklisted)",
                           len(joinable), len(non_blacklisted))
         except Exception:
-            pass
+            log.debug("Protocol rally check failed — falling back to UI", exc_info=True)
 
     # Capture a tighter baseline right before entering the war screen.
     # The initial `troops` check above may be stale by the time we tap depart.
@@ -511,8 +511,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 depart_tapped = tap_image("depart.png", device)
                 if not depart_tapped:
                     # Check for low health troops (Depart Anyway button)
-                    da_screen = load_screenshot(device)
-                    if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.65) is not None:
+                    if check_depart_anyway(device):
                         log.warning("Low health troops — 'Depart Anyway' visible")
                         if config.get_device_config(device, "auto_heal"):
                             log.info("Healing troops before retry")
@@ -522,7 +521,7 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                             break  # breaks rally_types loop → rescan
                         else:
                             log.info("Auto heal off — tapping Depart Anyway")
-                            depart_tapped = tap_image("depart_anyway.png", device)
+                            depart_tapped = tap_depart_anyway(device)
 
                 if depart_tapped:
                     # Verify join succeeded — game should transition to map screen

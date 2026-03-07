@@ -19,7 +19,7 @@ Usage::
 CompressedMessage handling::
 
     The game wraps large messages in ``cspb.CompressedMessage``:
-    field 1 = zlib-compressed data, field 2 = original length.
+    field 1 = LZ4-compressed data, field 2 = original length.
     After decompression the inner bytes are *not* a full frame — they are
     ``[4-byte msg_id] + [protobuf payload]`` (no outer length prefix).
     Use :func:`decompress_payload` to unwrap.

@@ -24,7 +24,7 @@ from navigation import navigate, check_screen
 from troops import (troops_avail, heal_all, read_panel_statuses,
                     TroopAction, capture_departing_portrait)
 
-from actions._helpers import _interruptible_sleep, _last_depart_slot
+from actions._helpers import _interruptible_sleep, _last_depart_slot, check_depart_anyway, tap_depart_anyway
 from actions.titans import restore_ap, _restore_ap_from_open_menu, _close_ap_menu
 from actions.combat import _detect_player_at_eg
 
@@ -411,8 +411,7 @@ def rally_eg(device, stop_check=None):
                            lambda: find_image(load_screenshot(device), "depart.png", threshold=0.75) is not None,
                            2, "eg_depart_retry_wait")
         # Check for Depart Anyway (low health troops)
-        da_screen = load_screenshot(device)
-        if da_screen is not None and find_image(da_screen, "depart_anyway.png", threshold=0.65) is not None:
+        if check_depart_anyway(device):
             log.warning("P%d: low health troops — 'Depart Anyway' visible", priest_num)
             if config.get_device_config(device, "auto_heal"):
                 log.info("P%d: healing troops before retry", priest_num)
@@ -421,7 +420,7 @@ def rally_eg(device, stop_check=None):
                 return False  # caller will retry
             else:
                 log.info("P%d: auto heal off — tapping Depart Anyway", priest_num)
-                if tap_image("depart_anyway.png", device):
+                if tap_depart_anyway(device):
                     return _check_ap_popup_after_depart(priest_num)
         log.error("P%d: click_depart FAILED after 5 attempts", priest_num)
         save_failure_screenshot(device, f"eg_depart_fail_p{priest_num}")

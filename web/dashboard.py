@@ -97,31 +97,45 @@ TASK_FUNCTIONS = {
 # Home Server: Events, Farming, Combat
 AUTO_MODES_BL = [
     {"group": "Combat", "modes": [
-        {"key": "auto_pass",           "label": "Pass Battle"},
-        {"key": "auto_occupy",         "label": "Occupy Towers"},
-        {"key": "auto_reinforce",      "label": "Reinforce Throne"},
-        {"key": "auto_reinforce_ally", "label": "Reinforce Ally"},
+        {"key": "auto_pass",           "label": "Pass Battle",
+         "help": "Marker must be set on the target pass. Reinforces the pass if your team owns it, joins rallies if the enemy owns it. Mode can be switched between Rally Joiner and Rally Starter in Settings."},
+        {"key": "auto_occupy",         "label": "Occupy Towers",
+         "help": "Scans the territory grid for enemy towers adjacent to your territory, teleports to them, and attacks. Owned passes must be set on the Territory Grid page or unreachable zones will be skipped. Configure your team and enemies in Settings."},
+        {"key": "auto_reinforce",      "label": "Reinforce Throne",
+         "help": "Periodically sends a troop to reinforce your alliance throne in territory war. The throne must be centered on screen before starting."},
+        {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
+         "help": "Automatically reinforces nearby alliance castles in order of power level. Requires protocol to be enabled. Max distance can be changed in Settings."},
     ]},
     {"group": "Farming", "modes": [
-        {"key": "auto_quest",     "label": "Auto Quest"},
-        {"key": "auto_titan",     "label": "Rally Titans"},
-        {"key": "auto_gold",      "label": "Gather Gold"},
-        {"key": "auto_mithril",   "label": "Mine Mithril"},
+        {"key": "auto_quest",     "label": "Auto Quest",
+         "help": "Automatically completes alliance quests for you. Begins mining gold after quests are complete. Markers must be set for tower and PVP quests to work. Check Settings for gold mine level, troop count, and AP usage."},
+        {"key": "auto_titan",     "label": "Rally Titans",
+         "help": "Searches for and rallies Titans on the map. Restores AP if needed. AP usage can be set to on or off in Settings."},
+        {"key": "auto_gold",      "label": "Gather Gold",
+         "help": "Sends all troops to gather gold from mines. Mine level and max troops can be configured in Settings."},
+        {"key": "auto_mithril",   "label": "Mine Mithril",
+         "help": "Sends troops to gather mithril on a configurable timer. Pulls them out before the 20-minute vulnerability window. Interval can be changed in Settings."},
     ]},
 ]
 
 AUTO_MODES_HS = [
     {"group": "Events", "modes": [
-        {"key": "auto_groot",     "label": "Join Groot"},
+        {"key": "auto_groot",     "label": "Join Groot",
+         "help": "Joins Groot rally events when they appear."},
     ]},
     {"group": "Farming", "modes": [
-        {"key": "auto_titan",     "label": "Rally Titans"},
-        {"key": "auto_gold",      "label": "Gather Gold"},
-        {"key": "auto_mithril",   "label": "Mine Mithril"},
+        {"key": "auto_titan",     "label": "Rally Titans",
+         "help": "Searches for and rallies Titans on the map. Restores AP if needed. AP usage can be set to on or off in Settings."},
+        {"key": "auto_gold",      "label": "Gather Gold",
+         "help": "Sends all troops to gather gold from mines. Mine level and max troops can be configured in Settings."},
+        {"key": "auto_mithril",   "label": "Mine Mithril",
+         "help": "Sends troops to gather mithril on a configurable timer. Pulls them out before the 20-minute vulnerability window. Interval can be changed in Settings."},
     ]},
     {"group": "Combat", "modes": [
-        {"key": "auto_reinforce",      "label": "Reinforce Throne"},
-        {"key": "auto_reinforce_ally", "label": "Reinforce Ally"},
+        {"key": "auto_reinforce",      "label": "Reinforce Throne",
+         "help": "Periodically sends a troop to reinforce your alliance throne in territory war. The throne must be centered on screen before starting."},
+        {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
+         "help": "Automatically reinforces nearby alliance castles in order of power level. Requires protocol to be enabled. Max distance can be changed in Settings."},
     ]},
 ]
 
@@ -149,6 +163,13 @@ from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
 
 
 _task_start_lock = threading.Lock()  # prevent TOCTOU race on running_tasks
+
+# Modes that can't run simultaneously on the same device
+_EXCLUSIVE_MODES = {
+    "auto_quest": ["auto_gold", "auto_titan"],
+    "auto_titan": ["auto_gold", "auto_quest"],
+    "auto_gold":  ["auto_quest", "auto_titan"],
+}
 
 
 # Map auto-mode keys to their runner functions
@@ -567,16 +588,18 @@ def create_app():
 
     # Cache device list to avoid spamming ADB on every poll
     _device_cache = {"devices": [], "instances": {}, "emu_running": {}, "ts": 0}
+    _device_cache_lock = threading.Lock()
     _DEVICE_CACHE_TTL = 15  # seconds
 
     def _cached_devices():
-        now = time.time()
-        if now - _device_cache["ts"] > _DEVICE_CACHE_TTL:
-            _device_cache["devices"] = get_devices()
-            _device_cache["instances"] = get_emulator_instances()
-            _device_cache["emu_running"] = get_bluestacks_running()
-            _device_cache["ts"] = now
-        return _device_cache["devices"], _device_cache["instances"]
+        with _device_cache_lock:
+            now = time.time()
+            if now - _device_cache["ts"] > _DEVICE_CACHE_TTL:
+                _device_cache["devices"] = get_devices()
+                _device_cache["instances"] = get_emulator_instances()
+                _device_cache["emu_running"] = get_bluestacks_running()
+                _device_cache["ts"] = now
+            return _device_cache["devices"], _device_cache["instances"]
 
     def _device_status_info(d, instances):
         """Build status dict for a single device."""
@@ -700,12 +723,7 @@ def create_app():
                         continue
 
                 # Exclusivity: stop conflicting modes before starting
-                EXCLUSIVE = {
-                    "auto_quest": ["auto_gold", "auto_titan"],
-                    "auto_titan": ["auto_gold", "auto_quest"],
-                    "auto_gold":  ["auto_quest", "auto_titan"],
-                }
-                for conflict in EXCLUSIVE.get(mode_key, []):
+                for conflict in _EXCLUSIVE_MODES.get(mode_key, []):
                     ckey = f"{device}_{conflict}"
                     if ckey in running_tasks:
                         stop_task(ckey)
@@ -1023,16 +1041,47 @@ def create_app():
 
         def _do_restart():
             time.sleep(0.5)  # let the HTTP response flush
-            os.environ["NINEBOT_RESTART"] = "1"  # skip opening new window
-            # Close pywebview window first so the new process can open one
+            # Mark as restarting so _on_exit skips shutdown (which would
+            # tear down ADB connections the new process needs).
+            config._restarting = True
+            # Spawn the new process BEFORE closing the window, because
+            # closing pywebview triggers os._exit(0) which kills daemon
+            # threads (including this one) before os.execv can run.
+            env = os.environ.copy()
+            env["NINEBOT_RESTART"] = "1"  # skip opening new window
+            # Save window position/size so the new process can restore it.
+            # pywebview reports physical pixels; we need logical pixels
+            # for create_window, so divide by the DPI scale factor.
+            win = getattr(config, '_webview_window', None)
+            if win:
+                try:
+                    scale = 1.0
+                    if sys.platform == "win32":
+                        import ctypes
+                        ctypes.windll.user32.SetProcessDPIAware()
+                        dpi = ctypes.windll.user32.GetDpiForSystem()
+                        scale = dpi / 96.0
+                    env["NINEBOT_WIN_X"] = str(int(win.x / scale))
+                    env["NINEBOT_WIN_Y"] = str(int(win.y / scale))
+                    env["NINEBOT_WIN_W"] = str(int(win.width / scale))
+                    env["NINEBOT_WIN_H"] = str(int(win.height / scale))
+                except Exception:
+                    pass
+            import subprocess as _sp
+            # Use the project directory as cwd so relative paths (e.g.
+            # platform-tools/adb.exe) resolve correctly in the new process.
+            project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            _sp.Popen([sys.executable] + sys.argv, env=env, cwd=project_dir)
+            # Now close pywebview window (triggers os._exit in main thread)
             cb = config._quit_callback
             if cb:
                 try:
                     cb()
-                    time.sleep(1)
                 except Exception:
                     pass
-            os.execv(sys.executable, [sys.executable] + sys.argv)
+            # Fallback if no pywebview — force exit the old process
+            time.sleep(1)
+            os._exit(0)
 
         threading.Thread(target=_do_restart, daemon=True).start()
         return jsonify({"ok": True, "message": "Restarting..."})
@@ -1862,12 +1911,7 @@ def create_app():
                 if isinstance(info, dict) and info.get("thread") and info["thread"].is_alive():
                     return redirect(f"/d/{dhash}?token={token}")
 
-            EXCLUSIVE = {
-                "auto_quest": ["auto_gold", "auto_titan"],
-                "auto_titan": ["auto_gold", "auto_quest"],
-                "auto_gold":  ["auto_quest", "auto_titan"],
-            }
-            for conflict in EXCLUSIVE.get(mode_key, []):
+            for conflict in _EXCLUSIVE_MODES.get(mode_key, []):
                 ckey = f"{device}_{conflict}"
                 if ckey in running_tasks:
                     stop_task(ckey)
@@ -2400,12 +2444,7 @@ def create_app():
                 if isinstance(info, dict) and info.get("thread") and info["thread"].is_alive():
                     return  # Already running
             # Exclusivity
-            EXCLUSIVE = {
-                "auto_quest": ["auto_gold", "auto_titan"],
-                "auto_titan": ["auto_gold", "auto_quest"],
-                "auto_gold":  ["auto_quest", "auto_titan"],
-            }
-            for conflict in EXCLUSIVE.get(mode_key, []):
+            for conflict in _EXCLUSIVE_MODES.get(mode_key, []):
                 ckey = f"{device_id}_{conflict}"
                 if ckey in running_tasks:
                     stop_task(ckey)

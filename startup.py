@@ -129,17 +129,39 @@ def _allocate_port():
 
 
 def _setup_frida_forward_for_device(device_id, host_port):
-    """Set ADB forward for a single device: host_port -> 27042 (gadget port)."""
+    """Set ADB forward for a single device: host_port -> 27042 (gadget port).
+
+    If the forward fails (e.g., ADB connection dropped), tries ``adb connect``
+    to re-establish the connection and retries the forward once.
+    """
     import subprocess
     from botlog import get_logger
     log = get_logger("startup")
-    try:
-        subprocess.run(
+
+    def _run_forward():
+        result = subprocess.run(
             [config.adb_path, "-s", device_id, "forward",
              f"tcp:{host_port}", "tcp:27042"],
             capture_output=True, timeout=5,
         )
-        log.debug("ADB forward tcp:%d -> tcp:27042 for %s", host_port, device_id)
+        return result.returncode == 0
+
+    try:
+        if _run_forward():
+            log.debug("ADB forward tcp:%d -> tcp:27042 for %s", host_port, device_id)
+            return
+        # Forward failed — try reconnecting ADB first (TCP devices only).
+        if ":" in device_id:
+            log.warning("ADB forward failed for %s — reconnecting ADB", device_id)
+            subprocess.run(
+                [config.adb_path, "connect", device_id],
+                capture_output=True, timeout=5,
+            )
+            if _run_forward():
+                log.info("ADB forward tcp:%d -> tcp:27042 for %s (after reconnect)",
+                         host_port, device_id)
+                return
+        log.warning("ADB forward failed for %s (port %d)", device_id, host_port)
     except Exception:
         log.warning("Failed to set ADB forward for %s", device_id, exc_info=True)
 
@@ -387,6 +409,41 @@ def get_protocol_ally_cities(device=None):
         return None
 
 
+_FACTION_TO_TEAM = {1: "red", 2: "blue", 3: "green", 4: "yellow"}
+
+
+def get_protocol_territory_grid(device=None):
+    """Return territory grid from protocol, or None.
+
+    Returns None when protocol is off, data not yet received, or data is stale.
+
+    Returns dict mapping (row, col) -> (owner_team, contester_team, has_defender):
+        owner_team:     team string ("red"/"blue"/"green"/"yellow") or None if unowned
+        contester_team: team currently attacking this tower, or None
+        has_defender:   True if a troop is occupying/defending this tower
+    Only towers with at least an owner or a contester are included.
+    """
+    try:
+        state = _get_device_state(device)
+        if state is None:
+            return None
+        if not state.is_fresh("territory", max_age_s=30.0):
+            return None
+        raw_grid = state.territory_grid
+        if not raw_grid:
+            return None
+        result = {}
+        for (row, col), (faction_id, cur_faction_id, legion_id) in raw_grid.items():
+            owner_team = _FACTION_TO_TEAM.get(faction_id)
+            contester_team = _FACTION_TO_TEAM.get(cur_faction_id) if cur_faction_id else None
+            has_defender = bool(legion_id)
+            if owner_team or contester_team:
+                result[(row, col)] = (owner_team, contester_team, has_defender)
+        return result
+    except Exception:
+        return None
+
+
 def get_protocol_troop_snapshot(device):
     """Build a DeviceTroopSnapshot from protocol lineup data, or None."""
     state = _get_device_state(device)
@@ -477,7 +534,10 @@ def apply_settings(settings):
     config.MITHRIL_INTERVAL = settings.get("mithril_interval", 19)
     for dev_id, ts in settings.get("last_mithril_time", {}).items():
         try:
-            config.LAST_MITHRIL_TIME[dev_id] = float(ts)
+            ts_f = float(ts)
+            interval = config.get_device_config(dev_id, "mithril_interval")
+            if time.time() - ts_f < interval * 60:
+                config.LAST_MITHRIL_TIME[dev_id] = ts_f
         except (ValueError, TypeError):
             pass
     from botlog import set_console_verbose
@@ -730,6 +790,10 @@ def initialize():
     # Connect emulators
     from devices import auto_connect_emulators
     auto_connect_emulators()
+
+    # Reconcile protocol interceptors now that devices are connected.
+    # The earlier call in apply_settings() may have found no devices yet.
+    _reconcile_protocol()
 
     # Pre-initialize OCR engine in background thread
     from vision import warmup_ocr

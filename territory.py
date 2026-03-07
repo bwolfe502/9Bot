@@ -504,10 +504,64 @@ def scan_targets(device):
     }
 
 
+def _enrich_with_protocol(device, scan_result):
+    """Optionally enrich vision scan results with protocol territory data.
+
+    When protocol is active and territory data is fresh, splits enemy targets
+    into defended (has troop) vs undefended (empty tower) for smarter
+    prioritization. Vision scan is always the authoritative source for the
+    target set — protocol only adds metadata.
+
+    Modifies scan_result in place, adding "undefended_enemies" key.
+    """
+    try:
+        from startup import get_protocol_territory_grid
+        proto_grid = get_protocol_territory_grid(device)
+    except Exception:
+        proto_grid = None
+
+    if not proto_grid:
+        return  # No protocol data — vision-only targets
+
+    # Split unflagged enemies into defended vs undefended using protocol
+    undefended = []
+    defended_unflagged = []
+    for sq in scan_result["unflagged_enemies"]:
+        proto_info = proto_grid.get(sq)
+        if proto_info and len(proto_info) >= 3 and proto_info[2]:
+            defended_unflagged.append(sq)  # has_defender=True
+        else:
+            undefended.append(sq)
+
+    # Also check flagged enemies
+    defended_flagged = []
+    undefended_flagged = []
+    for sq in scan_result["flagged_enemies"]:
+        proto_info = proto_grid.get(sq)
+        if proto_info and len(proto_info) >= 3 and proto_info[2]:
+            defended_flagged.append(sq)
+        else:
+            undefended_flagged.append(sq)
+
+    scan_result["undefended_enemies"] = undefended + undefended_flagged
+    scan_result["defended_enemies"] = defended_unflagged + defended_flagged
+    scan_result["_enriched"] = True
+
+    log = get_logger("territory", device)
+    log.info("Protocol enrichment: %d undefended, %d defended targets",
+             len(scan_result["undefended_enemies"]),
+             len(scan_result["defended_enemies"]))
+
+
 def _pick_target(scan_result):
     """Pick a target from scan results by priority.
 
-    Priority:
+    When protocol-enriched (has "undefended_enemies" key):
+        1. Undefended enemy squares (best — walk in without fighting)
+        2. Defended enemy squares (need to clear defender first)
+        3. Friendly frontline squares (reinforce when no enemy targets)
+
+    Vision-only fallback (no enrichment):
         1. Unflagged enemy squares (best — no one marching there yet)
         2. Flagged enemy squares (fallback — someone else may be attacking)
         3. Friendly frontline squares (reinforce when no enemy targets)
@@ -515,11 +569,22 @@ def _pick_target(scan_result):
     Returns (row, col, action_type) or None if no targets.
     action_type is "attack" or "reinforce".
     """
-    for targets, action in [
-        (scan_result["unflagged_enemies"], "attack"),
-        (scan_result["flagged_enemies"], "attack"),
-        (scan_result["friendly"], "reinforce"),
-    ]:
+    if scan_result.get("_enriched"):
+        # Protocol-enriched path: prefer undefended towers
+        priority = [
+            (scan_result["undefended_enemies"], "attack"),
+            (scan_result["defended_enemies"], "attack"),
+            (scan_result["friendly"], "reinforce"),
+        ]
+    else:
+        # Vision-only path: original behavior
+        priority = [
+            (scan_result["unflagged_enemies"], "attack"),
+            (scan_result["flagged_enemies"], "attack"),
+            (scan_result["friendly"], "reinforce"),
+        ]
+
+    for targets, action in priority:
         if targets:
             row, col = random.choice(targets)
             return row, col, action
@@ -548,6 +613,9 @@ def attack_territory(device, debug=False):
     scan = scan_targets(device)
     if scan is None:
         return None
+
+    # Enrich vision results with protocol data (when available)
+    _enrich_with_protocol(device, scan)
 
     target = _pick_target(scan)
     if target is None:
