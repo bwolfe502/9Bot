@@ -90,7 +90,7 @@ def _apply_shield_via_ui(device, stop_check=None):
 
     # Tap shield button in castle menu.
     adb_tap(device, 530, 1050)
-    _interruptible_sleep(1.0, stop_check)
+    _interruptible_sleep(2.0, stop_check)
 
     if stop_check and stop_check():
         return
@@ -136,9 +136,10 @@ def ensure_shield(device, stop_check=None) -> bool:
                  remaining / 60)
         return True
 
-    # Need to navigate to castle for either querying or applying.
-    if not _center_on_home_castle(device, stop_check):
-        return False
+    # Ensure we're on MAP centered on home castle.
+    if check_screen(device) != Screen.MAP:
+        if not _center_on_home_castle(device, stop_check):
+            return False
 
     if stop_check and stop_check():
         return False
@@ -160,10 +161,8 @@ def ensure_shield(device, stop_check=None) -> bool:
 
     _apply_shield_via_ui(device, stop_check)
 
-    # Verify: re-query to capture new ShieldEndTs.
-    if not _center_on_home_castle(device, stop_check):
-        return True  # applied but can't verify
-    _query_shield_via_ui(device, stop_check)
+    # Verify: wait for protocol to pick up new ShieldEndTs.
+    _interruptible_sleep(2.0, stop_check)
     remaining = _get_shield_remaining(device)
     if remaining is not None and remaining > 0:
         log.info("Shield verified: %.0f min remaining", remaining / 60)
