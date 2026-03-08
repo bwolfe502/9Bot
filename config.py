@@ -341,10 +341,13 @@ SETTINGS_RULES = {
     # Strings — type + allowed values
     "pass_mode":             {"type": str, "choices": ["Rally Joiner", "Rally Starter"]},
     "my_team":               {"type": str, "choices": ["yellow", "red", "blue", "green"]},
-    "enemy_team":            {"type": str, "choices": ["yellow", "red", "blue", "green"]},  # legacy single-value, migrated to enemy_teams list
     "enemy_teams":           {"type": list},  # list of team color strings
     "frontline_enemy_teams": {"type": list},  # list of team color strings (frontline occupy)
     "frontline_occupy_action": {"type": str, "choices": ["attack", "reinforce"]},
+    "territory_passes":      {"type": dict},
+    "territory_mutual_zones":{"type": dict},
+    "territory_safe_zones":  {"type": dict},
+    "territory_home_zones":  {"type": dict},
     "mode":                  {"type": str, "choices": ["bl", "rw"]},
 }
 
