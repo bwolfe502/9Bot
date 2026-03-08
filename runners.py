@@ -311,9 +311,9 @@ def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
                 time.sleep(0.5)
                 continue
 
-            if find_image(screen, "reinforce_button.png", threshold=0.5):
+            if find_image(screen, "territory_reinforce.png", threshold=0.5):
                 dlog.info("Found reinforce button - reinforcing")
-                tap_image("reinforce_button.png", device, threshold=0.5)
+                tap_image("territory_reinforce.png", device, threshold=0.5)
                 time.sleep(1)
                 tap_image("depart.png", device)
                 return "reinforce"

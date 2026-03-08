@@ -976,7 +976,7 @@ def _attack_pvp_tower(device, stop_check=None):
             menu_found = True
             break
 
-        if find_image(screen, "reinforce_button.png", threshold=0.5):
+        if find_image(screen, "territory_reinforce.png", threshold=0.5):
             msg = "PVP ERROR: Enemy marker points to a friendly tower — update marker and restart Auto Quest"
             log.error(msg)
             config.set_device_status(device, "ERROR: Enemy Marker → Friendly Tower!")
@@ -1188,8 +1188,8 @@ def occupy_tower(device, stop_check=None):
             time.sleep(0.5)
             continue
 
-        if find_image(screen, "reinforce_button.png"):
-            tap_image("reinforce_button.png", device)
+        if find_image(screen, "territory_reinforce.png"):
+            tap_image("territory_reinforce.png", device)
             button_found = True
             break
 

@@ -156,7 +156,7 @@ class TestOccupyTower:
 
     def test_deploys_successfully(self, mock_device):
         def find_side_effect(screen, image, threshold=0.8):
-            if image == "reinforce_button.png":
+            if image == "territory_reinforce.png":
                 return (0.9, (100, 100), 50, 200)
             return None
         with patch("actions.quests.navigate", return_value=True), \
@@ -201,7 +201,7 @@ class TestOccupyTower:
 
     def test_fails_if_depart_not_found(self, mock_device):
         def find_side_effect(screen, image, threshold=0.8):
-            if image == "reinforce_button.png":
+            if image == "territory_reinforce.png":
                 return (0.9, (100, 100), 50, 200)
             return None
         with patch("actions.quests.navigate", return_value=True), \

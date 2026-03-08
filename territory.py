@@ -511,7 +511,7 @@ def _tap_tower_and_detect_menu(device, log, timeout=10):
 
     Returns:
         "attack"    — attack_button.png found (enemy troops in tower)
-        "reinforce" — reinforce_button.png found (empty or friendly tower)
+        "reinforce" — territory_reinforce.png found (empty or friendly tower)
         None        — neither found within timeout
     """
     start = time.time()
@@ -530,7 +530,7 @@ def _tap_tower_and_detect_menu(device, log, timeout=10):
             log.debug("Attack button detected")
             return "attack"
 
-        if find_image(screen, "reinforce_button.png", threshold=0.7):
+        if find_image(screen, "territory_reinforce.png", threshold=0.7):
             log.debug("Reinforce button detected")
             return "reinforce"
 
@@ -550,8 +550,8 @@ def _do_depart(device, log, action_type):
             log.warning("attack_button.png not found for tap")
             return False
     else:
-        if not tap_image("reinforce_button.png", device, threshold=0.7):
-            log.warning("reinforce_button.png not found for tap")
+        if not tap_image("territory_reinforce.png", device, threshold=0.7):
+            log.warning("territory_reinforce.png not found for tap")
             return False
 
     time.sleep(1)

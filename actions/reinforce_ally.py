@@ -17,7 +17,7 @@ from config import Screen
 from botlog import get_logger, timed_action
 from vision import (
     tap_image, wait_for_image_and_tap, load_screenshot, find_image,
-    find_all_matches, adb_tap, adb_keyevent, logged_tap,
+    find_all_matches, adb_tap, adb_swipe, adb_keyevent, logged_tap,
     save_failure_screenshot, read_text,
 )
 from navigation import navigate, check_screen
@@ -373,7 +373,7 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
     Flow:
     1. navigate_to_coord to move map camera to the ally's location.
     2. Tap center of screen to select the castle.
-    3. Wait for reinforce_button.png and tap it.
+    3. Wait for alliance_reinforce.png and tap it.
     4. Tap depart.png (with depart_anyway.png fallback).
 
     Returns True if a troop departed, False otherwise.
@@ -408,32 +408,23 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
         log.info("Ally %s has a shield — skipping reinforce", label)
         return False
 
-    # Tap a 3x3 grid across the castle area to find and open the castle detail panel.
-    # Castle may not be perfectly centered after navigate_to_coord.
-    # Start from center and spiral outward.
-    _grid_points = [
-        (551, 966),  # center first
-        (476, 906), (551, 906), (626, 906),  # top row
-        (626, 966),                           # middle right
-        (626, 1025), (551, 1025), (476, 1025), # bottom row
-        (476, 966),                           # middle left
-    ]
-    panel_opened = False
-    for gx, gy in _grid_points:
-        adb_tap(device, gx, gy)
-        time.sleep(0.15)
+    # Tap castle at center to open the castle panel.
+    for attempt in range(4):
+        adb_swipe(device, 540, 960, 540, 960, duration_ms=150)
+        _interruptible_sleep(1.5, stop_check)
+
         screen = load_screenshot(device)
-        if screen is not None and find_image(screen, "detail_button.png", threshold=0.7) is not None:
-            log.debug("Castle panel opened at grid tap (%d, %d)", gx, gy)
-            panel_opened = True
+        if screen is not None and find_image(screen, "alliance_reinforce.png", threshold=0.7) is not None:
             break
-    if not panel_opened:
-        log.warning("Castle panel did not open after grid tap for %s", label)
+        log.debug("Castle panel not found for %s — retry %d/4", label, attempt + 1)
+    else:
+        log.warning("Castle panel did not open for %s", label)
+        save_failure_screenshot(device, "ally_reinforce_panel_missing")
+        navigate(Screen.MAP, device)
+        return False
 
-    _interruptible_sleep(0.3, stop_check)
-
-    # The ally castle panel always shows the yellow REINFORCE button at a fixed position.
-    logged_tap(device, 529, 1043, "ally_reinforce_button")
+    # Tap the reinforce button at its detected center.
+    tap_image("alliance_reinforce.png", device, threshold=0.7)
     _interruptible_sleep(0.4, stop_check)
 
     if stop_check and stop_check():

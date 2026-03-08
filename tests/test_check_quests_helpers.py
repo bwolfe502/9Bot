@@ -502,7 +502,7 @@ class TestAttackPvpTower:
         """Reinforce button found instead of attack → wrong tower, sets error."""
         mock_config.set_device_status = MagicMock()
         def find_side_effect(screen, image, threshold=0.8):
-            if image == "reinforce_button.png":
+            if image == "territory_reinforce.png":
                 return (0.9, (100, 100), 50, 200)
             return None
         mock_find.side_effect = find_side_effect
