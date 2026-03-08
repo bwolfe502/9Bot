@@ -371,7 +371,7 @@ def run_auto_pass(device, stop_event, pass_mode, pass_interval, variation):
                             dlog.warning("Not enough troops, waiting...")
                             time.sleep(5)
                             continue
-                        join_war_rallies(device)
+                        join_war_rallies(device, stop_check=stop_check)
                     if stop_check():
                         break
                     time.sleep(2)
