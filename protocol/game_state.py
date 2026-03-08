@@ -535,9 +535,12 @@ class GameState:
 
     def _on_chat_message(self, msg: Any) -> None:
         """EVT_CHAT_MESSAGE — payload is a dict (transformed) or raw object."""
+        is_dict = isinstance(msg, dict)
+        content = msg.get("content", "") if is_dict else ""
+        log.debug("_on_chat_message: is_dict=%s content=%r", is_dict, content[:80])
         with self._lock:
             # Track history_id for dedup against later ChatPullMsgAck.
-            if isinstance(msg, dict):
+            if is_dict:
                 hid = msg.get("history_id", "")
                 if hid:
                     self._chat_seen_ids.add(hid)
@@ -548,7 +551,7 @@ class GameState:
             self._chat.append(msg)
             self._touch("chat")
         # Request translation outside the lock (fire-and-forget).
-        if isinstance(msg, dict):
+        if is_dict:
             try:
                 import chat_translate
                 chat_translate.request_translation(msg)
@@ -656,6 +659,7 @@ class GameState:
         save_player_names_if_dirty()
         # Request batch translation for new history messages (outside lock).
         if new_entries:
+            log.debug("_on_chat_history: %d new entries, requesting batch translation", len(new_entries))
             try:
                 import chat_translate
                 chat_translate.request_batch_translation(new_entries)

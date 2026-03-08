@@ -66,14 +66,22 @@ class TestNeedsTranslation:
         msg = {"content": "สวัสดีชาวโลก", "payload_type": 1}
         assert chat_translate._needs_translation(msg) is True
 
-    def test_mixed_text_below_threshold(self):
-        # Only ~10% non-ASCII, below 15% threshold
+    def test_mixed_text_with_non_ascii_detected(self):
+        # Any non-ASCII script char triggers translation (no ratio threshold)
         msg = {"content": "Hello world this is a long English message 你", "payload_type": 1}
-        assert chat_translate._needs_translation(msg) is False
+        assert chat_translate._needs_translation(msg) is True
 
-    def test_mixed_text_above_threshold(self):
+    def test_mixed_text_mostly_non_ascii_detected(self):
         # Mostly non-ASCII
         msg = {"content": "集結タイタン rally now", "payload_type": 1}
+        assert chat_translate._needs_translation(msg) is True
+
+    def test_german_with_umlaut_detected(self):
+        msg = {"content": "Wir brauchen Verstärkung", "payload_type": 1}
+        assert chat_translate._needs_translation(msg) is True
+
+    def test_french_with_accent_detected(self):
+        msg = {"content": "René a besoin d'aide", "payload_type": 1}
         assert chat_translate._needs_translation(msg) is True
 
     def test_system_message_skipped(self):
