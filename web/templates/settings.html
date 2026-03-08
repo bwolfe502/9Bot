@@ -40,6 +40,16 @@
                     onclick="toggleAndSave(this, 'tower_quest_enabled')"></button>
         </div>
 
+        <div class="settings-row settings-row-inline" data-key="variation">
+            <span class="settings-row-label">
+                Time Variation
+                <span class="settings-row-hint">Randomize intervals by +/- seconds</span>
+            </span>
+            <input type="number" class="settings-input" value="{{ settings.variation }}"
+                   min="0" max="60" step="1" style="width:70px;text-align:center;"
+                   onchange="saveSetting('variation', parseInt(this.value) || 0)">
+        </div>
+
         <!-- Gathering sub-section -->
         <div class="settings-section-divider" onclick="toggleCollapse('gather')">
             <span class="settings-section-divider-label">Gathering</span>

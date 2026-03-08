@@ -1366,6 +1366,12 @@ class GameState:
                     self._lineups[info.lineupID] = Lineup(
                         id=info.lineupID, state=info.state,
                     )
+                pos = getattr(info, "pos", None)
+                px = getattr(pos, "X", 0) if pos else 0
+                pz = getattr(pos, "Z", 0) if pos else 0
+                log.debug("LineupState id=%s state=%s pos=(%s,%s) endTs=%s",
+                          info.lineupID, info.state, px, pz,
+                          getattr(info, "stateEndTs", 0))
                 # ERR (0) or DEFENDER (1) = troop at home; remove state entry
                 # so Lineup.state (which we just updated) is the source of truth.
                 if info.state in (0, 1):

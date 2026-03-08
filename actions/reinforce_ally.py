@@ -423,6 +423,18 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
         navigate(Screen.MAP, device)
         return False
 
+    # Snapshot home lineups (state=1) before tapping reinforce.
+    home_ids = set()
+    try:
+        from startup import _get_device_state
+        gs = _get_device_state(device)
+        if gs:
+            for lid, lu in gs.lineups.items():
+                if getattr(lu, "state", 0) in (0, 1):
+                    home_ids.add(lid)
+    except Exception:
+        pass
+
     # Tap the reinforce button at its detected center.
     tap_image("alliance_reinforce.png", device, threshold=0.7)
     _interruptible_sleep(0.4, stop_check)
@@ -432,7 +444,7 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
 
     # Wait for depart button — may take 2-3s to appear after reinforce tap.
     if wait_for_image_and_tap("depart.png", device, timeout=5, threshold=0.75):
-        log.info("Ally reinforce departed for %s", label)
+        log.info("Ally reinforce departed for %s (depart.png confirmed)", label)
         navigate(Screen.MAP, device)
         return True
 
@@ -450,6 +462,17 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
         tap_depart_anyway(device)
         navigate(Screen.MAP, device)
         return True
+
+    # Protocol fallback: check if a lineup changed from home to marching/reinforce.
+    if home_ids and gs:
+        for _ in range(5):
+            _interruptible_sleep(1.0, stop_check)
+            for lid, lu in gs.lineups.items():
+                if lid in home_ids and getattr(lu, "state", 0) not in (0, 1):
+                    log.info("Ally reinforce departed for %s (protocol state=%s)",
+                             label, lu.state)
+                    navigate(Screen.MAP, device)
+                    return True
 
     log.warning("Depart button not found after ally reinforce for %s", label)
     save_failure_screenshot(device, "ally_reinforce_depart_missing")
