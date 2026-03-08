@@ -105,6 +105,8 @@ AUTO_MODES_BL = [
          "help": "Periodically sends a troop to reinforce your alliance throne in territory war. The throne must be centered on screen before starting."},
         {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
          "help": "Automatically reinforces nearby alliance castles in order of power level. Requires protocol to be enabled. Max distance can be changed in Settings."},
+        {"key": "auto_war_rallies",  "label": "War Rallies",
+         "help": "Continuously joins castle, pass, and tower rallies on the war screen. Uses the same join logic as Auto Quest rally joining."},
     ]},
     {"group": "Farming", "modes": [
         {"key": "auto_quest",     "label": "Auto Quest",
@@ -153,7 +155,7 @@ ONESHOT_DEBUG = ["Check Screen", "Check Troops", "Diagnose Grid",
 
 from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
                      run_auto_pass, run_auto_occupy, run_auto_reinforce,
-                     run_auto_reinforce_ally,
+                     run_auto_reinforce_ally, run_auto_war_rallies,
                      run_auto_mithril, run_auto_gold, run_auto_esb,
                      run_debug_occupy,
                      run_once, run_repeat,
@@ -183,6 +185,7 @@ AUTO_RUNNERS = {
     "auto_reinforce_ally": lambda dev, se, s: run_auto_reinforce_ally(dev, se),
     "auto_mithril":        lambda dev, se, s: run_auto_mithril(dev, se),
     "auto_gold":      lambda dev, se, s: run_auto_gold(dev, se),
+    "auto_war_rallies": lambda dev, se, s: run_auto_war_rallies(dev, se, s.get("war_rally_interval", 10), s.get("variation", 0)),
     "auto_esb":       lambda dev, se, s: run_auto_esb(dev, se, 5, s.get("variation", 0)),
     "debug_occupy":   lambda dev, se, s: run_debug_occupy(dev, se),
 }

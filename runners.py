@@ -256,6 +256,47 @@ def run_auto_groot(device, stop_event, interval, variation):
     dlog.info("Rally Groot stopped")
 
 
+def run_auto_war_rallies(device, stop_event, interval, variation):
+    """Loop join_war_rallies on a configurable interval."""
+    dlog = get_logger("runner", device)
+    dlog.info("War Rallies started (interval: %ss +/-%ss)", interval, variation)
+    stop_check = stop_event.is_set
+    lock = config.get_device_lock(device)
+    try:
+        while not stop_check():
+            with lock:
+                mine_mithril_if_due(device, stop_check=stop_check)
+                if stop_check():
+                    break
+                if config.get_device_config(device, "auto_heal"):
+                    heal_all(device)
+                if not navigate(Screen.MAP, device):
+                    dlog.warning("Cannot reach map screen — retrying")
+                    config.set_device_status(device, "Navigating...")
+                    for _ in range(10):
+                        if stop_check():
+                            break
+                        time.sleep(1)
+                    continue
+                troops = troops_avail(device)
+                if troops > config.get_device_config(device, "min_troops"):
+                    config.set_device_status(device, "Joining War Rallies...")
+                    join_war_rallies(device, stop_check=stop_check)
+                else:
+                    dlog.warning("Not enough troops for War Rallies")
+                    config.set_device_status(device, "Waiting for Troops...")
+                    if _smart_wait_for_troops(device, stop_check, dlog):
+                        continue
+            if stop_check():
+                break
+            config.set_device_status(device, "Idle")
+            sleep_interval(interval, variation, stop_check)
+    except Exception as e:
+        dlog.error("ERROR in War Rallies: %s", e, exc_info=True)
+    config.clear_device_status(device)
+    dlog.info("War Rallies stopped")
+
+
 def run_auto_esb(device, stop_event, interval, variation):
     """Loop phantom_clash_attack on a configurable interval."""
     dlog = get_logger("runner", device)
