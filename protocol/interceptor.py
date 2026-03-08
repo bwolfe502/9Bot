@@ -469,6 +469,13 @@ class ProtocolInterceptor:
         else:
             typed_msg = field_dict
 
+        # Emit catch-all event for message logging (viz message feed).
+        # direction is "recv" (server→client) or "send" (client→server).
+        try:
+            self._bus.emit("msg:__all__", msg_name, direction, field_dict)
+        except Exception:
+            pass  # Never let logging break the pipeline
+
         # Dispatch through the MessageRouter.
         try:
             self._router.route(msg_name, typed_msg)

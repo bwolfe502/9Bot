@@ -1232,6 +1232,424 @@ def create_app():
         from startup import get_patch_progress
         return jsonify(get_patch_progress(device_id))
 
+    # --- Protocol Visualizer ---
+
+    def _safe_val(v):
+        """Recursively convert a value to JSON-serializable form."""
+        if isinstance(v, (str, int, float, bool, type(None))):
+            return v
+        if isinstance(v, bytes):
+            return f"<{len(v)} bytes>"
+        if isinstance(v, dict):
+            return {str(k): _safe_val(vv) for k, vv in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_safe_val(x) for x in v]
+        if hasattr(v, "__dict__"):
+            return {str(k): _safe_val(vv) for k, vv in v.__dict__.items()
+                    if not k.startswith("_")}
+        return repr(v)
+
+    def _build_msg_type_summary(state):
+        """Build a summary of all message types seen, with last payload."""
+        last_seen = state.last_seen_messages
+        result = []
+        for name, info in sorted(last_seen.items(), key=lambda x: -x[1]["count"]):
+            safe_fields = _safe_val(info["fields"])
+            field_keys = list(safe_fields.keys()) if isinstance(safe_fields, dict) else []
+            result.append({
+                "name": name,
+                "count": info["count"],
+                "dir": info["dir"],
+                "ts": info["ts"],
+                "fields": safe_fields,
+                "field_keys": field_keys,
+            })
+        return result
+
+    @app.route("/viz")
+    def viz_page():
+        """Protocol visualizer — real-time map + sidebar of all protocol data."""
+        detected, _ = _cached_devices()
+        device_info = [{"id": d, "name": d.split(":")[-1] if ":" in d else d}
+                       for d in detected]
+        return render_template("viz.html", devices=device_info)
+
+    # Localization DB (extracted from APK localization bundle)
+    _loc_db_cache = [None]  # mutable container for closure
+
+    def _load_loc_db():
+        if _loc_db_cache[0] is not None:
+            return
+        db_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "data", "localization_db.json",
+        )
+        try:
+            with open(db_path, "r", encoding="utf-8") as f:
+                _loc_db_cache[0] = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            _loc_db_cache[0] = {}
+
+    @app.route("/api/item-names")
+    def api_item_names():
+        """Return item ID → name mapping (backward compat)."""
+        _load_loc_db()
+        db = _loc_db_cache[0] or {}
+        items = db.get("items", {})
+        return jsonify({k: {"name": v} for k, v in items.items()})
+
+    @app.route("/api/loc-db")
+    def api_loc_db():
+        """Return full localization DB (items, heroes, quests, skills, buffs, etc.)."""
+        _load_loc_db()
+        return jsonify(_loc_db_cache[0] or {})
+
+    @app.route("/api/protocol-viz")
+    def api_protocol_viz():
+        """Return all protocol data for a device in one JSON blob."""
+        device_id = request.args.get("device")
+        if not device_id:
+            return jsonify({"ok": False, "error": "device required"}), 400
+
+        from startup import _get_device_state
+        state = _get_device_state(device_id)
+        if state is None:
+            return jsonify({
+                "ok": False,
+                "connected": False,
+                "error": "Protocol not active",
+            })
+
+        from protocol.messages import LineupState, MapUnitType, MarchAct, RallyState
+        from protocol.game_state import GameState, CATEGORIES
+
+        # -- Freshness --
+        freshness = {}
+        for cat in CATEGORIES:
+            age = None
+            ts = state.last_update(cat)
+            if ts is not None:
+                age = round(time.monotonic() - ts, 1)
+            freshness[cat] = {
+                "fresh": state.is_fresh(cat, max_age_s=30.0),
+                "age_s": age,
+            }
+
+        # -- Entities (use history — accumulates all ever seen, not just current viewport) --
+        raw_entities = state.entity_history
+        map_entities = []
+        entity_counts = {}
+        all_x, all_z = [], []
+        for eid, ent in raw_entities.items():
+            x, z = GameState._entity_coords(ent)
+            if not x and not z:
+                continue
+            etype = ent.get("field_2", ent.get("type", 0))
+            owner = ent.get("field_3") or ent.get("owner") or {}
+            name = owner.get("name", "") if isinstance(owner, dict) else ""
+            union_id = owner.get("unionID", 0) if isinstance(owner, dict) else 0
+            level = owner.get("cityLevel", 0) if isinstance(owner, dict) else 0
+            map_entities.append({
+                "id": eid, "type": etype, "x": x, "z": z,
+                "name": name, "union_id": union_id, "level": level,
+            })
+            all_x.append(x)
+            all_z.append(z)
+            # Count by type name
+            try:
+                type_name = MapUnitType(etype).name
+            except (ValueError, KeyError):
+                type_name = f"UNKNOWN_{etype}"
+            entity_counts[type_name] = entity_counts.get(type_name, 0) + 1
+
+        # -- Rallies --
+        map_rallies = []
+        for rid, rally in state.rallies.items():
+            rx, rz = 0, 0
+            if rally.rallyCoord:
+                rx, rz = rally.rallyCoord.X, rally.rallyCoord.Z
+            if rx or rz:
+                all_x.append(rx)
+                all_z.append(rz)
+            try:
+                state_name = RallyState(rally.rallyState).name
+            except (ValueError, KeyError):
+                state_name = str(rally.rallyState)
+            map_rallies.append({
+                "id": rally.rallyTroopID, "x": rx, "z": rz,
+                "owner": rally.unionNickName,
+                "state": rally.rallyState, "state_name": state_name,
+                "state_end_ts": rally.rallyStateEndTS,
+                "troop_count": len(rally.troops),
+                "max": rally.rallyMaxNum,
+            })
+
+        # -- Troop positions --
+        troop_positions = []
+        lineups_data = state.lineups
+        for lid, ls in state.lineup_states.items():
+            if ls.pos and (ls.pos.X or ls.pos.Z):
+                all_x.append(ls.pos.X)
+                all_z.append(ls.pos.Z)
+                try:
+                    sname = LineupState(ls.state).name
+                except (ValueError, KeyError):
+                    sname = str(ls.state)
+                lineup = lineups_data.get(lid)
+                troop_positions.append({
+                    "lineup_id": lid, "state": ls.state,
+                    "state_name": sname,
+                    "x": ls.pos.X, "z": ls.pos.Z,
+                    "end_ts": ls.stateEndTs,
+                    "power": lineup.power if lineup else 0,
+                })
+
+        # -- Incoming attacks / marches --
+        map_attacks = []
+        for intel in state.incoming_attacks:
+            fx, fz, tx, tz = 0, 0, 0, 0
+            if intel.from_coord:
+                fx, fz = intel.from_coord.X, intel.from_coord.Z
+            if intel.to_coord:
+                tx, tz = intel.to_coord.X, intel.to_coord.Z
+            if fx or fz:
+                all_x.append(fx)
+                all_z.append(fz)
+            if tx or tz:
+                all_x.append(tx)
+                all_z.append(tz)
+            try:
+                act_name = MarchAct(intel.act).name
+            except (ValueError, KeyError):
+                act_name = str(intel.act)
+            map_attacks.append({
+                "from_x": fx, "from_z": fz,
+                "to_x": tx, "to_z": tz,
+                "name": intel.name, "act": intel.act,
+                "act_name": act_name,
+                "start_ts": intel.startTime,
+                "arrive_ts": intel.arriveTime,
+                "union": intel.unionNickName,
+                "level": intel.cityLevel,
+            })
+
+        # -- Ally cities --
+        ally_cities = []
+        for ac in state.ally_city_entities:
+            ax = ac.get("X", 0)
+            az = ac.get("Z", 0)
+            if ax or az:
+                all_x.append(ax)
+                all_z.append(az)
+            owner = ac.get("field_3") or ac.get("owner") or {}
+            ally_cities.append({
+                "id": GameState._entity_id(ac),
+                "x": ax, "z": az,
+                "name": owner.get("name", "") if isinstance(owner, dict) else "",
+                "level": owner.get("cityLevel", 0) if isinstance(owner, dict) else 0,
+            })
+
+        # -- Territory grid (protocol-only: KvkTerritoryInfoAck) --
+        tgrid = state.territory_grid
+        territory = {"grid": {}, "available": bool(tgrid)}
+        for (row, col), (fid, cfid, lid) in tgrid.items():
+            territory["grid"][f"{row},{col}"] = [fid, cfid, lid]
+
+        # -- Bounds --
+        bounds = {"min_x": 0, "max_x": 1, "min_z": 0, "max_z": 1}
+        if all_x and all_z:
+            bounds = {
+                "min_x": min(all_x), "max_x": max(all_x),
+                "min_z": min(all_z), "max_z": max(all_z),
+            }
+
+        # -- Sidebar: lineups --
+        sidebar_lineups = []
+        for lid, lu in lineups_data.items():
+            try:
+                sname = LineupState(lu.state).name
+            except (ValueError, KeyError):
+                sname = str(lu.state)
+            ls = state.lineup_states.get(lid)
+            sidebar_lineups.append({
+                "id": lid, "state": lu.state, "state_name": sname,
+                "power": lu.power, "combat_power": lu.combatPower,
+                "end_ts": ls.stateEndTs if ls else 0,
+            })
+
+        # -- Sidebar: quests --
+        sidebar_quests = [
+            {"cfg_id": k, "cur_cnt": v.get("curCnt", 0), "state": v.get("state", 0)}
+            for k, v in state.quests.items()
+        ]
+
+        # -- Sidebar: resources --
+        sidebar_resources = []
+        for rid, asset in state.resources.items():
+            sidebar_resources.append({
+                "id": asset.ID, "type": asset.typ, "val": asset.val,
+                "cap": asset.cap,
+            })
+
+        # -- Sidebar: buffs --
+        sidebar_buffs = list(state.buffs)[:20]
+
+        # -- Sidebar: battle results --
+        battles = []
+        for br in list(state.battle_results)[-10:]:
+            if hasattr(br, "atkResult"):
+                battles.append({
+                    "atk_result": br.atkResult,
+                    "def_result": br.defResult,
+                    "timestamp": getattr(br, "timestamp", 0),
+                })
+            elif isinstance(br, dict):
+                battles.append(br)
+
+        # -- Sidebar: powers --
+        powers = {str(k): list(v) for k, v in state.powers.items()}
+
+        ap = state.ap
+
+        # -- Data from _last_seen (messages without dedicated GameState stores) --
+        last_seen = state.last_seen_messages
+
+        # PVP battles (from PvpInfoAck)
+        pvp_battles = []
+        pvp_info = last_seen.get("PvpInfoAck")
+        if pvp_info:
+            pi_list = pvp_info.get("fields", {}).get("pi", [])
+            if isinstance(pi_list, list):
+                for b in pi_list[-50:]:  # last 50
+                    if not isinstance(b, dict):
+                        continue
+                    pvp_battles.append(_safe_val(b))
+
+        # March intelligence (from InformationNtf — richer than IntelligencesNtf)
+        marches = []
+        info_ntf = last_seen.get("InformationNtf")
+        if info_ntf:
+            infos = info_ntf.get("fields", {}).get("infos", [])
+            if isinstance(infos, list):
+                for inf in infos:
+                    if isinstance(inf, dict):
+                        marches.append(_safe_val(inf))
+
+        # Alliance gifts (from UnionGiftInfoAck)
+        gifts = []
+        gift_info = last_seen.get("UnionGiftInfoAck")
+        if gift_info:
+            gf = gift_info.get("fields", {})
+            gift_list = gf.get("unionGifts", [])
+            if isinstance(gift_list, list):
+                for g in gift_list[-30:]:  # last 30
+                    if isinstance(g, dict):
+                        gifts.append(_safe_val(g))
+
+        # Heroes (from HeroInfoNtf)
+        heroes = []
+        hero_info = last_seen.get("HeroInfoNtf")
+        if hero_info:
+            hero_list = hero_info.get("fields", {}).get("heroes", [])
+            if isinstance(hero_list, list):
+                for h in hero_list:
+                    if isinstance(h, dict):
+                        heroes.append(_safe_val(h))
+
+        # Mail headers (from Mail2NdHeadListNtf)
+        mail_heads = []
+        mail_info = last_seen.get("Mail2NdHeadListNtf")
+        if mail_info:
+            head_list = mail_info.get("fields", {}).get("headList", [])
+            if isinstance(head_list, list):
+                for m in head_list:
+                    if isinstance(m, dict):
+                        mail_heads.append(_safe_val(m))
+
+        # Alliance altar (from UnionAltarAck)
+        altar = None
+        altar_info = last_seen.get("UnionAltarAck")
+        if altar_info:
+            altar = _safe_val(altar_info.get("fields", {}))
+
+        # Explore atlas (from ExploreAtlasRefreshNtf)
+        explore = None
+        explore_info = last_seen.get("ExploreAtlasRefreshNtf")
+        if explore_info:
+            explore = _safe_val(explore_info.get("fields", {}))
+
+        return jsonify({
+            "ok": True,
+            "device": device_id,
+            "server_time": state.server_time,
+            "connected": state.protocol_connected,
+            "freshness": freshness,
+            "map": {
+                "entities": map_entities,
+                "rallies": map_rallies,
+                "troop_positions": troop_positions,
+                "attacks": map_attacks,
+                "ally_cities": ally_cities,
+                "territory": territory,
+                "bounds": bounds,
+            },
+            "sidebar": {
+                "ap": {"current": ap[0], "max": ap[1]} if ap else None,
+                "lineups": sidebar_lineups,
+                "quests": sidebar_quests,
+                "resources": sidebar_resources,
+                "buffs": sidebar_buffs,
+                "battle_results": battles,
+                "city_burning": state.city_burning,
+                "powers": powers,
+                "entity_counts": entity_counts,
+                "pvp_battles": pvp_battles,
+                "marches": marches,
+                "gifts": gifts,
+                "heroes": heroes,
+                "mail_heads": mail_heads,
+                "altar": altar,
+                "explore": explore,
+            },
+            "msg_types": _build_msg_type_summary(state),
+        })
+
+    @app.route("/api/protocol-viz-messages")
+    def api_protocol_viz_messages():
+        """Return protocol message log for the live feed.
+
+        Query params:
+          device — device ID (required)
+          since  — sequence number (optional, for incremental polling)
+        """
+        device_id = request.args.get("device")
+        if not device_id:
+            return jsonify({"ok": False, "error": "device required"}), 400
+
+        from startup import _get_device_state
+        state = _get_device_state(device_id)
+        if state is None:
+            return jsonify({"ok": False, "error": "Protocol not active"})
+
+        since = int(request.args.get("since", 0))
+        entries, latest_seq = state.message_log(since)
+
+        safe_entries = []
+        for e in entries:
+            safe_entries.append({
+                "seq": e["seq"],
+                "ts": e["ts"],
+                "name": e["name"],
+                "dir": e["dir"],
+                "fields": _safe_val(e["fields"]),
+            })
+
+        return jsonify({
+            "ok": True,
+            "seq": latest_seq,
+            "messages": safe_entries,
+        })
+
     @app.route("/chat")
     def chat_page():
         """Chat viewer page — shows live game chat from protocol-enabled devices."""

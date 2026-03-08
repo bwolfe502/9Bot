@@ -78,6 +78,7 @@ log = logging.getLogger(__name__)
 
 _CHAT_MAXLEN = 200
 _BATTLE_MAXLEN = 50
+_MSG_LOG_MAXLEN = 500   # ring buffer for protocol message log (viz feed)
 _AP_ASSET_ID = 11171002  # AssetNtf recover ID for Action Points
 
 # Categories for freshness tracking.
@@ -235,6 +236,7 @@ class GameState:
         self._quests: Dict[int, dict] = {}                  # cfgID -> info dict
         self._resources: Dict[int, Asset] = {}              # Asset.ID -> Asset
         self._entities: Dict[Any, dict] = {}                # entity id -> raw dict
+        self._entity_history: Dict[Any, dict] = {}           # entity id -> raw dict (never deleted, for viz)
         self._attacks: List[Intelligence] = []
         self._chat: Deque[Any] = collections.deque(maxlen=_CHAT_MAXLEN)
         self._chat_seen_ids: set = set()  # historyId dedup for ChatPullMsgAck
@@ -249,6 +251,12 @@ class GameState:
         self._own_union_id: int = 0                          # populated from UnionNtf
         self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id)
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
+
+        # -- protocol message log (for viz live feed) -------------- #
+        self._message_log: Deque[dict] = collections.deque(maxlen=_MSG_LOG_MAXLEN)
+        self._msg_log_seq: int = 0  # monotonic sequence counter
+        self._last_seen: Dict[str, dict] = {}  # msg_name -> {ts, dir, fields, count}
+        self._msg_type_counts: Dict[str, int] = {}  # msg_name -> total count
 
         # -- connection metadata ----------------------------------- #
         self.protocol_connected: bool = False
@@ -313,6 +321,33 @@ class GameState:
         """Entity cache (raw dicts)."""
         with self._lock:
             return dict(self._entities)
+
+    @property
+    def entity_history(self) -> Dict[Any, dict]:
+        """All entities ever seen (never deleted). For viz map accumulation."""
+        with self._lock:
+            return dict(self._entity_history)
+
+    def message_log(self, since_seq: int = 0) -> Tuple[List[dict], int]:
+        """Protocol message log entries since *since_seq*.
+
+        Returns (entries, latest_seq) so the caller can poll incrementally.
+        """
+        with self._lock:
+            if since_seq <= 0:
+                entries = list(self._message_log)
+            else:
+                entries = [e for e in self._message_log if e["seq"] > since_seq]
+            return entries, self._msg_log_seq
+
+    @property
+    def last_seen_messages(self) -> Dict[str, dict]:
+        """Last received payload for every message type seen.
+
+        Returns {msg_name: {ts, dir, fields, count}}.
+        """
+        with self._lock:
+            return dict(self._last_seen)
 
     @property
     def incoming_attacks(self) -> List[Intelligence]:
@@ -438,6 +473,10 @@ class GameState:
         self._sub("msg:UnionDelEntitiesNtf", self._on_del_union_entities)
         self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
         self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
+        self._sub("msg:WildMapViewAck", self._on_wild_map_view)
+
+        # Catch-all for protocol message log (viz live feed).
+        self._sub("msg:__all__", self._on_any_message)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -447,6 +486,32 @@ class GameState:
     def _touch(self, category: str) -> None:
         """Update freshness timestamp (caller must hold _lock)."""
         self._last_update[category] = time.monotonic()
+
+    # ============================================================== #
+    #  Protocol message log (catch-all)
+    # ============================================================== #
+
+    def _on_any_message(self, msg_name: str, direction: str, field_dict: dict) -> None:
+        """Capture every protocol message into a ring buffer for the viz feed."""
+        now = time.time()
+        d = "in" if direction == "recv" else "out"
+        with self._lock:
+            self._msg_log_seq += 1
+            self._message_log.append({
+                "seq": self._msg_log_seq,
+                "ts": now,
+                "name": msg_name,
+                "dir": d,
+                "fields": field_dict,
+            })
+            # Track last-seen payload per message type + counts
+            self._msg_type_counts[msg_name] = self._msg_type_counts.get(msg_name, 0) + 1
+            self._last_seen[msg_name] = {
+                "ts": now,
+                "dir": d,
+                "fields": field_dict,
+                "count": self._msg_type_counts[msg_name],
+            }
 
     # ============================================================== #
     #  Event handlers (private)
@@ -909,6 +974,7 @@ class GameState:
             for ent in msg.entities:
                 eid = self._entity_id(ent) or id(ent)
                 self._entities[eid] = ent
+                self._entity_history[eid] = ent
                 if self._ally_monitoring and self._is_ally_city(ent):
                     owner = ent.get("field_3") or ent.get("owner") or {}
                     name = owner.get("name", "?") if isinstance(owner, dict) else "?"
@@ -944,6 +1010,30 @@ class GameState:
             for eid in ids:
                 self._entities.pop(eid, None)
             self._touch("entities")
+
+    def _on_wild_map_view(self, msg: Any) -> None:
+        """msg:WildMapViewAck — main viewport entity update.
+
+        Contains entities (List<EntityInfo>) and needDeleteEntities (List<long>).
+        Same structure as EntitiesNtf/DelEntitiesNtf but arrives as the primary
+        viewport refresh message.  Raw dict (no Python dataclass).
+        """
+        if not isinstance(msg, dict):
+            return
+        entities = msg.get("entities", [])
+        deletes = msg.get("needDeleteEntities", [])
+        if entities:
+            with self._lock:
+                for ent in entities:
+                    eid = self._entity_id(ent) or id(ent)
+                    self._entities[eid] = ent
+                    self._entity_history[eid] = ent
+                self._touch("entities")
+        if deletes:
+            with self._lock:
+                for eid in deletes:
+                    self._entities.pop(eid, None)
+                    # Note: NOT deleting from _entity_history (viz accumulation)
 
     def _on_position(self, msg: Any) -> None:
         """msg:PositionNtf — update entity positions."""
