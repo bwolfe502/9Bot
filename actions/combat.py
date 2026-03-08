@@ -7,7 +7,7 @@ Key exports:
     phantom_clash_attack — Phantom Clash mode attack
     reinforce_throne    — reinforce the throne
     target              — target menu sequence
-    teleport            — teleport to random location
+    teleport            — teleport with guided + random fallback
     teleport_benchmark  — A/B test harness for teleport strategies
     _detect_player_at_eg — player detection near EG positions
 """
@@ -195,6 +195,53 @@ def reinforce_throne(device):
     else:
         log.warning("Not enough troops available (have %d, need more than %d)", troops, min_troops)
 
+@timed_action("reinforce_target")
+def reinforce_target(device):
+    """Tap the target (pass/tower) after navigation and reinforce or detect enemy ownership.
+
+    Assumes the camera is already centered on the target (called after target()).
+    Returns 'reinforce' if we owned and departed, 'attack' if enemy owns it, False on failure.
+    """
+    log = get_logger("actions", device)
+
+    if config.get_device_config(device, "auto_heal"):
+        heal_all(device)
+    troops = troops_avail(device)
+    if troops <= config.get_device_config(device, "min_troops"):
+        log.warning("Not enough troops for reinforce target")
+        return False
+
+    adb_tap(device, 560, 675)
+    time.sleep(1)
+
+    start_time = time.time()
+    while time.time() - start_time < 10:
+        screen = load_screenshot(device)
+        if screen is None:
+            time.sleep(0.5)
+            continue
+
+        if find_image(screen, "reinforce_button.png", threshold=0.5):
+            log.info("Found reinforce button — reinforcing target")
+            tap_image("reinforce_button.png", device, threshold=0.5)
+            time.sleep(1)
+            tap_image("depart.png", device)
+            return "reinforce"
+
+        if find_image(screen, "attack_button.png", threshold=0.7):
+            log.info("Found attack button — enemy owns target, closing menu")
+            adb_tap(device, 560, 675)
+            time.sleep(0.5)
+            return "attack"
+
+        time.sleep(0.5)
+
+    log.warning("Neither reinforce nor attack button found, closing menu")
+    adb_tap(device, 560, 675)
+    time.sleep(0.5)
+    return False
+
+
 @timed_action("target")
 def target(device):
     """Open target menu, tap enemy tab, verify marker exists, then tap target.
@@ -372,48 +419,22 @@ def _detect_player_at_eg(screen, x, y, box_size=200, tolerance=25):
 
     return blue_matches >= 5 and gold_matches >= 3
 
-@timed_action("teleport")
-def teleport(device, dry_run=False):
-    """Teleport to a random location on the map.
+def _teleport_random(device, dry_run=False, stop_check=None):
+    """Random camera panning teleport (original algorithm).
 
-    Pans camera randomly, long-presses to open context menu, taps TELEPORT,
-    then checks for a green boundary circle (valid location). Repeats up to
-    15 attempts or 90 seconds.
-
-    If dry_run=True, finds a valid green spot but does NOT tap USE — saves a
-    screenshot and cancels instead.  Use for testing without consuming a teleport.
+    Assumes troop/heal/screen checks already done by teleport().
     """
     log = get_logger("actions", device)
-    if not dry_run:
-        log.debug("Checking if all troops are home before teleporting...")
-        if not all_troops_home(device):
-            log.warning("Troops are not home! Cannot teleport. Aborting.")
-            return False
-        if config.get_device_config(device, "auto_heal"):
-            heal_all(device)
-    else:
-        log.info("Teleport DRY RUN — skipping troop check and heal")
-
-    if check_screen(device) != Screen.MAP:
-        log.warning("Not on map_screen, can't teleport")
-        return False
-
-    log.debug("Starting teleport sequence...")
 
     # When called from auto-occupy, the camera is centered on the tower we
     # just attacked.  Tapping it opens its info dialog, which auto-pans the
     # camera so the tower moves up and the view centers on the empty area
     # below — a spot more likely to be valid for teleporting.
-    # In other contexts this tap may hit nothing (harmless) or an unrelated
-    # building (the dialog is dismissed next).  Future: make setup
-    # context-aware.
     logged_tap(device, 540, 960, "tp_start")
     time.sleep(2)
 
-    # Load dead image once for reuse
     dead_img = get_template("elements/dead.png")
 
-    # Check for dead before continuing
     screen = load_screenshot(device)
     if _check_dead(screen, dead_img, device):
         return False
@@ -428,9 +449,10 @@ def teleport(device, dry_run=False):
     max_attempts = 15
 
     while time.time() - start_time < 90 and attempt_count < max_attempts:
+        if stop_check and stop_check():
+            return False
         attempt_count += 1
 
-        # Pan camera randomly (horizontal + vertical)
         distance = random.randint(200, 400)
         dir_x = random.choice([-1, 1])
         dir_y = random.choice([-1, 0, 1])
@@ -443,10 +465,9 @@ def teleport(device, dry_run=False):
         time.sleep(1)
 
         result, ss_path, elapsed = _check_green_at_current_position(
-            device, dead_img)
+            device, dead_img, stop_check=stop_check)
 
         if result is None:
-            # Dead detected — abort
             return False
 
         if result:
@@ -472,6 +493,169 @@ def teleport(device, dry_run=False):
               attempt_count, time.time() - start_time)
     save_failure_screenshot(device, "teleport_timeout")
     return False
+
+
+def _teleport_guided(device, target_square, territory_grid, dry_run=False,
+                     stop_check=None):
+    """Grid-guided teleport — use territory grid to position camera deterministically.
+
+    Tries known-good positions from memory first, then own-team squares
+    sorted by Manhattan distance from the target.
+
+    Returns True on success, False if all candidates exhausted (caller
+    falls through to random).
+    """
+    log = get_logger("actions", device)
+    from territory import _get_square_center
+    from teleport_memory import get_candidates, record_result
+
+    target_row, target_col = target_square
+    candidates = get_candidates(target_row, target_col, grid=territory_grid)
+
+    if not candidates:
+        log.debug("No guided candidates for (%d, %d) — skipping to random",
+                  target_row, target_col)
+        return False
+
+    dead_img = get_template("elements/dead.png")
+    start_time = time.time()
+
+    log.info("Guided teleport: %d candidates for target (%d, %d)",
+             len(candidates), target_row, target_col)
+
+    for i, (cand_row, cand_col) in enumerate(candidates):
+        if time.time() - start_time > 75:
+            log.debug("Guided teleport budget exceeded (75s), falling through")
+            break
+        if stop_check and stop_check():
+            return False
+
+        log.debug("Guided attempt %d/%d: square (%d, %d)",
+                  i + 1, len(candidates), cand_row, cand_col)
+
+        # Position camera via territory grid tap
+        if not navigate(Screen.TERRITORY, device):
+            log.warning("Failed to navigate to TERRITORY for guided teleport")
+            continue
+        cx, cy = _get_square_center(cand_row, cand_col)
+        adb_tap(device, cx, cy)
+        time.sleep(2)  # Camera settles on MAP after grid tap
+
+        if stop_check and stop_check():
+            return False
+
+        # Check green at this position
+        result, ss_path, elapsed = _check_green_at_current_position(
+            device, dead_img, stop_check=stop_check)
+
+        # Log entity observations (Phase 2 data collection)
+        _log_nearby_entities(device, cand_row, cand_col, bool(result))
+
+        if result is None:  # dead
+            record_result(target_row, target_col, cand_row, cand_col, False)
+            return False
+        if result:
+            record_result(target_row, target_col, cand_row, cand_col, True)
+            if dry_run:
+                log.info("Guided teleport GREEN (dry run) at (%d, %d)",
+                         cand_row, cand_col)
+                tap_image("cancel.png", device)
+                return True
+            log.info("Guided teleport GREEN at (%d, %d) — confirming",
+                     cand_row, cand_col)
+            logged_tap(device, 760, 1700, "tp_confirm")
+            time.sleep(2)
+            log.info("Guided teleport confirmed in %.1fs",
+                     time.time() - start_time)
+            return True
+        else:
+            record_result(target_row, target_col, cand_row, cand_col, False)
+            log.debug("No green at (%d, %d)", cand_row, cand_col)
+
+    log.info("All %d guided candidates exhausted — falling through to random",
+             len(candidates))
+    return False
+
+
+def _log_nearby_entities(device, cand_row, cand_col, success):
+    """Log entity observations from protocol GameState (Phase 2 data collection).
+
+    No-op when protocol is not active for this device.
+    """
+    if device not in config.PROTOCOL_ACTIVE_DEVICES:
+        return
+    try:
+        from startup import get_protocol_game_state
+        gs = get_protocol_game_state(device)
+        if gs is None:
+            return
+        entities = getattr(gs, "entity_history", {})
+        if not entities:
+            return
+        from teleport_memory import log_observation
+        for eid, info in list(entities.items()):
+            x = info.get("X", 0)
+            z = info.get("Z", 0)
+            if not x or not z:
+                continue
+            etype = info.get("type", "unknown")
+            level = info.get("level", 0)
+            # Rough distance estimate using grid square size
+            dist_r = abs(info.get("grid_row", cand_row) - cand_row)
+            dist_c = abs(info.get("grid_col", cand_col) - cand_col)
+            dist = (dist_r ** 2 + dist_c ** 2) ** 0.5
+            log_observation(x, z, etype, level, dist, success)
+    except Exception:
+        pass  # Best-effort logging
+
+
+@timed_action("teleport")
+def teleport(device, dry_run=False, target_square=None, territory_grid=None,
+             stop_check=None):
+    """Teleport to a valid location on the map.
+
+    If target_square and territory_grid are provided (from auto_occupy),
+    tries grid-guided positioning first, then falls through to random panning.
+
+    Args:
+        device: ADB device ID string
+        dry_run: If True, find green spot but cancel instead of confirming
+        target_square: (row, col) tuple of the territory target being attacked
+        territory_grid: {(row, col): team_string} dict from scan_targets
+        stop_check: Callable returning True when task should stop
+    """
+    log = get_logger("actions", device)
+    if not dry_run:
+        log.debug("Checking if all troops are home before teleporting...")
+        if not all_troops_home(device):
+            log.warning("Troops are not home! Cannot teleport. Aborting.")
+            return False
+        if config.get_device_config(device, "auto_heal"):
+            heal_all(device)
+    else:
+        log.info("Teleport DRY RUN — skipping troop check and heal")
+
+    if check_screen(device) != Screen.MAP:
+        log.warning("Not on map_screen, can't teleport")
+        return False
+
+    log.debug("Starting teleport sequence...")
+
+    # Try guided teleport first when we have grid context
+    if target_square and territory_grid:
+        result = _teleport_guided(device, target_square, territory_grid,
+                                  dry_run=dry_run, stop_check=stop_check)
+        if result:
+            return True
+        if stop_check and stop_check():
+            return False
+        # Guided exhausted — ensure we're on MAP for random fallback
+        if check_screen(device) != Screen.MAP:
+            if not navigate(Screen.MAP, device):
+                log.warning("Cannot reach MAP for random fallback")
+                return False
+
+    return _teleport_random(device, dry_run=dry_run, stop_check=stop_check)
 
 
 # ============================================================

@@ -12,6 +12,7 @@ Key exports:
     run_auto_pass         — Pass battle (rally/reinforce/join war)
     run_auto_occupy       — Territory auto-occupy wrapper
     run_auto_reinforce    — Reinforce Throne loop
+    run_auto_reinforce_target — Reinforce marked target (pass/tower) or join war rallies
     run_auto_reinforce_ally — Reinforce ally castles from protocol viewport data
     run_auto_mithril      — Standalone mithril mining loop
     run_auto_gold         — Gold gathering loop
@@ -37,8 +38,8 @@ from navigation import check_screen, navigate
 from vision import (adb_tap, load_screenshot, find_image, tap_image,
                     wait_for_image_and_tap)
 from troops import troops_avail, heal_all, read_panel_statuses, get_troop_status, TroopAction
-from actions import (attack, phantom_clash_attack, reinforce_throne, target,
-                     check_quests, rally_titan, search_eg_reset, join_rally,
+from actions import (attack, phantom_clash_attack, reinforce_throne, reinforce_target,
+                     target, check_quests, rally_titan, search_eg_reset, join_rally,
                      join_war_rallies, reset_quest_tracking, reset_rally_blacklist,
                      mine_mithril_if_due, gather_gold_loop,
                      reinforce_ally_castle, capture_home_coords)
@@ -464,6 +465,65 @@ def run_auto_reinforce(device, stop_event, interval, variation):
     dlog.info("Auto Reinforce Throne stopped")
 
 
+def run_auto_reinforce_target(device, stop_event, interval, variation):
+    """Navigate to enemy-marked target, reinforce if owned, join war rallies if not."""
+    dlog = get_logger("runner", device)
+    dlog.info("Reinforce Target started (interval: %ss +/-%ss)", interval, variation)
+    stop_check = stop_event.is_set
+    lock = config.get_device_lock(device)
+    try:
+        while not stop_check():
+            with lock:
+                mine_mithril_if_due(device, stop_check=stop_check)
+                if stop_check():
+                    break
+                config.set_device_status(device, "Reinforce Target...")
+                result = target(device)
+                if result == "no_marker":
+                    dlog.warning("*** TARGET NOT SET! ***")
+                    dlog.warning("Please mark the pass or tower with a Personal 'Enemy' marker.")
+                    dlog.warning("Reinforce Target stopping.")
+                    config.alert_queue.put("no_marker")
+                    break
+                if result == "duplicate_markers":
+                    dlog.warning("*** MULTIPLE ENEMY MARKERS SET! ***")
+                    dlog.warning("Remove duplicate markers and keep only one.")
+                    dlog.warning("Reinforce Target stopping.")
+                    config.alert_queue.put("duplicate_markers")
+                    break
+                if stop_check():
+                    break
+                if not result:
+                    break
+
+                action = reinforce_target(device)
+            if stop_check():
+                break
+
+            if action == "reinforce":
+                sleep_interval(interval, variation, stop_check)
+            elif action == "attack":
+                dlog.info("Enemy owns target — joining war rallies continuously")
+                config.set_device_status(device, "Joining War Rallies...")
+                while not stop_check():
+                    with lock:
+                        troops = troops_avail(device)
+                        if troops <= config.get_device_config(device, "min_troops"):
+                            dlog.warning("Not enough troops, waiting...")
+                            time.sleep(5)
+                            continue
+                        join_war_rallies(device, stop_check=stop_check)
+                    if stop_check():
+                        break
+                    time.sleep(2)
+            else:
+                sleep_interval(10, variation, stop_check)
+    except Exception as e:
+        dlog.error("ERROR in Reinforce Target: %s", e, exc_info=True)
+    config.clear_device_status(device)
+    dlog.info("Reinforce Target stopped")
+
+
 _ALLY_REINFORCE_COOLDOWN_S = 1800  # 30 minutes per entity ID + position
 
 
@@ -784,8 +844,9 @@ _MODE_LABELS = {
     "auto_groot":     "Join Groot",
     "auto_pass":      "Pass Battle",
     "auto_occupy":    "Occupy Towers",
-    "auto_reinforce":      "Reinforce Throne",
-    "auto_reinforce_ally": "Reinforce Ally",
+    "auto_reinforce":        "Reinforce Throne",
+    "auto_reinforce_target": "Reinforce Target",
+    "auto_reinforce_ally":   "Reinforce Ally",
     "auto_mithril":        "Mine Mithril",
     "auto_gold":      "Gather Gold",
     "auto_war_rallies": "War Rallies",
