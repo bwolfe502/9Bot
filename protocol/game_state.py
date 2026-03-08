@@ -356,6 +356,7 @@ class GameState:
         self._kvk_tower_troops: Dict[Tuple[int, int], int] = {}  # (row, col) -> troop count from KvkBuilding entity
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
         self._shield_end_ts: int = 0                          # ShieldEndTs (ms) from GetShieldInfoAck
+        self._home_coord: Optional[Tuple[int, int]] = None   # (X, Z) raw coords from CityUpdateNtf
 
         # -- territory cache ---------------------------------------- #
         import hashlib
@@ -475,6 +476,12 @@ class GameState:
         """Latest lineup state info keyed by lineupID."""
         with self._lock:
             return dict(self._lineup_states)
+
+    @property
+    def home_coord(self) -> Optional[Tuple[int, int]]:
+        """Own castle (X, Z) raw coords from CityUpdateNtf, or None."""
+        with self._lock:
+            return self._home_coord
 
     @property
     def ally_city_entities(self) -> List[dict]:
@@ -686,6 +693,7 @@ class GameState:
         self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
         self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
         self._sub("msg:GetShieldInfoAck", self._on_shield_info)
+        self._sub("msg:CityUpdateNtf", self._on_city_update)
         self._sub("msg:MarchingLineListNtf", self._on_marching_lines)
 
     def _sub(self, event_name: str, handler: Any) -> None:
@@ -1247,17 +1255,15 @@ class GameState:
                         shielded = self._is_shielded(ent)
                         if shielded:
                             log.info("Ally %s has shield", name)
-                        is_new = eid not in self._union_entities
                         self._union_entities[eid] = ent
-                        if is_new:
-                            x, z = self._entity_coords(ent)
-                            if x or z:
-                                ent["X"] = x
-                                ent["Z"] = z
-                            log.debug("EntitiesNtf ally city spotted id=%s name=%s x=%s z=%s shielded=%s",
-                                      eid, name, ent.get("X", 0), ent.get("Z", 0), shielded)
-                            if self._ally_monitoring and not shielded:
-                                new_city_ids.append(eid)
+                        x, z = self._entity_coords(ent)
+                        if x or z:
+                            ent["X"] = x
+                            ent["Z"] = z
+                        log.debug("EntitiesNtf ally city update id=%s name=%s x=%s z=%s shielded=%s",
+                                  eid, name, ent.get("X", 0), ent.get("Z", 0), shielded)
+                        if self._ally_monitoring and not shielded:
+                            new_city_ids.append(eid)
                 except Exception:
                     log.warning("Error processing entity", exc_info=True)
             self._touch("entities")
@@ -1453,27 +1459,23 @@ class GameState:
                     shielded = self._is_shielded(ent_dict)
                     if shielded:
                         log.info("Ally %s has shield", name)
-                    is_new = eid not in self._union_entities
                     self._union_entities[eid] = ent_dict
                     # Also store in _entities so PositionNtf can update coords.
                     self._entities[eid] = ent_dict
-                    if is_new:
-                        x, z = self._entity_coords(ent_dict)
-                        if x or z:
-                            ent_dict["X"] = x
-                            ent_dict["Z"] = z
-                        pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
-                        power = lookup_player_power(pid)
-                        ent_dict["_power"] = power  # pre-computed for priority queue
-                        log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s shielded=%s",
-                                 eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0), shielded)
-                        if self._ally_monitoring and not shielded:
-                            # Only queue for emission if we have coordinates.
-                            # Entities without coords will be emitted when PositionNtf arrives.
-                            if ent_dict.get("X") or ent_dict.get("Z"):
-                                new_city_ids.append(eid)
-                            else:
-                                log.debug("Ally %s has no coords yet — waiting for PositionNtf", name)
+                    x, z = self._entity_coords(ent_dict)
+                    if x or z:
+                        ent_dict["X"] = x
+                        ent_dict["Z"] = z
+                    pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+                    power = lookup_player_power(pid)
+                    ent_dict["_power"] = power
+                    log.debug("UnionEntitiesNtf ally city update id=%s name=%s power=%s x=%s z=%s shielded=%s",
+                             eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0), shielded)
+                    if self._ally_monitoring and not shielded:
+                        if ent_dict.get("X") or ent_dict.get("Z"):
+                            new_city_ids.append(eid)
+                        else:
+                            log.debug("Ally %s has no coords yet — waiting for PositionNtf", name)
                 except Exception:
                     log.warning("Error processing union entity", exc_info=True)
             self._touch("entities")
@@ -1590,8 +1592,39 @@ class GameState:
             remaining_s = max(0, (si.ShieldEndTs - int(time.time() * 1000)) / 1000.0)
             log.info("Shield status captured: %.0fs remaining (ends at %d)",
                      remaining_s, si.ShieldEndTs)
+            # Update local shield countdown used by ensure_shield.
+            try:
+                from actions.reinforce_ally import _save_shield_expiry
+                _save_shield_expiry(self._device_id, time.time() + remaining_s)
+            except Exception:
+                log.warning("Failed to save shield expiry", exc_info=True)
         else:
             log.info("Shield status captured: no shield active")
+
+    def _on_city_update(self, msg: Any) -> None:
+        """msg:CityUpdateNtf — own castle position update.
+
+        Fires on teleport and other city moves. Persists home coords
+        so auto reinforce ally always has the correct home position.
+        """
+        coord = getattr(msg, "coord", None)
+        if coord is None and isinstance(msg, dict):
+            coord = msg.get("coord")
+        if coord is None:
+            return
+        x = getattr(coord, "X", 0) or (coord.get("X", 0) if isinstance(coord, dict) else 0)
+        z = getattr(coord, "Z", 0) or (coord.get("Z", 0) if isinstance(coord, dict) else 0)
+        if not x and not z:
+            return
+        with self._lock:
+            self._home_coord = (x, z)
+            self._touch("home")
+        log.info("Home castle position: X=%d Z=%d", x // 1000, z // 1000)
+        try:
+            from runners import _save_home_coords
+            _save_home_coords(self._device_id, x // 1000, z // 1000)
+        except Exception:
+            log.warning("Failed to save home coords from CityUpdateNtf", exc_info=True)
 
     def _on_marching_lines(self, msg: Any) -> None:
         """msg:MarchingLineListNtf — detect enemy marches targeting ally castles.
