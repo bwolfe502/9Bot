@@ -198,7 +198,7 @@ def _translate_single(content: str) -> str:
         result = response.content[0].text.strip()
         return result
     except Exception:
-        log.debug("Translation API error", exc_info=True)
+        log.warning("Translation API error", exc_info=True)
         return ""
 
 
@@ -252,7 +252,7 @@ def _translate_batch(items: List[dict]) -> None:
             else:
                 msg["translated"] = ""
     except Exception:
-        log.debug("Batch translation API error", exc_info=True)
+        log.warning("Batch translation API error", exc_info=True)
         for msg in items:
             msg["translated"] = ""
 
