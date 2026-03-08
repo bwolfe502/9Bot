@@ -559,7 +559,6 @@ def apply_settings(settings):
     config.TITAN_INTERVAL = settings.get("titan_interval", 30)
     config.GROOT_INTERVAL = settings.get("groot_interval", 30)
     config.REINFORCE_INTERVAL = settings.get("reinforce_interval", 30)
-    config.PASS_INTERVAL = settings.get("pass_interval", 30)
     config.PASS_MODE = settings.get("pass_mode", "Rally Joiner")
     set_protocol_enabled(settings.get("protocol_enabled", False))
     # Territory passes & safe zones

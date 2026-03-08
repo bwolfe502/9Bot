@@ -27,7 +27,7 @@ DEVICE_OVERRIDABLE_KEYS = {
     "tower_quest_enabled", "eg_rally_own", "titan_rally_own", "mithril_interval",
     "protocol_enabled", "home_x", "home_z", "max_reinforce_distance",
     "variation", "titan_interval", "groot_interval", "reinforce_interval",
-    "pass_interval", "pass_mode",
+    "pass_mode",
 }
 
 # ── Default territory zone data ──
@@ -76,7 +76,6 @@ DEFAULTS = {
     "titan_interval": 30,
     "groot_interval": 30,
     "reinforce_interval": 30,
-    "pass_interval": 30,
     "pass_mode": "Rally Joiner",
     "my_team": "red",
     "enemy_teams": [],

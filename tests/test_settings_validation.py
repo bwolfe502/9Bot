@@ -18,7 +18,6 @@ DEFAULTS = {
     "titan_interval": 30,
     "groot_interval": 30,
     "reinforce_interval": 30,
-    "pass_interval": 30,
     "pass_mode": "Rally Joiner",
     "my_team": "yellow",
     "enemy_team": "green",

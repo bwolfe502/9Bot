@@ -179,7 +179,7 @@ AUTO_RUNNERS = {
     "auto_quest":     lambda dev, se, s: run_auto_quest(dev, se),
     "auto_titan":     lambda dev, se, s: run_auto_titan(dev, se, s.get("titan_interval", 30), s.get("variation", 0)),
     "auto_groot":     lambda dev, se, s: run_auto_groot(dev, se, s.get("groot_interval", 30), s.get("variation", 0)),
-    "auto_pass":      lambda dev, se, s: run_auto_pass(dev, se, s.get("pass_mode", "Rally Joiner"), s.get("pass_interval", 30), s.get("variation", 0)),
+    "auto_pass":      lambda dev, se, s: run_auto_pass(dev, se, s.get("pass_mode", "Rally Joiner"), s.get("reinforce_interval", 30), s.get("variation", 0)),
     "auto_occupy":    lambda dev, se, s: run_auto_occupy(dev, se),
     "auto_reinforce":      lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
     "auto_reinforce_ally": lambda dev, se, s: run_auto_reinforce_ally(dev, se),

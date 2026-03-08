@@ -788,6 +788,7 @@ _MODE_LABELS = {
     "auto_reinforce_ally": "Reinforce Ally",
     "auto_mithril":        "Mine Mithril",
     "auto_gold":      "Gather Gold",
+    "auto_war_rallies": "War Rallies",
     "auto_esb":       "Phantom Clash",
     "debug_occupy":   "Debug Occupy",
 }

@@ -200,7 +200,6 @@ VARIATION = 0
 TITAN_INTERVAL = 30
 GROOT_INTERVAL = 30
 REINFORCE_INTERVAL = 30
-PASS_INTERVAL = 30
 PASS_MODE = "Rally Joiner"
 
 # General task scheduler (runtime state only — schedule definitions are per-device in settings)
@@ -331,7 +330,6 @@ SETTINGS_RULES = {
     "titan_interval":        {"type": int, "min": 1},
     "groot_interval":        {"type": int, "min": 1},
     "reinforce_interval":    {"type": int, "min": 1},
-    "pass_interval":         {"type": int, "min": 1},
     "mithril_interval":      {"type": int, "min": 1},
     "gather_mine_level":     {"type": int, "min": 4, "max": 6},
     "gather_max_troops":     {"type": int, "min": 1, "max": 5},
@@ -504,7 +502,6 @@ _SETTINGS_TO_CONFIG = {
     "titan_interval":        "TITAN_INTERVAL",
     "groot_interval":        "GROOT_INTERVAL",
     "reinforce_interval":    "REINFORCE_INTERVAL",
-    "pass_interval":         "PASS_INTERVAL",
     "pass_mode":             "PASS_MODE",
 }
 
