@@ -1,0 +1,1683 @@
+{% extends "base.html" %}
+{% block title_suffix %} - Protocol Visualizer{% endblock %}
+{% block body_class %}viz-page{% endblock %}
+
+{% block content %}
+<div class="viz-header">
+    <select id="device-select" onchange="switchDevice()">
+        <option value="">Select Device</option>
+        {% for dev in devices %}
+        <option value="{{ dev.id }}">{{ dev.name }}</option>
+        {% endfor %}
+    </select>
+    <span class="viz-conn" id="viz-conn">Disconnected</span>
+    <span class="viz-server-time" id="viz-server-time"></span>
+</div>
+
+<div class="viz-main">
+    <div class="viz-layout">
+        <div class="viz-map-wrap">
+            <canvas id="viz-canvas"></canvas>
+            <div class="viz-map-controls">
+                <button onclick="toggleGrid()" id="btn-grid" title="Territory Grid">Grid</button>
+                <button onclick="centerMap()" title="Re-center">Center</button>
+                <button onclick="toggleLegend()" id="btn-legend" title="Legend">Legend</button>
+                <button onclick="toggleFeed()" id="btn-feed" title="Protocol Message Feed">Feed</button>
+            </div>
+            <div class="viz-entity-filters" id="viz-filters"></div>
+            <div class="viz-legend" id="viz-legend" style="display:none">
+                <div class="viz-legend-title">Entity Types</div>
+                <div id="viz-legend-items"></div>
+            </div>
+            <div class="viz-tooltip" id="viz-tooltip" style="display:none"></div>
+        </div>
+
+        <div class="viz-sidebar" id="viz-sidebar">
+            <div class="viz-panel" id="panel-status">
+                <div class="viz-panel-head">Status</div>
+                <div class="viz-panel-body" id="status-body">
+                    <div id="status-connection">--</div>
+                    <div id="status-burning" style="display:none" class="viz-alert">CITY BURNING</div>
+                </div>
+            </div>
+
+            <div class="viz-panel" id="panel-ap">
+                <div class="viz-panel-head">Action Points</div>
+                <div class="viz-panel-body">
+                    <div class="viz-ap-bar-wrap">
+                        <div class="viz-ap-bar" id="ap-bar"></div>
+                    </div>
+                    <div class="viz-ap-text" id="ap-text">--</div>
+                </div>
+            </div>
+
+            <div class="viz-panel" id="panel-troops">
+                <div class="viz-panel-head">Troops</div>
+                <div class="viz-panel-body" id="troops-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-rallies">
+                <div class="viz-panel-head">Rallies</div>
+                <div class="viz-panel-body" id="rallies-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-attacks">
+                <div class="viz-panel-head">Incoming</div>
+                <div class="viz-panel-body" id="attacks-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-resources">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('resources')">Resources <span class="viz-chevron" id="chev-resources">&#9660;</span></div>
+                <div class="viz-panel-body" id="resources-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-quests">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('quests')">Quests <span class="viz-chevron" id="chev-quests">&#9660;</span></div>
+                <div class="viz-panel-body" id="quests-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-buffs">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('buffs')">Buffs <span class="viz-chevron" id="chev-buffs">&#9660;</span></div>
+                <div class="viz-panel-body" id="buffs-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-battles">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('battles')">Battles <span class="viz-chevron" id="chev-battles">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="battles-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-pvp">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('pvp')">PVP History <span class="viz-pvp-count" id="pvp-count"></span> <span class="viz-chevron" id="chev-pvp">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="pvp-body" style="max-height:300px;overflow-y:auto">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-marches">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('marches')">March Intel <span class="viz-chevron" id="chev-marches">&#9660;</span></div>
+                <div class="viz-panel-body" id="marches-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-gifts">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('gifts')">Alliance Gifts <span class="viz-chevron" id="chev-gifts">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="gifts-body" style="max-height:250px;overflow-y:auto">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-heroes">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('heroes')">Heroes <span class="viz-chevron" id="chev-heroes">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="heroes-body" style="max-height:250px;overflow-y:auto">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-mail">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('mail')">Mail <span class="viz-chevron" id="chev-mail">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="mail-body" style="max-height:250px;overflow-y:auto">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-altar">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('altar')">Alliance Altar <span class="viz-chevron" id="chev-altar">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="altar-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-explore">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('explore')">Explore Atlas <span class="viz-chevron" id="chev-explore">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="explore-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-entities">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('entities')">Entity Counts <span class="viz-chevron" id="chev-entities">&#9654;</span></div>
+                <div class="viz-panel-body viz-collapsed" id="entities-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-freshness">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('freshness')">Freshness <span class="viz-chevron" id="chev-freshness">&#9660;</span></div>
+                <div class="viz-panel-body" id="freshness-body">--</div>
+            </div>
+
+            <div class="viz-panel" id="panel-msgtypes">
+                <div class="viz-panel-head viz-panel-toggle" onclick="togglePanel('msgtypes')">All Message Types <span class="viz-chevron" id="chev-msgtypes">&#9660;</span></div>
+                <div class="viz-msgtypes-toolbar">
+                    <button class="viz-sort-btn viz-sort-active" onclick="setMsgSort('count')">By Count</button>
+                    <button class="viz-sort-btn" onclick="setMsgSort('name')">A-Z</button>
+                    <button class="viz-sort-btn" onclick="setMsgSort('dir')">In/Out</button>
+                    <button class="viz-sort-btn" onclick="setMsgSort('recent')">Recent</button>
+                    <span class="viz-msgtypes-total" id="msgtypes-total"></span>
+                </div>
+                <div class="viz-panel-body" id="msgtypes-body" style="max-height:400px;overflow-y:auto">--</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="viz-feed-panel" id="viz-feed-panel" style="display:none">
+        <div class="viz-feed-header">
+            <span class="viz-feed-title">Protocol Messages</span>
+            <span class="viz-feed-stats" id="feed-stats"></span>
+            <label class="viz-feed-auto"><input type="checkbox" id="feed-autoscroll" checked> Auto-scroll</label>
+            <input type="text" class="viz-feed-filter" id="feed-filter" placeholder="Filter messages..." oninput="filterFeed()">
+            <button class="viz-feed-clear" onclick="clearFeed()">Clear</button>
+        </div>
+        <div class="viz-feed-body">
+            <div class="viz-feed-list" id="feed-list"></div>
+            <div class="viz-feed-detail" id="feed-detail">
+                <div class="viz-detail-title" id="detail-title">Click a message or entity to inspect</div>
+                <pre class="viz-detail-json" id="detail-json"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+'use strict';
+
+// ======================================================================
+//  Constants
+// ======================================================================
+
+var ENTITY_COLORS = {
+    1:  '#64d8ff',  // PLAYER_TROOP — cyan
+    2:  '#42a5f5',  // PLAYER_CITY — blue
+    3:  '#66bb6a',  // NPC_GATHERABLE — green
+    4:  '#ef5350',  // NPC_TROOP — red
+    5:  '#ab47bc',  // NPC_CITY — purple
+    6:  '#ffa726',  // RALLY_TROOP — orange
+    7:  '#546e7a',  // DECORATION — gray
+    8:  '#8d6e63',  // RESOURCE_POINT — brown
+    9:  '#ffd54f',  // THRONE — gold
+    10: '#7e57c2',  // PASS — deep purple
+    11: '#78909c',  // TOWER — blue-gray
+    12: '#b0bec5',  // FORT — light gray
+    13: '#eceff1',  // STRONGHOLD — near white
+    14: '#90a4ae',  // CAMP — gray
+    18: '#795548',  // MINE — brown
+    26: '#ff7043',  // WORLD_BOSS — deep orange
+    27: '#d32f2f',  // EVIL — dark red
+};
+
+// Names from game binary (MapUnitType enum via IL2CPP extraction)
+var ENTITY_NAMES = {
+    0: 'STUB', 1: 'PLAYER_TROOP', 2: 'PLAYER_CITY', 3: 'NPC_GATHERABLE',
+    4: 'NPC_TROOP', 5: 'NPC_CITY', 6: 'RALLY_TROOP', 7: 'DECORATION',
+    8: 'RESOURCE_POINT', 9: 'THRONE', 10: 'PASS', 11: 'TOWER',
+    12: 'FORT', 13: 'STRONGHOLD', 14: 'CAMP', 15: 'CRYSTAL',
+    16: 'RELIC', 17: 'BARRIER', 18: 'MINE', 19: 'WONDER',
+    20: 'PORTAL', 21: 'SANCTUARY', 22: 'CARAVAN', 23: 'EXPEDITION',
+    24: 'PHANTOM', 25: 'ALTAR', 26: 'WORLD_BOSS', 27: 'EVIL',
+};
+
+var FACTION_COLORS = {
+    1: 'rgba(239, 83, 80, 0.25)',   // red
+    2: 'rgba(66, 165, 245, 0.25)',  // blue
+    3: 'rgba(102, 187, 106, 0.25)', // green
+    4: 'rgba(255, 202, 40, 0.25)',  // yellow
+};
+
+var MARCH_ACT_COLORS = {
+    1: '#ef5350',  // ATTACK — red
+    2: '#66bb6a',  // GATHER — green
+    3: '#90a4ae',  // RETURN — gray
+    4: '#ffb74d',  // SCOUT — amber
+    7: '#ffa726',  // RALLY — orange
+    8: '#ffa726',  // JOIN_RALLY — orange
+    9: '#42a5f5',  // REINFORCE — blue
+    10: '#42a5f5', // GUARD — blue
+    11: '#7e57c2', // OCCUPY — purple
+};
+
+var LINEUP_STATE_COLORS = {
+    0: '#4caf50', 1: '#4caf50', // HOME/DEFENDER — green
+    2: '#ffb74d', // OUT_CITY — amber
+    3: '#7e57c2', // CAMP — purple
+    4: '#ffa726', // RALLY — orange
+    5: '#42a5f5', // REINFORCE — blue
+    6: '#66bb6a', // GATHERING — green
+    7: '#ef5350', 8: '#ef5350', // FIGHT — red
+    9: '#90a4ae', // RETURN — gray
+};
+
+// ======================================================================
+//  State
+// ======================================================================
+
+var canvas, ctx;
+var viewX = 0, viewZ = 0, zoom = 0.00001;
+var dragging = false, dragStartX = 0, dragStartY = 0;
+var lastData = null;
+var showGrid = false;
+var showLegendPanel = false;
+var showFeed = false;
+var entityFilters = {};  // type_int -> bool (true = visible)
+var hoveredEntity = null;
+var animFrame = null;
+var firstLoad = true;
+var pollTimer = null;
+var feedTimer = null;
+var feedSeq = 0;        // last received sequence number
+var feedMessages = [];   // all messages received so far
+var feedFilter = '';
+var selectedMsgSeq = null;
+var msgSortMode = 'count';  // 'count', 'name', 'dir', 'recent'
+var itemNames = {};         // item ID -> {name, desc} from APK localization
+var locDB = {};             // full localization DB: {items, heroes, quests, skills, buffs, ...}
+
+// ======================================================================
+//  Init
+// ======================================================================
+
+function init() {
+    canvas = document.getElementById('viz-canvas');
+    ctx = canvas.getContext('2d');
+    resizeCanvas();
+    window.addEventListener('resize', resizeCanvas);
+
+    // Mouse events
+    canvas.addEventListener('mousedown', onMouseDown);
+    canvas.addEventListener('mousemove', onMouseMove);
+    canvas.addEventListener('mouseup', onMouseUp);
+    canvas.addEventListener('mouseleave', onMouseUp);
+    canvas.addEventListener('click', onCanvasClick);
+    canvas.addEventListener('wheel', onWheel, {passive: false});
+
+    // Touch events
+    canvas.addEventListener('touchstart', onTouchStart, {passive: false});
+    canvas.addEventListener('touchmove', onTouchMove, {passive: false});
+    canvas.addEventListener('touchend', onTouchEnd);
+
+    // Load full localization DB (one-time, from APK data)
+    fetch(RELAY_PREFIX + '/api/loc-db')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            locDB = data || {};
+            // Build itemNames in old format for backward compat
+            var items = locDB.items || {};
+            for (var k in items) itemNames[k] = {name: items[k]};
+        })
+        .catch(function() {});
+
+    // Auto-select first device
+    var sel = document.getElementById('device-select');
+    if (sel.options.length > 1) {
+        sel.selectedIndex = 1;
+        switchDevice();
+    }
+}
+
+function resizeCanvas() {
+    var wrap = canvas.parentElement;
+    canvas.width = wrap.clientWidth;
+    canvas.height = wrap.clientHeight;
+    requestDraw();
+}
+
+// ======================================================================
+//  Coordinate transforms
+// ======================================================================
+
+function worldToCanvas(wx, wz) {
+    return [
+        (wx - viewX) * zoom + canvas.width / 2,
+        -(wz - viewZ) * zoom + canvas.height / 2
+    ];
+}
+
+function canvasToWorld(cx, cy) {
+    return [
+        (cx - canvas.width / 2) / zoom + viewX,
+        -((cy - canvas.height / 2) / zoom) + viewZ
+    ];
+}
+
+// ======================================================================
+//  Pan & Zoom
+// ======================================================================
+
+function onMouseDown(e) {
+    dragging = true;
+    dragMoved = false;
+    dragStartX = e.clientX;
+    dragStartY = e.clientY;
+    canvas.style.cursor = 'grabbing';
+}
+
+function onMouseMove(e) {
+    if (dragging) {
+        var dx = e.clientX - dragStartX;
+        var dy = e.clientY - dragStartY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) dragMoved = true;
+        viewX -= dx / zoom;
+        viewZ += dy / zoom;  // Inverted: canvas Y is flipped relative to world Z
+        dragStartX = e.clientX;
+        dragStartY = e.clientY;
+        requestDraw();
+    } else {
+        updateHover(e);
+    }
+}
+
+function onMouseUp() {
+    dragging = false;
+    canvas.style.cursor = 'crosshair';
+}
+
+function onWheel(e) {
+    e.preventDefault();
+    var factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    // Zoom toward mouse position
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var wBefore = canvasToWorld(mx, my);
+    zoom *= factor;
+    zoom = Math.max(0.0000001, Math.min(0.01, zoom));
+    var wAfter = canvasToWorld(mx, my);
+    viewX += wBefore[0] - wAfter[0];
+    viewZ += wBefore[1] - wAfter[1];
+    requestDraw();
+}
+
+// Touch support
+var lastTouchDist = 0;
+var lastTouchCenter = null;
+
+function onTouchStart(e) {
+    if (e.touches.length === 1) {
+        e.preventDefault();
+        dragging = true;
+        dragStartX = e.touches[0].clientX;
+        dragStartY = e.touches[0].clientY;
+    } else if (e.touches.length === 2) {
+        e.preventDefault();
+        dragging = false;
+        lastTouchDist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+        );
+        lastTouchCenter = [
+            (e.touches[0].clientX + e.touches[1].clientX) / 2,
+            (e.touches[0].clientY + e.touches[1].clientY) / 2
+        ];
+    }
+}
+
+function onTouchMove(e) {
+    if (e.touches.length === 1 && dragging) {
+        e.preventDefault();
+        var dx = e.touches[0].clientX - dragStartX;
+        var dy = e.touches[0].clientY - dragStartY;
+        viewX -= dx / zoom;
+        viewZ += dy / zoom;  // Inverted: canvas Y is flipped relative to world Z
+        dragStartX = e.touches[0].clientX;
+        dragStartY = e.touches[0].clientY;
+        requestDraw();
+    } else if (e.touches.length === 2) {
+        e.preventDefault();
+        var dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+        );
+        if (lastTouchDist > 0) {
+            var factor = dist / lastTouchDist;
+            zoom *= factor;
+            zoom = Math.max(0.0000001, Math.min(0.01, zoom));
+        }
+        lastTouchDist = dist;
+        // Pan with two-finger center
+        var cx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        var cy = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        if (lastTouchCenter) {
+            viewX -= (cx - lastTouchCenter[0]) / zoom;
+            viewZ += (cy - lastTouchCenter[1]) / zoom;  // Inverted Y
+        }
+        lastTouchCenter = [cx, cy];
+        requestDraw();
+    }
+}
+
+function onTouchEnd(e) {
+    if (e.touches.length < 2) {
+        lastTouchDist = 0;
+        lastTouchCenter = null;
+    }
+    if (e.touches.length === 0) {
+        dragging = false;
+    }
+}
+
+// ======================================================================
+//  Hover / Tooltip
+// ======================================================================
+
+function updateHover(e) {
+    if (!lastData || !lastData.map) return;
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var world = canvasToWorld(mx, my);
+    var bestDist = 20 / zoom;  // Max pick distance in world units
+    var best = null;
+
+    // Check entities
+    var ents = lastData.map.entities || [];
+    for (var i = 0; i < ents.length; i++) {
+        var ent = ents[i];
+        if (entityFilters[ent.type] === false) continue;
+        var d = Math.hypot(ent.x - world[0], ent.z - world[1]);
+        if (d < bestDist) { bestDist = d; best = ent; }
+    }
+    // Check rallies
+    var rls = lastData.map.rallies || [];
+    for (var j = 0; j < rls.length; j++) {
+        var r = rls[j];
+        var d2 = Math.hypot(r.x - world[0], r.z - world[1]);
+        if (d2 < bestDist) { bestDist = d2; best = {_rally: r}; }
+    }
+
+    var tip = document.getElementById('viz-tooltip');
+    if (best) {
+        hoveredEntity = best;
+        var text = '';
+        if (best._rally) {
+            var rl = best._rally;
+            text = 'Rally: ' + rl.owner + ' [' + rl.state_name + '] ' + rl.troop_count + '/' + rl.max;
+        } else {
+            var tname = ENTITY_NAMES[best.type] || ('Type ' + best.type);
+            text = tname;
+            if (best.name) text += ': ' + best.name;
+            if (best.level) text += ' (Lv' + best.level + ')';
+            text += ' @ ' + Math.round(best.x / 1000) + ', ' + Math.round(best.z / 1000);
+        }
+        tip.textContent = text;
+        tip.style.display = 'block';
+        tip.style.left = (e.clientX - rect.left + 12) + 'px';
+        tip.style.top = (e.clientY - rect.top - 8) + 'px';
+    } else {
+        hoveredEntity = null;
+        tip.style.display = 'none';
+    }
+}
+
+// ======================================================================
+//  Drawing
+// ======================================================================
+
+function requestDraw() {
+    if (!animFrame) {
+        animFrame = requestAnimationFrame(function() {
+            animFrame = null;
+            draw();
+        });
+    }
+}
+
+function draw() {
+    if (!canvas || !ctx) return;
+    var w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // Background
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, w, h);
+
+    if (!lastData || !lastData.ok) {
+        ctx.fillStyle = '#667';
+        ctx.font = '14px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(lastData ? 'Protocol not active for this device' : 'Select a device', w/2, h/2);
+        return;
+    }
+
+    var map = lastData.map;
+
+    // Layer 1: Territory grid
+    if (showGrid) {
+        if (map.territory && map.territory.available) {
+            drawTerritoryGrid(map.territory.grid);
+        } else {
+            ctx.fillStyle = '#667';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('Territory grid: open territory screen in-game to load data', w / 2, 20);
+        }
+    }
+
+    // Layer 2: Entities
+    var ents = map.entities || [];
+    for (var i = 0; i < ents.length; i++) {
+        var e = ents[i];
+        if (entityFilters[e.type] === false) continue;
+        var p = worldToCanvas(e.x, e.z);
+        if (p[0] < -20 || p[0] > w + 20 || p[1] < -20 || p[1] > h + 20) continue;
+        drawEntity(p[0], p[1], e);
+    }
+
+    // Layer 3: Ally cities
+    var allies = map.ally_cities || [];
+    for (var a = 0; a < allies.length; a++) {
+        var ac = allies[a];
+        var pa = worldToCanvas(ac.x, ac.z);
+        if (pa[0] < -20 || pa[0] > w + 20 || pa[1] < -20 || pa[1] > h + 20) continue;
+        ctx.fillStyle = '#00e5ff';
+        ctx.beginPath();
+        ctx.arc(pa[0], pa[1], 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        if (zoom > 0.0001 && ac.name) {
+            ctx.fillStyle = '#00e5ff';
+            ctx.font = '9px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText(ac.name, pa[0], pa[1] - 9);
+        }
+    }
+
+    // Layer 4: Rallies
+    var rls = map.rallies || [];
+    var now = Date.now();
+    for (var r = 0; r < rls.length; r++) {
+        var rl = rls[r];
+        if (!rl.x && !rl.z) continue;
+        var pr = worldToCanvas(rl.x, rl.z);
+        if (pr[0] < -30 || pr[0] > w + 30 || pr[1] < -30 || pr[1] > h + 30) continue;
+        // Pulsing circle
+        var pulse = 1 + 0.2 * Math.sin(now / 400);
+        ctx.fillStyle = 'rgba(255, 167, 38, 0.4)';
+        ctx.beginPath();
+        ctx.arc(pr[0], pr[1], 10 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffa726';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(pr[0], pr[1], 10, 0, Math.PI * 2);
+        ctx.stroke();
+        // Label
+        ctx.fillStyle = '#ffa726';
+        ctx.font = 'bold 10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(rl.troop_count + '/' + rl.max, pr[0], pr[1] - 14);
+    }
+
+    // Layer 5: Troop positions
+    var tps = map.troop_positions || [];
+    for (var t = 0; t < tps.length; t++) {
+        var tp = tps[t];
+        if (!tp.x && !tp.z) continue;
+        var pt = worldToCanvas(tp.x, tp.z);
+        if (pt[0] < -20 || pt[0] > w + 20 || pt[1] < -20 || pt[1] > h + 20) continue;
+        var scol = LINEUP_STATE_COLORS[tp.state] || '#4caf50';
+        // Diamond shape
+        ctx.fillStyle = scol;
+        ctx.beginPath();
+        ctx.moveTo(pt[0], pt[1] - 8);
+        ctx.lineTo(pt[0] + 6, pt[1]);
+        ctx.lineTo(pt[0], pt[1] + 8);
+        ctx.lineTo(pt[0] - 6, pt[1]);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        // State label
+        ctx.fillStyle = '#fff';
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(tp.state_name, pt[0], pt[1] - 12);
+    }
+
+    // Layer 6: March paths (attacks)
+    var atks = map.attacks || [];
+    for (var k = 0; k < atks.length; k++) {
+        drawMarchPath(atks[k], now);
+    }
+
+    // Redraw for animation (marches, rally pulses)
+    if ((rls.length > 0 || atks.length > 0) && !animFrame) {
+        animFrame = requestAnimationFrame(function() {
+            animFrame = null;
+            draw();
+        });
+    }
+}
+
+function drawEntity(cx, cy, ent) {
+    var color = ENTITY_COLORS[ent.type] || '#546e7a';
+    var size = 4;
+    ctx.fillStyle = color;
+
+    switch (ent.type) {
+        case 2: case 5: // Cities — circle
+            ctx.beginPath();
+            ctx.arc(cx, cy, size + 1, 0, Math.PI * 2);
+            ctx.fill();
+            break;
+        case 3: case 8: // Gatherable/Resource — diamond
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - size);
+            ctx.lineTo(cx + size, cy);
+            ctx.lineTo(cx, cy + size);
+            ctx.lineTo(cx - size, cy);
+            ctx.closePath();
+            ctx.fill();
+            break;
+        case 4: case 27: // NPC Troop / Evil — triangle
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - size);
+            ctx.lineTo(cx + size, cy + size);
+            ctx.lineTo(cx - size, cy + size);
+            ctx.closePath();
+            ctx.fill();
+            break;
+        case 9: // Throne — star
+            drawStar(cx, cy, 5, size + 2, size / 2);
+            break;
+        case 10: // Pass — hexagon
+            drawHex(cx, cy, size + 1);
+            break;
+        case 11: case 12: case 13: // TOWER/FORT/STRONGHOLD — square
+            ctx.fillRect(cx - size, cy - size, size * 2, size * 2);
+            break;
+        default:
+            ctx.beginPath();
+            ctx.arc(cx, cy, 3, 0, Math.PI * 2);
+            ctx.fill();
+    }
+
+    // Label for cities at sufficient zoom
+    if (zoom > 0.00008 && ent.name && (ent.type === 2 || ent.type === 5)) {
+        ctx.fillStyle = color;
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(ent.name, cx, cy - size - 4);
+    }
+}
+
+function drawStar(cx, cy, spikes, outerR, innerR) {
+    ctx.beginPath();
+    for (var i = 0; i < spikes * 2; i++) {
+        var r = i % 2 === 0 ? outerR : innerR;
+        var angle = (Math.PI * i / spikes) - Math.PI / 2;
+        var x = cx + Math.cos(angle) * r;
+        var y = cy + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+}
+
+function drawHex(cx, cy, r) {
+    ctx.beginPath();
+    for (var i = 0; i < 6; i++) {
+        var angle = Math.PI / 3 * i - Math.PI / 6;
+        var x = cx + Math.cos(angle) * r;
+        var y = cy + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fill();
+}
+
+function drawTerritoryGrid(grid) {
+    // Territory squares: center at col*300000+150000, row*300000+150000
+    // Size: 300000 world units
+    var halfSq = 150000;
+    for (var key in grid) {
+        var parts = key.split(',');
+        var row = parseInt(parts[0]), col = parseInt(parts[1]);
+        var fid = grid[key][0];  // faction owner
+        if (!fid) continue;
+        var color = FACTION_COLORS[fid];
+        if (!color) continue;
+        var wcx = col * 300000 + halfSq;
+        var wcz = row * 300000 + halfSq;
+        var tl = worldToCanvas(wcx - halfSq, wcz + halfSq);  // top-left in canvas (max Z = top after flip)
+        var br = worldToCanvas(wcx + halfSq, wcz - halfSq);  // bottom-right in canvas
+        var rx = Math.min(tl[0], br[0]);
+        var ry = Math.min(tl[1], br[1]);
+        var rw = Math.abs(br[0] - tl[0]);
+        var rh = Math.abs(br[1] - tl[1]);
+        ctx.fillStyle = color;
+        ctx.fillRect(rx, ry, rw, rh);
+        // Border
+        ctx.strokeStyle = color.replace('0.25', '0.5');
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(rx, ry, rw, rh);
+    }
+}
+
+function drawMarchPath(atk, now) {
+    var fx = atk.from_x, fz = atk.from_z;
+    var tx = atk.to_x, tz = atk.to_z;
+    if (!fx && !fz && !tx && !tz) return;
+
+    var pFrom = worldToCanvas(fx, fz);
+    var pTo = worldToCanvas(tx, tz);
+    var color = MARCH_ACT_COLORS[atk.act] || '#ef5350';
+
+    // Dashed line
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([8, 4]);
+    ctx.beginPath();
+    ctx.moveTo(pFrom[0], pFrom[1]);
+    ctx.lineTo(pTo[0], pTo[1]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Arrowhead at destination
+    var angle = Math.atan2(pTo[1] - pFrom[1], pTo[0] - pFrom[0]);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(pTo[0], pTo[1]);
+    ctx.lineTo(pTo[0] - 10 * Math.cos(angle - 0.4), pTo[1] - 10 * Math.sin(angle - 0.4));
+    ctx.lineTo(pTo[0] - 10 * Math.cos(angle + 0.4), pTo[1] - 10 * Math.sin(angle + 0.4));
+    ctx.closePath();
+    ctx.fill();
+
+    // Progress dot (animated)
+    if (atk.start_ts && atk.arrive_ts && atk.arrive_ts > atk.start_ts) {
+        var progress = Math.min(1, Math.max(0, (now - atk.start_ts) / (atk.arrive_ts - atk.start_ts)));
+        var px = pFrom[0] + (pTo[0] - pFrom[0]) * progress;
+        var py = pFrom[1] + (pTo[1] - pFrom[1]) * progress;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+    }
+
+    // Name label at midpoint
+    if (atk.name) {
+        var mx = (pFrom[0] + pTo[0]) / 2;
+        var my = (pFrom[1] + pTo[1]) / 2;
+        ctx.fillStyle = color;
+        ctx.font = '9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(atk.name + ' [' + atk.act_name + ']', mx, my - 8);
+    }
+}
+
+// ======================================================================
+//  Auto-fit
+// ======================================================================
+
+function autoFit(bounds) {
+    if (!bounds || bounds.min_x === bounds.max_x) return;
+    viewX = (bounds.min_x + bounds.max_x) / 2;
+    viewZ = (bounds.min_z + bounds.max_z) / 2;
+    var rangeX = bounds.max_x - bounds.min_x || 1;
+    var rangeZ = bounds.max_z - bounds.min_z || 1;
+    zoom = Math.min(canvas.width / rangeX, canvas.height / rangeZ) * 0.85;
+    zoom = Math.max(0.0000001, Math.min(0.01, zoom));
+}
+
+// ======================================================================
+//  Controls
+// ======================================================================
+
+window.toggleGrid = function() {
+    showGrid = !showGrid;
+    var btn = document.getElementById('btn-grid');
+    btn.classList.toggle('viz-btn-active', showGrid);
+    requestDraw();
+};
+
+window.centerMap = function() {
+    if (lastData && lastData.map) autoFit(lastData.map.bounds);
+    requestDraw();
+};
+
+window.toggleLegend = function() {
+    showLegendPanel = !showLegendPanel;
+    document.getElementById('viz-legend').style.display = showLegendPanel ? 'block' : 'none';
+    document.getElementById('btn-legend').classList.toggle('viz-btn-active', showLegendPanel);
+};
+
+window.togglePanel = function(id) {
+    var body = document.getElementById(id + '-body');
+    var chev = document.getElementById('chev-' + id);
+    var collapsed = body.classList.toggle('viz-collapsed');
+    chev.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+};
+
+window.switchDevice = function() {
+    var sel = document.getElementById('device-select');
+    lastData = null;
+    firstLoad = true;
+    feedSeq = 0;
+    feedMessages = [];
+    selectedMsgSeq = null;
+    var feedList = document.getElementById('feed-list');
+    if (feedList) feedList.textContent = '';
+    if (pollTimer) clearInterval(pollTimer);
+    if (feedTimer) clearInterval(feedTimer);
+    if (sel.value) {
+        fetchData();
+        pollTimer = setInterval(fetchData, 3000);
+        if (showFeed) {
+            fetchFeed();
+            feedTimer = setInterval(fetchFeed, 2000);
+        }
+    } else {
+        requestDraw();
+    }
+};
+
+window.centerOnCoord = function(x, z) {
+    viewX = x;
+    viewZ = z;
+    zoom = Math.max(zoom, 0.0002);  // Zoom in a bit if very far out
+    requestDraw();
+};
+
+function setEntityFilter(type, visible) {
+    entityFilters[type] = visible;
+    requestDraw();
+}
+
+// ======================================================================
+//  Data fetching
+// ======================================================================
+
+function fetchData() {
+    var device = document.getElementById('device-select').value;
+    if (!device) return;
+    fetch(RELAY_PREFIX + '/api/protocol-viz?device=' + encodeURIComponent(device))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            lastData = data;
+            if (firstLoad && data.ok && data.map && data.map.bounds) {
+                autoFit(data.map.bounds);
+                firstLoad = false;
+                buildFilters(data.map.entities || []);
+                buildLegend();
+            }
+            updateSidebar(data);
+            requestDraw();
+        })
+        .catch(function(err) {
+            console.error('Viz fetch error:', err);
+        });
+}
+
+// ======================================================================
+//  Entity filters
+// ======================================================================
+
+function buildFilters(entities) {
+    var types = {};
+    for (var i = 0; i < entities.length; i++) {
+        types[entities[i].type] = true;
+    }
+    var container = document.getElementById('viz-filters');
+    container.textContent = '';
+    var sortedTypes = Object.keys(types).map(Number).sort(function(a, b) { return a - b; });
+    for (var j = 0; j < sortedTypes.length; j++) {
+        var t = sortedTypes[j];
+        if (entityFilters[t] === undefined) entityFilters[t] = true;
+        var btn = document.createElement('button');
+        btn.className = 'viz-filter-btn' + (entityFilters[t] ? ' viz-filter-active' : '');
+        btn.style.borderColor = ENTITY_COLORS[t] || '#546e7a';
+        btn.textContent = ENTITY_NAMES[t] || ('T' + t);
+        btn.setAttribute('data-type', t);
+        btn.onclick = function() {
+            var type = parseInt(this.getAttribute('data-type'));
+            entityFilters[type] = !entityFilters[type];
+            this.classList.toggle('viz-filter-active', entityFilters[type]);
+            requestDraw();
+        };
+        container.appendChild(btn);
+    }
+}
+
+function buildLegend() {
+    var container = document.getElementById('viz-legend-items');
+    container.textContent = '';
+    var items = [
+        {label: 'Your Troops', color: '#4caf50', shape: 'diamond'},
+        {label: 'Rally', color: '#ffa726', shape: 'circle'},
+        {label: 'Ally City', color: '#00e5ff', shape: 'circle'},
+        {label: 'Attack March', color: '#ef5350', shape: 'line'},
+        {label: 'Reinforce March', color: '#42a5f5', shape: 'line'},
+        {label: 'Gather March', color: '#66bb6a', shape: 'line'},
+    ];
+    for (var i = 0; i < items.length; i++) {
+        var div = document.createElement('div');
+        div.className = 'viz-legend-item';
+        var swatch = document.createElement('span');
+        swatch.className = 'viz-legend-swatch';
+        swatch.style.background = items[i].color;
+        div.appendChild(swatch);
+        var lbl = document.createElement('span');
+        lbl.textContent = items[i].label;
+        div.appendChild(lbl);
+        container.appendChild(div);
+    }
+}
+
+// ======================================================================
+//  Sidebar updates
+// ======================================================================
+
+function updateSidebar(data) {
+    // Connection status
+    var conn = document.getElementById('viz-conn');
+    if (data.connected) {
+        conn.textContent = 'Connected';
+        conn.className = 'viz-conn viz-conn-on';
+    } else {
+        conn.textContent = data.error || 'Disconnected';
+        conn.className = 'viz-conn viz-conn-off';
+    }
+
+    // Server time
+    var stEl = document.getElementById('viz-server-time');
+    if (data.server_time) {
+        var d = new Date(data.server_time);
+        stEl.textContent = d.toLocaleTimeString();
+    } else {
+        stEl.textContent = '';
+    }
+
+    if (!data.ok) return;
+    var sb = data.sidebar;
+
+    // City burning
+    var burnEl = document.getElementById('status-burning');
+    burnEl.style.display = sb.city_burning ? 'block' : 'none';
+
+    // AP
+    if (sb.ap) {
+        var pct = sb.ap.max > 0 ? (sb.ap.current / sb.ap.max * 100) : 0;
+        var apBar = document.getElementById('ap-bar');
+        apBar.style.width = pct + '%';
+        apBar.className = 'viz-ap-bar' + (pct < 20 ? ' viz-ap-low' : '');
+        document.getElementById('ap-text').textContent = sb.ap.current + ' / ' + sb.ap.max;
+    } else {
+        document.getElementById('ap-text').textContent = '--';
+        document.getElementById('ap-bar').style.width = '0';
+    }
+
+    // Troops
+    var troopHtml = '';
+    var lineups = sb.lineups || [];
+    lineups.sort(function(a, b) { return a.id - b.id; });
+    for (var i = 0; i < lineups.length; i++) {
+        var lu = lineups[i];
+        var scol = LINEUP_STATE_COLORS[lu.state] || '#667';
+        var timeStr = '';
+        if (lu.end_ts > 0) {
+            var remain = Math.max(0, lu.end_ts - Date.now());
+            if (lu.end_ts > 1e12) remain = Math.max(0, lu.end_ts - Date.now());
+            else remain = Math.max(0, lu.end_ts * 1000 - Date.now());
+            timeStr = formatTime(remain);
+        }
+        // Check if this troop has a position on map
+        var hasPos = false;
+        var tps = data.map.troop_positions || [];
+        var tpx = 0, tpz = 0;
+        for (var j = 0; j < tps.length; j++) {
+            if (tps[j].lineup_id === lu.id) {
+                hasPos = true;
+                tpx = tps[j].x;
+                tpz = tps[j].z;
+                break;
+            }
+        }
+        troopHtml += '<div class="viz-troop-card' + (hasPos ? ' viz-clickable' : '') + '"'
+            + (hasPos ? ' onclick="centerOnCoord(' + tpx + ',' + tpz + ')"' : '')
+            + '>'
+            + '<span class="viz-troop-badge" style="background:' + scol + '">' + lu.state_name + '</span>'
+            + ' <span class="viz-troop-power">' + formatPower(lu.combat_power || lu.power) + '</span>'
+            + (timeStr ? ' <span class="viz-troop-time">' + timeStr + '</span>' : '')
+            + '</div>';
+    }
+    document.getElementById('troops-body').innerHTML = troopHtml || '--';
+
+    // Rallies
+    var rallyHtml = '';
+    var rallies = data.map.rallies || [];
+    for (var ri = 0; ri < rallies.length; ri++) {
+        var rl = rallies[ri];
+        var rtime = '';
+        if (rl.state_end_ts > 0) {
+            var rRemain = Math.max(0, rl.state_end_ts - Date.now());
+            if (rl.state_end_ts < 1e12) rRemain = Math.max(0, rl.state_end_ts * 1000 - Date.now());
+            rtime = formatTime(rRemain);
+        }
+        var hasCoord = rl.x || rl.z;
+        rallyHtml += '<div class="viz-rally-item' + (hasCoord ? ' viz-clickable' : '') + '"'
+            + (hasCoord ? ' onclick="centerOnCoord(' + rl.x + ',' + rl.z + ')"' : '')
+            + '>'
+            + '<span class="viz-rally-owner">' + escHtml(rl.owner) + '</span>'
+            + ' <span class="viz-rally-state">' + rl.state_name + '</span>'
+            + ' <span class="viz-rally-count">' + rl.troop_count + '/' + rl.max + '</span>'
+            + (rtime ? ' <span class="viz-rally-time">' + rtime + '</span>' : '')
+            + '</div>';
+    }
+    document.getElementById('rallies-body').innerHTML = rallyHtml || 'None';
+
+    // Attacks
+    var atkHtml = '';
+    var attacks = data.map.attacks || [];
+    var atkPanel = document.getElementById('panel-attacks');
+    atkPanel.classList.toggle('viz-panel-alert', attacks.length > 0);
+    for (var ai = 0; ai < attacks.length; ai++) {
+        var atk = attacks[ai];
+        var eta = '';
+        if (atk.arrive_ts > 0) {
+            var aRemain = Math.max(0, atk.arrive_ts - Date.now());
+            if (atk.arrive_ts < 1e12) aRemain = Math.max(0, atk.arrive_ts * 1000 - Date.now());
+            eta = formatTime(aRemain);
+        }
+        var hasAtkCoord = atk.to_x || atk.to_z;
+        atkHtml += '<div class="viz-atk-item' + (hasAtkCoord ? ' viz-clickable' : '') + '"'
+            + (hasAtkCoord ? ' onclick="centerOnCoord(' + atk.to_x + ',' + atk.to_z + ')"' : '')
+            + '>'
+            + '<span class="viz-atk-name">' + escHtml(atk.name) + '</span>'
+            + ' <span class="viz-atk-act">' + atk.act_name + '</span>'
+            + (eta ? ' <span class="viz-atk-eta">ETA ' + eta + '</span>' : '')
+            + '</div>';
+    }
+    document.getElementById('attacks-body').innerHTML = atkHtml || 'None';
+
+    // Resources — group by typ, show ID for each
+    var resHtml = '';
+    var resources = sb.resources || [];
+    if (resources.length > 0) {
+        // Group by type
+        var byType = {};
+        for (var rsi = 0; rsi < resources.length; rsi++) {
+            var res = resources[rsi];
+            var rtype = res.type || 'unknown';
+            if (!byType[rtype]) byType[rtype] = [];
+            byType[rtype].push(res);
+        }
+        // Sort groups by name, render each
+        var typeKeys = Object.keys(byType).sort();
+        for (var ti = 0; ti < typeKeys.length; ti++) {
+            var tkey = typeKeys[ti];
+            var group = byType[tkey];
+            // Sort by value descending within group
+            group.sort(function(a, b) { return b.val - a.val; });
+            resHtml += '<div class="viz-res-group-head">' + escHtml(tkey) + ' (' + group.length + ')</div>';
+            for (var gi = 0; gi < group.length; gi++) {
+                var gr = group[gi];
+                var label = locName('items', gr.id);
+                resHtml += '<div class="viz-res-item">'
+                    + '<span class="viz-res-name" title="ID: ' + gr.id + '">' + escHtml(label) + '</span>'
+                    + '<span class="viz-res-val">' + formatNum(gr.val) + '</span>'
+                    + (gr.cap ? '<span class="viz-res-cap">/ ' + formatNum(gr.cap) + '</span>' : '')
+                    + '</div>';
+            }
+        }
+    }
+    document.getElementById('resources-body').innerHTML = resHtml || 'None';
+
+    // Quests
+    var qHtml = '';
+    var quests = sb.quests || [];
+    for (var qi = 0; qi < quests.length; qi++) {
+        var q = quests[qi];
+        var qName = locName('quests', q.cfg_id);
+        qHtml += '<div class="viz-quest-item">'
+            + '<span class="viz-quest-name" title="cfgID: ' + q.cfg_id + '">' + escHtml(qName) + '</span>'
+            + ' <span class="viz-quest-cnt">' + q.cur_cnt + '</span>'
+            + ' <span class="viz-quest-state">(state ' + q.state + ')</span>'
+            + '</div>';
+    }
+    document.getElementById('quests-body').innerHTML = qHtml || 'None';
+
+    // Buffs
+    var bHtml = '';
+    var buffs = sb.buffs || [];
+    for (var bi = 0; bi < buffs.length; bi++) {
+        bHtml += '<div class="viz-buff-item">' + JSON.stringify(buffs[bi]) + '</div>';
+    }
+    document.getElementById('buffs-body').innerHTML = bHtml || 'None';
+
+    // Battles
+    var btHtml = '';
+    var battles = sb.battle_results || [];
+    for (var bti = battles.length - 1; bti >= 0; bti--) {
+        var bt = battles[bti];
+        btHtml += '<div class="viz-battle-item">'
+            + 'Atk: ' + (bt.atk_result || '?') + ' / Def: ' + (bt.def_result || '?')
+            + '</div>';
+    }
+    document.getElementById('battles-body').innerHTML = btHtml || 'None';
+
+    // PVP battles (from PvpInfoAck)
+    var pvpHtml = '';
+    var pvps = sb.pvp_battles || [];
+    document.getElementById('pvp-count').textContent = pvps.length ? '(' + pvps.length + ')' : '';
+    for (var pi = pvps.length - 1; pi >= 0 && pi >= pvps.length - 50; pi--) {
+        var pv = pvps[pi];
+        var selfName = (pv.selfHead && pv.selfHead.name) || '?';
+        var hostName = (pv.hostileHead && pv.hostileHead.name) || '?';
+        var hostUnion = pv.hostileUnionNickName || '';
+        var won = !!pv.isWin;
+        var isWin = won ? 'viz-pvp-win' : 'viz-pvp-loss';
+        var winLabel = won ? 'W' : 'L';
+        var pvpAge = pv.timestamp ? formatTime(Date.now() - pv.timestamp) + ' ago' : '';
+        pvpHtml += '<div class="viz-pvp-row viz-clickable" onclick="inspectObj(\'PVP Battle\', sb_pvp_battles[' + pi + '])">'
+            + '<span class="viz-pvp-result ' + isWin + '">' + winLabel + '</span>'
+            + '<span class="viz-pvp-names">' + escHtml(selfName) + ' vs ' + escHtml(hostName)
+            + (hostUnion ? ' [' + escHtml(hostUnion) + ']' : '') + '</span>'
+            + '<span class="viz-pvp-power">' + formatNum(pv.hostilePower || 0) + '</span>'
+            + '<span class="viz-pvp-age">' + pvpAge + '</span>'
+            + '</div>';
+    }
+    window.sb_pvp_battles = pvps;
+    document.getElementById('pvp-body').innerHTML = pvpHtml || 'None';
+
+    // March intelligence (from InformationNtf)
+    var marchHtml = '';
+    var marches = sb.marches || [];
+    for (var mi2 = 0; mi2 < marches.length; mi2++) {
+        var mar = marches[mi2];
+        var aName = (mar.aSide && mar.aSide.head && mar.aSide.head.name) || '?';
+        var bName = (mar.bSide && mar.bSide.head && mar.bSide.head.name) || '?';
+        var aUnion = (mar.aSide && mar.aSide.uNickname) || '';
+        var bUnion = (mar.bSide && mar.bSide.uNickname) || '';
+        var marchAct = mar.act || 0;
+        var actNames = {1:'ATK',2:'GATHER',3:'RETURN',7:'RALLY',8:'JOIN_RALLY',9:'REINFORCE',10:'GUARD',11:'OCCUPY'};
+        var actLabel = actNames[marchAct] || ('act:' + marchAct);
+        var marchEta = mar.endTs ? formatTime(mar.endTs - Date.now()) : '';
+        marchHtml += '<div class="viz-march-row viz-clickable" onclick="inspectObj(\'March Intel\', sb_marches[' + mi2 + '])">'
+            + '<span class="viz-march-act viz-act-' + marchAct + '">' + actLabel + '</span>'
+            + '<span class="viz-march-names">' + escHtml(aName) + (aUnion ? ' [' + escHtml(aUnion) + ']' : '')
+            + ' → ' + escHtml(bName) + (bUnion ? ' [' + escHtml(bUnion) + ']' : '') + '</span>'
+            + (marchEta ? '<span class="viz-march-eta">' + marchEta + '</span>' : '')
+            + '</div>';
+    }
+    window.sb_marches = marches;
+    document.getElementById('marches-body').innerHTML = marchHtml || 'None';
+
+    // Alliance gifts (from UnionGiftInfoAck)
+    var giftHtml = '';
+    var gifts = sb.gifts || [];
+    for (var gfi = 0; gfi < gifts.length; gfi++) {
+        var gf = gifts[gfi];
+        var gfName = gf.giftName || ('Gift #' + (gf.cfgID || '?'));
+        var gfFrom = gf.providerName || '?';
+        var gfRewards = '';
+        if (gf.rewards && gf.rewards.length > 0) {
+            var rParts = [];
+            for (var ri = 0; ri < gf.rewards.length; ri++) {
+                var rw = gf.rewards[ri];
+                var rwId = rw['2'] || '';
+                var rwAmt = rw['3'] || 0;
+                var rwName = locName('items', rwId);
+                rParts.push(rwAmt + 'x ' + rwName);
+            }
+            gfRewards = rParts.join(', ');
+        }
+        giftHtml += '<div class="viz-gift-row viz-clickable" onclick="inspectObj(\'Alliance Gift\', sb_gifts[' + gfi + '])">'
+            + '<span class="viz-gift-from">' + escHtml(gfFrom) + '</span>'
+            + '<span class="viz-gift-name">' + escHtml(gfName) + '</span>'
+            + (gfRewards ? '<div class="viz-gift-rewards">' + escHtml(gfRewards) + '</div>' : '')
+            + '</div>';
+    }
+    window.sb_gifts = gifts;
+    document.getElementById('gifts-body').innerHTML = giftHtml || 'None';
+
+    // Heroes (from HeroInfoNtf)
+    var heroHtml = '';
+    var heroes = sb.heroes || [];
+    for (var hi = 0; hi < heroes.length; hi++) {
+        var hr = heroes[hi];
+        var hName = locName('heroes', hr.cfgId);
+        heroHtml += '<div class="viz-hero-row viz-clickable" onclick="inspectObj(\'Hero\', sb_heroes[' + hi + '])">'
+            + '<span class="viz-hero-name" title="cfgId: ' + (hr.cfgId || '?') + '">' + escHtml(hName) + '</span>'
+            + '<span class="viz-hero-level">Lv' + (hr.level || 0) + '</span>'
+            + '<span class="viz-hero-star">' + '\u2605'.repeat(hr.star || 0) + '</span>'
+            + '</div>';
+    }
+    window.sb_heroes = heroes;
+    document.getElementById('heroes-body').innerHTML = heroHtml || 'None';
+
+    // Mail (from Mail2NdHeadListNtf)
+    var mailHtml = '';
+    var mails = sb.mail_heads || [];
+    for (var mli = 0; mli < mails.length; mli++) {
+        var ml = mails[mli];
+        var mlTitle = ml.title || ml.mailCfgID || 'Mail';
+        var mlFrom = ml.from || '';
+        var mlTime = ml.createdAt ? new Date(ml.createdAt).toLocaleTimeString() : '';
+        mailHtml += '<div class="viz-mail-row viz-clickable" onclick="inspectObj(\'Mail\', sb_mails[' + mli + '])">'
+            + '<span class="viz-mail-title">' + escHtml(String(mlTitle)) + '</span>'
+            + (mlFrom ? '<span class="viz-mail-from">' + escHtml(String(mlFrom)) + '</span>' : '')
+            + (mlTime ? '<span class="viz-mail-time">' + mlTime + '</span>' : '')
+            + '</div>';
+    }
+    window.sb_mails = mails;
+    document.getElementById('mail-body').innerHTML = mailHtml || 'None';
+
+    // Alliance altar (from UnionAltarAck)
+    var altarHtml = '';
+    var altar = sb.altar;
+    if (altar && altar.Altars) {
+        var altarKeys = Object.keys(altar.Altars).sort();
+        for (var ai = 0; ai < altarKeys.length; ai++) {
+            var ak = altarKeys[ai];
+            altarHtml += '<div class="viz-altar-item">'
+                + '<span class="viz-altar-id">Altar ' + ak + '</span>'
+                + '<span class="viz-altar-val">' + altar.Altars[ak] + '</span>'
+                + '</div>';
+        }
+    }
+    document.getElementById('altar-body').innerHTML = altarHtml || 'None';
+
+    // Explore atlas (from ExploreAtlasRefreshNtf)
+    var exploreHtml = '';
+    var explore = sb.explore;
+    if (explore && explore.tasks) {
+        for (var ei = 0; ei < explore.tasks.length; ei++) {
+            var et = explore.tasks[ei];
+            var eSta = {0:'Available', 1:'In Progress', 2:'Completed'};
+            exploreHtml += '<div class="viz-explore-item">'
+                + '<span class="viz-explore-cfg">Task ' + (et.cfgId || '?') + '</span>'
+                + '<span class="viz-explore-pos">Pos ' + (et.pos || '?') + '</span>'
+                + '<span class="viz-explore-sta">' + (eSta[et.sta] || 'sta:' + et.sta) + '</span>'
+                + '</div>';
+        }
+    }
+    document.getElementById('explore-body').innerHTML = exploreHtml || 'None';
+
+    // Entity counts
+    var ecHtml = '';
+    var ec = sb.entity_counts || {};
+    var ecKeys = Object.keys(ec).sort(function(a, b) { return ec[b] - ec[a]; });
+    for (var eci = 0; eci < ecKeys.length; eci++) {
+        ecHtml += '<div class="viz-ec-item">'
+            + '<span>' + ecKeys[eci] + '</span>'
+            + '<span class="viz-ec-count">' + ec[ecKeys[eci]] + '</span>'
+            + '</div>';
+    }
+    document.getElementById('entities-body').innerHTML = ecHtml || 'None';
+
+    // Freshness
+    var fHtml = '';
+    var fresh = data.freshness || {};
+    var cats = ['heartbeat','ap','lineups','rallies','entities','attacks','territory','quests','resources','buffs','chat'];
+    for (var fi = 0; fi < cats.length; fi++) {
+        var cat = cats[fi];
+        var f = fresh[cat];
+        var dotClass = 'viz-dot-gray';
+        var ageStr = 'never';
+        if (f) {
+            if (f.age_s !== null) {
+                ageStr = f.age_s.toFixed(0) + 's';
+                if (f.fresh) dotClass = 'viz-dot-green';
+                else if (f.age_s < 60) dotClass = 'viz-dot-yellow';
+                else dotClass = 'viz-dot-red';
+            }
+        }
+        fHtml += '<div class="viz-fresh-item">'
+            + '<span class="viz-fresh-dot ' + dotClass + '"></span>'
+            + '<span class="viz-fresh-cat">' + cat + '</span>'
+            + '<span class="viz-fresh-age">' + ageStr + '</span>'
+            + '</div>';
+    }
+    document.getElementById('freshness-body').innerHTML = fHtml;
+
+    // All message types — delegated to renderMsgTypes() for sort support
+    renderMsgTypes(data);
+}
+
+// ======================================================================
+//  Helpers
+// ======================================================================
+
+function formatTime(ms) {
+    if (ms <= 0) return '0s';
+    var s = Math.floor(ms / 1000);
+    var m = Math.floor(s / 60); s %= 60;
+    var h = Math.floor(m / 60); m %= 60;
+    if (h > 0) return h + 'h ' + m + 'm';
+    if (m > 0) return m + 'm ' + s + 's';
+    return s + 's';
+}
+
+function formatNum(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return '' + n;
+}
+
+function formatPower(p) {
+    if (p >= 1e6) return (p / 1e6).toFixed(1) + 'M';
+    if (p >= 1e3) return (p / 1e3).toFixed(0) + 'K';
+    return '' + p;
+}
+
+function escHtml(s) {
+    var d = document.createElement('span');
+    d.textContent = s;
+    return d.innerHTML;
+}
+
+// Lookup name from localization DB. category = 'items', 'heroes', 'quests', 'skills', 'buffs', etc.
+function locName(category, id, fallback) {
+    var cat = locDB[category];
+    if (cat && cat[String(id)]) return cat[String(id)];
+    return fallback || ('#' + id);
+}
+
+// ======================================================================
+//  Canvas click — select entity for detail panel
+// ======================================================================
+
+var dragMoved = false;
+
+function onCanvasClick(e) {
+    // Only select entity if we didn't drag
+    if (dragMoved) { dragMoved = false; return; }
+    if (!lastData || !lastData.map) return;
+
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var world = canvasToWorld(mx, my);
+    var bestDist = 20 / zoom;
+    var best = null;
+
+    var ents = lastData.map.entities || [];
+    for (var i = 0; i < ents.length; i++) {
+        var ent = ents[i];
+        if (entityFilters[ent.type] === false) continue;
+        var d = Math.hypot(ent.x - world[0], ent.z - world[1]);
+        if (d < bestDist) { bestDist = d; best = ent; }
+    }
+
+    if (best) {
+        showDetail('Entity: ' + (ENTITY_NAMES[best.type] || 'T' + best.type), best);
+    }
+}
+
+// ======================================================================
+//  Feed panel
+// ======================================================================
+
+window.toggleFeed = function() {
+    showFeed = !showFeed;
+    var panel = document.getElementById('viz-feed-panel');
+    var btn = document.getElementById('btn-feed');
+    panel.style.display = showFeed ? '' : 'none';
+    btn.classList.toggle('viz-btn-active', showFeed);
+    resizeCanvas();
+
+    if (showFeed) {
+        var device = document.getElementById('device-select').value;
+        if (device) {
+            fetchFeed();
+            if (feedTimer) clearInterval(feedTimer);
+            feedTimer = setInterval(fetchFeed, 2000);
+        }
+    } else {
+        if (feedTimer) { clearInterval(feedTimer); feedTimer = null; }
+    }
+};
+
+window.clearFeed = function() {
+    feedMessages = [];
+    feedSeq = 0;
+    selectedMsgSeq = null;
+    document.getElementById('feed-list').textContent = '';
+    document.getElementById('detail-title').textContent = 'Click a message or entity to inspect';
+    document.getElementById('detail-json').textContent = '';
+    document.getElementById('feed-stats').textContent = '';
+};
+
+window.inspectObj = function(title, obj) {
+    showDetail(title, obj);
+};
+
+window.filterFeed = function() {
+    feedFilter = (document.getElementById('feed-filter').value || '').toLowerCase();
+    var rows = document.getElementById('feed-list').children;
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var name = row.getAttribute('data-name') || '';
+        var match = !feedFilter || name.toLowerCase().indexOf(feedFilter) >= 0;
+        row.classList.toggle('viz-msg-hidden', !match);
+    }
+};
+
+function fetchFeed() {
+    var device = document.getElementById('device-select').value;
+    if (!device || !showFeed) return;
+    fetch(RELAY_PREFIX + '/api/protocol-viz-messages?device=' + encodeURIComponent(device) + '&since=' + feedSeq)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.ok) return;
+            feedSeq = data.seq;
+            if (data.messages && data.messages.length > 0) {
+                appendFeedMessages(data.messages);
+            }
+            var statsEl = document.getElementById('feed-stats');
+            statsEl.textContent = feedMessages.length + ' msgs (seq ' + feedSeq + ')';
+        })
+        .catch(function(err) {
+            console.error('Feed fetch error:', err);
+        });
+}
+
+function appendFeedMessages(msgs) {
+    var list = document.getElementById('feed-list');
+    var autoScroll = document.getElementById('feed-autoscroll').checked;
+    var wasAtBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 20;
+
+    for (var i = 0; i < msgs.length; i++) {
+        var m = msgs[i];
+        feedMessages.push(m);
+
+        var row = document.createElement('div');
+        row.className = 'viz-msg-row';
+        row.setAttribute('data-seq', m.seq);
+        row.setAttribute('data-name', m.name);
+
+        // Time
+        var ts = document.createElement('span');
+        ts.className = 'viz-msg-ts';
+        var d = new Date(m.ts * 1000);
+        ts.textContent = d.toLocaleTimeString();
+        row.appendChild(ts);
+
+        // Direction
+        var dir = document.createElement('span');
+        dir.className = 'viz-msg-dir ' + (m.dir === 'in' ? 'viz-msg-dir-in' : 'viz-msg-dir-out');
+        dir.textContent = m.dir === 'in' ? '\u25BC' : '\u25B2';
+        dir.title = m.dir === 'in' ? 'Server \u2192 Client' : 'Client \u2192 Server';
+        row.appendChild(dir);
+
+        // Name
+        var name = document.createElement('span');
+        name.className = 'viz-msg-name';
+        name.textContent = m.name;
+        row.appendChild(name);
+
+        // Preview (first few field names)
+        var preview = document.createElement('span');
+        preview.className = 'viz-msg-preview';
+        preview.textContent = msgPreview(m.fields);
+        row.appendChild(preview);
+
+        row.onclick = (function(msg) {
+            return function() { selectFeedMessage(msg, this); };
+        })(m);
+
+        // Apply filter
+        if (feedFilter && m.name.toLowerCase().indexOf(feedFilter) < 0) {
+            row.classList.add('viz-msg-hidden');
+        }
+
+        list.appendChild(row);
+    }
+
+    // Cap displayed rows (keep last 500)
+    while (list.children.length > 500) {
+        list.removeChild(list.firstChild);
+    }
+
+    if (autoScroll && wasAtBottom) {
+        list.scrollTop = list.scrollHeight;
+    }
+}
+
+function msgPreview(fields) {
+    if (!fields || typeof fields !== 'object') return '';
+    var keys = Object.keys(fields);
+    if (keys.length === 0) return '{}';
+    var parts = [];
+    for (var i = 0; i < Math.min(keys.length, 4); i++) {
+        var k = keys[i];
+        var v = fields[k];
+        if (typeof v === 'string') {
+            parts.push(k + '="' + (v.length > 20 ? v.substring(0, 20) + '...' : v) + '"');
+        } else if (typeof v === 'number') {
+            parts.push(k + '=' + v);
+        } else if (Array.isArray(v)) {
+            parts.push(k + '[' + v.length + ']');
+        } else if (typeof v === 'object' && v !== null) {
+            parts.push(k + '{...}');
+        }
+    }
+    if (keys.length > 4) parts.push('...');
+    return parts.join('  ');
+}
+
+function selectFeedMessage(msg, rowEl) {
+    // Deselect previous
+    var prev = document.querySelector('.viz-msg-selected');
+    if (prev) prev.classList.remove('viz-msg-selected');
+    if (rowEl) rowEl.classList.add('viz-msg-selected');
+    selectedMsgSeq = msg.seq;
+
+    showDetail(msg.name + ' (' + msg.dir + ')', msg.fields);
+}
+
+// ======================================================================
+//  Detail panel
+// ======================================================================
+
+function showDetail(title, obj) {
+    if (!showFeed) {
+        showFeed = true;
+        document.getElementById('viz-feed-panel').style.display = '';
+        document.getElementById('btn-feed').classList.add('viz-btn-active');
+        resizeCanvas();
+        var device = document.getElementById('device-select').value;
+        if (device && !feedTimer) {
+            fetchFeed();
+            feedTimer = setInterval(fetchFeed, 2000);
+        }
+    }
+    document.getElementById('detail-title').textContent = title;
+    document.getElementById('detail-json').innerHTML = syntaxHighlight(obj);
+}
+
+function syntaxHighlight(obj) {
+    var json = JSON.stringify(obj, null, 2);
+    if (!json) return '';
+    // Escape HTML then colorize
+    json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return json.replace(
+        /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+        function(match) {
+            var cls = 'viz-json-num';
+            if (/^"/.test(match)) {
+                if (/:$/.test(match)) {
+                    cls = 'viz-json-key';
+                } else {
+                    cls = 'viz-json-str';
+                }
+            } else if (/true|false/.test(match)) {
+                cls = 'viz-json-bool';
+            } else if (/null/.test(match)) {
+                cls = 'viz-json-null';
+            }
+            return '<span class="' + cls + '">' + match + '</span>';
+        }
+    );
+}
+
+// ======================================================================
+//  Message type sort + inspect
+// ======================================================================
+
+window.setMsgSort = function(mode) {
+    msgSortMode = mode;
+    // Update toolbar button states
+    var btns = document.querySelectorAll('.viz-sort-btn');
+    for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.toggle('viz-sort-active', btns[i].textContent.toLowerCase().indexOf(mode) !== -1 ||
+            (mode === 'count' && btns[i].textContent === 'By Count') ||
+            (mode === 'name' && btns[i].textContent === 'A-Z') ||
+            (mode === 'dir' && btns[i].textContent === 'In/Out') ||
+            (mode === 'recent' && btns[i].textContent === 'Recent'));
+    }
+    if (lastData) renderMsgTypes(lastData);
+};
+
+function getSortedMsgTypes(msgTypes) {
+    var sorted = msgTypes.slice();
+    if (msgSortMode === 'name') {
+        sorted.sort(function(a, b) { return a.name.localeCompare(b.name); });
+    } else if (msgSortMode === 'dir') {
+        sorted.sort(function(a, b) {
+            if (a.dir !== b.dir) return a.dir === 'in' ? -1 : 1;
+            return b.count - a.count;
+        });
+    } else if (msgSortMode === 'recent') {
+        sorted.sort(function(a, b) { return b.ts - a.ts; });
+    }
+    // default 'count' — already sorted by count from API
+    return sorted;
+}
+
+function renderMsgTypes(data) {
+    var mtHtml = '';
+    var msgTypes = getSortedMsgTypes(data.msg_types || []);
+    var inCount = 0, outCount = 0;
+    for (var mi = 0; mi < msgTypes.length; mi++) {
+        var mt = msgTypes[mi];
+        if (mt.dir === 'in') inCount++; else outCount++;
+        var dirCls = mt.dir === 'in' ? 'viz-msg-dir-in' : 'viz-msg-dir-out';
+        var dirArrow = mt.dir === 'in' ? '\u25BC' : '\u25B2';
+        var age = Math.round(Date.now() / 1000 - mt.ts);
+        var ageStr = age < 60 ? age + 's' : Math.round(age / 60) + 'm';
+        var fkeys = mt.field_keys || (mt.fields && typeof mt.fields === 'object' ? Object.keys(mt.fields) : []);
+        var fPreview = fkeys.length > 0 ? fkeys.join(', ') : '(empty)';
+        // Store original index for inspectMsgType
+        var origIdx = (data.msg_types || []).indexOf(mt);
+        mtHtml += '<div class="viz-msgtype-row viz-clickable" onclick="inspectMsgType(' + origIdx + ')">'
+            + '<span class="viz-msg-dir ' + dirCls + '">' + dirArrow + '</span>'
+            + '<span class="viz-msgtype-name">' + escHtml(mt.name) + '</span>'
+            + '<span class="viz-msgtype-count">' + mt.count + '</span>'
+            + '<span class="viz-msgtype-age">' + ageStr + '</span>'
+            + '<div class="viz-msgtype-fields">' + escHtml(fPreview) + '</div>'
+            + '</div>';
+    }
+    document.getElementById('msgtypes-body').innerHTML = mtHtml || 'None';
+    document.getElementById('msgtypes-total').textContent =
+        msgTypes.length + ' types (' + inCount + ' in, ' + outCount + ' out)';
+}
+
+window.inspectMsgType = function(idx) {
+    if (!lastData || !lastData.msg_types) return;
+    var mt = lastData.msg_types[idx];
+    if (!mt) return;
+    showDetail(mt.name + ' (' + mt.dir + ', ' + mt.count + 'x)', mt.fields);
+};
+
+// Start
+document.addEventListener('DOMContentLoaded', init);
+
+})();
+</script>
+{% endblock %}

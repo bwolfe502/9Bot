@@ -78,6 +78,7 @@ log = logging.getLogger(__name__)
 
 _CHAT_MAXLEN = 200
 _BATTLE_MAXLEN = 50
+_MSG_LOG_MAXLEN = 500   # ring buffer for protocol message log (viz feed)
 _AP_ASSET_ID = 11171002  # AssetNtf recover ID for Action Points
 
 # Categories for freshness tracking.
@@ -235,6 +236,7 @@ class GameState:
         self._quests: Dict[int, dict] = {}                  # cfgID -> info dict
         self._resources: Dict[int, Asset] = {}              # Asset.ID -> Asset
         self._entities: Dict[Any, dict] = {}                # entity id -> raw dict
+        self._entity_history: Dict[Any, dict] = {}           # entity id -> raw dict (never deleted, for viz)
         self._attacks: List[Intelligence] = []
         self._chat: Deque[Any] = collections.deque(maxlen=_CHAT_MAXLEN)
         self._chat_seen_ids: set = set()  # historyId dedup for ChatPullMsgAck
@@ -249,6 +251,12 @@ class GameState:
         self._own_union_id: int = 0                          # populated from UnionNtf
         self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id)
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
+
+        # -- protocol message log (for viz live feed) -------------- #
+        self._message_log: Deque[dict] = collections.deque(maxlen=_MSG_LOG_MAXLEN)
+        self._msg_log_seq: int = 0  # monotonic sequence counter
+        self._last_seen: Dict[str, dict] = {}  # msg_name -> {ts, dir, fields, count}
+        self._msg_type_counts: Dict[str, int] = {}  # msg_name -> total count
 
         # -- connection metadata ----------------------------------- #
         self.protocol_connected: bool = False
@@ -313,6 +321,33 @@ class GameState:
         """Entity cache (raw dicts)."""
         with self._lock:
             return dict(self._entities)
+
+    @property
+    def entity_history(self) -> Dict[Any, dict]:
+        """All entities ever seen (never deleted). For viz map accumulation."""
+        with self._lock:
+            return dict(self._entity_history)
+
+    def message_log(self, since_seq: int = 0) -> Tuple[List[dict], int]:
+        """Protocol message log entries since *since_seq*.
+
+        Returns (entries, latest_seq) so the caller can poll incrementally.
+        """
+        with self._lock:
+            if since_seq <= 0:
+                entries = list(self._message_log)
+            else:
+                entries = [e for e in self._message_log if e["seq"] > since_seq]
+            return entries, self._msg_log_seq
+
+    @property
+    def last_seen_messages(self) -> Dict[str, dict]:
+        """Last received payload for every message type seen.
+
+        Returns {msg_name: {ts, dir, fields, count}}.
+        """
+        with self._lock:
+            return dict(self._last_seen)
 
     @property
     def incoming_attacks(self) -> List[Intelligence]:
@@ -438,6 +473,10 @@ class GameState:
         self._sub("msg:UnionDelEntitiesNtf", self._on_del_union_entities)
         self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
         self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
+        self._sub("msg:WildMapViewAck", self._on_wild_map_view)
+
+        # Catch-all for protocol message log (viz live feed).
+        self._sub("msg:__all__", self._on_any_message)
 
     def _sub(self, event_name: str, handler: Any) -> None:
         """Subscribe and track for later unsubscribe."""
@@ -447,6 +486,32 @@ class GameState:
     def _touch(self, category: str) -> None:
         """Update freshness timestamp (caller must hold _lock)."""
         self._last_update[category] = time.monotonic()
+
+    # ============================================================== #
+    #  Protocol message log (catch-all)
+    # ============================================================== #
+
+    def _on_any_message(self, msg_name: str, direction: str, field_dict: dict) -> None:
+        """Capture every protocol message into a ring buffer for the viz feed."""
+        now = time.time()
+        d = "in" if direction == "recv" else "out"
+        with self._lock:
+            self._msg_log_seq += 1
+            self._message_log.append({
+                "seq": self._msg_log_seq,
+                "ts": now,
+                "name": msg_name,
+                "dir": d,
+                "fields": field_dict,
+            })
+            # Track last-seen payload per message type + counts
+            self._msg_type_counts[msg_name] = self._msg_type_counts.get(msg_name, 0) + 1
+            self._last_seen[msg_name] = {
+                "ts": now,
+                "dir": d,
+                "fields": field_dict,
+                "count": self._msg_type_counts[msg_name],
+            }
 
     # ============================================================== #
     #  Event handlers (private)
@@ -535,9 +600,12 @@ class GameState:
 
     def _on_chat_message(self, msg: Any) -> None:
         """EVT_CHAT_MESSAGE — payload is a dict (transformed) or raw object."""
+        is_dict = isinstance(msg, dict)
+        content = msg.get("content", "") if is_dict else ""
+        log.debug("_on_chat_message: is_dict=%s content=%r", is_dict, content[:80])
         with self._lock:
             # Track history_id for dedup against later ChatPullMsgAck.
-            if isinstance(msg, dict):
+            if is_dict:
                 hid = msg.get("history_id", "")
                 if hid:
                     self._chat_seen_ids.add(hid)
@@ -548,7 +616,7 @@ class GameState:
             self._chat.append(msg)
             self._touch("chat")
         # Request translation outside the lock (fire-and-forget).
-        if isinstance(msg, dict):
+        if is_dict:
             try:
                 import chat_translate
                 chat_translate.request_translation(msg)
@@ -656,6 +724,7 @@ class GameState:
         save_player_names_if_dirty()
         # Request batch translation for new history messages (outside lock).
         if new_entries:
+            log.debug("_on_chat_history: %d new entries, requesting batch translation", len(new_entries))
             try:
                 import chat_translate
                 chat_translate.request_batch_translation(new_entries)
@@ -905,6 +974,7 @@ class GameState:
             for ent in msg.entities:
                 eid = self._entity_id(ent) or id(ent)
                 self._entities[eid] = ent
+                self._entity_history[eid] = ent
                 if self._ally_monitoring and self._is_ally_city(ent):
                     owner = ent.get("field_3") or ent.get("owner") or {}
                     name = owner.get("name", "?") if isinstance(owner, dict) else "?"
@@ -918,7 +988,8 @@ class GameState:
                             ent["Z"] = z
                         log.debug("EntitiesNtf ally city spotted id=%s name=%s x=%s z=%s",
                                   eid, name, ent.get("X", 0), ent.get("Z", 0))
-                        new_city_ids.append(eid)
+                        if (x or z) and (x // 1000 or z // 1000):
+                            new_city_ids.append(eid)
             self._touch("entities")
         for eid in new_city_ids:
             ent = self._union_entities.get(eid)
@@ -940,16 +1011,43 @@ class GameState:
                 self._entities.pop(eid, None)
             self._touch("entities")
 
+    def _on_wild_map_view(self, msg: Any) -> None:
+        """msg:WildMapViewAck — main viewport entity update.
+
+        Contains entities (List<EntityInfo>) and needDeleteEntities (List<long>).
+        Same structure as EntitiesNtf/DelEntitiesNtf but arrives as the primary
+        viewport refresh message.  Raw dict (no Python dataclass).
+        """
+        if not isinstance(msg, dict):
+            return
+        entities = msg.get("entities", [])
+        deletes = msg.get("needDeleteEntities", [])
+        if entities:
+            with self._lock:
+                for ent in entities:
+                    eid = self._entity_id(ent) or id(ent)
+                    self._entities[eid] = ent
+                    self._entity_history[eid] = ent
+                self._touch("entities")
+        if deletes:
+            with self._lock:
+                for eid in deletes:
+                    self._entities.pop(eid, None)
+                    # Note: NOT deleting from _entity_history (viz accumulation)
+
     def _on_position(self, msg: Any) -> None:
         """msg:PositionNtf — update entity positions."""
         if isinstance(msg, PositionNtf):
             # Typed: iterate PosInfo objects.
             if not msg.postions:
                 return
+            deferred_ally_emit = []
             with self._lock:
                 for pi in msg.postions:
                     if pi.ID and pi.ID in self._entities:
                         ent = self._entities[pi.ID]
+                        old_x = ent.get("X", 0)
+                        old_z = ent.get("Z", 0)
                         if pi.coord:
                             ent["X"] = pi.coord.X
                             ent["Z"] = pi.coord.Z
@@ -958,9 +1056,38 @@ class GameState:
                         # Keep _union_entities in sync — ally cities move on teleport.
                         if pi.ID in self._union_entities:
                             self._union_entities[pi.ID] = ent
-                            log.debug("PositionNtf ally city teleport id=%s x=%s z=%s",
-                                      pi.ID, ent.get("X"), ent.get("Z"))
+                            new_x = ent.get("X", 0)
+                            new_z = ent.get("Z", 0)
+                            # First real coords arrived — emit deferred ally spotted event.
+                            if (not old_x and not old_z) and (new_x or new_z):
+                                log.info("PositionNtf deferred ally city id=%s now has coords x=%s z=%s",
+                                         pi.ID, new_x, new_z)
+                                deferred_ally_emit.append(pi.ID)
+                            else:
+                                log.debug("PositionNtf ally city teleport id=%s x=%s z=%s",
+                                          pi.ID, ent.get("X"), ent.get("Z"))
+                    elif pi.ID and pi.ID in self._union_entities:
+                        # Union-only entity (from UnionEntitiesNtf, not in _entities).
+                        ent = self._union_entities[pi.ID]
+                        old_x = ent.get("X", 0)
+                        old_z = ent.get("Z", 0)
+                        if pi.coord:
+                            ent["X"] = pi.coord.X
+                            ent["Z"] = pi.coord.Z
+                        if pi.pos_raw:
+                            ent["pos_raw"] = pi.pos_raw
+                        new_x = ent.get("X", 0)
+                        new_z = ent.get("Z", 0)
+                        if (not old_x and not old_z) and (new_x or new_z):
+                            log.info("PositionNtf deferred union-only ally id=%s now has coords x=%s z=%s",
+                                     pi.ID, new_x, new_z)
+                            deferred_ally_emit.append(pi.ID)
                 self._touch("entities")
+            # Emit deferred ally spotted events outside lock.
+            for eid in deferred_ally_emit:
+                ent = self._union_entities.get(eid)
+                if ent and self._ally_monitoring:
+                    self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
             return
         # Fallback for raw dicts (backward compat).
         positions = getattr(msg, "postions", None) or getattr(msg, "positions", None)
@@ -1108,7 +1235,10 @@ class GameState:
                     ent_dict["_power"] = power  # pre-computed for priority queue
                     log.info("UnionEntitiesNtf ally city spotted id=%s name=%s power=%s x=%s z=%s",
                              eid, name, power, ent_dict.get("X", 0), ent_dict.get("Z", 0))
-                    new_city_ids.append(eid)
+                    if (x or z) and (x // 1000 or z // 1000):
+                        new_city_ids.append(eid)
+                    else:
+                        log.debug("Ally city %s has no/tiny coords (%s,%s) — waiting for PositionNtf", eid, x, z)
             self._touch("entities")
 
         # Emit outside lock.

@@ -1463,6 +1463,13 @@ function renderChatMessages(messages) {
         content.textContent = text;
         div.appendChild(content);
 
+        if (msg.translated) {
+            var tl = document.createElement('div');
+            tl.className = 'chat-content-translated';
+            tl.textContent = msg.translated;
+            div.appendChild(tl);
+        }
+
         container.appendChild(div);
     });
     if (wasAtBottom) container.scrollTop = container.scrollHeight;

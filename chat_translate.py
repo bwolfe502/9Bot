@@ -27,10 +27,12 @@ log = logging.getLogger(__name__)
 #  Unicode heuristic for non-English detection
 # ---------------------------------------------------------------------------
 
-# CJK Unified Ideographs, CJK Ext A/B, Hangul, Cyrillic, Arabic, Thai,
-# Devanagari, Japanese Kana, and other non-Latin scripts.
+# Non-English script detection: Latin Extended (European diacritics like
+# ä ö ü ß é ñ ç), CJK, Cyrillic, Arabic, Thai, Devanagari, Japanese Kana,
+# Hangul.  For pure-ASCII foreign text, langdetect is used as a fallback.
 _NON_ASCII_RE = re.compile(
-    r"[\u0400-\u04FF"     # Cyrillic
+    r"[\u00C0-\u024F"     # Latin Extended-A/B (European diacritics)
+    r"\u0400-\u04FF"      # Cyrillic
     r"\u0600-\u06FF"      # Arabic
     r"\u0900-\u097F"      # Devanagari
     r"\u0E00-\u0E7F"      # Thai
@@ -42,8 +44,6 @@ _NON_ASCII_RE = re.compile(
     r"\U00020000-\U0002A6DF"  # CJK Extension B
     r"]"
 )
-
-_NON_ASCII_THRESHOLD = 0.15  # >15% non-ASCII chars → needs translation
 
 # Payload types to skip (system notifications, coordinate shares)
 _SKIP_PAYLOAD_TYPES = {5, 11}
@@ -112,9 +112,13 @@ def request_translation(msg: dict) -> None:
     """
     if not _enabled:
         return
-    if not _needs_translation(msg):
+    content = msg.get("content", "")
+    needs = _needs_translation(msg)
+    log.debug("request_translation: needs=%s content=%r", needs, content[:80])
+    if not needs:
         return
     msg["translated"] = None  # mark as pending
+    log.debug("Queued for translation: %r", content[:80])
     try:
         _queue.put_nowait(msg)
     except queue.Full:
@@ -134,7 +138,14 @@ def request_batch_translation(msgs: list) -> None:
 # ---------------------------------------------------------------------------
 
 def _needs_translation(msg: dict) -> bool:
-    """Return True if the message likely needs translation."""
+    """Return True if the message likely needs translation.
+
+    Two-tier detection:
+    1. Fast path — regex matches non-ASCII script characters (diacritics,
+       CJK, Cyrillic, Arabic, etc.).  Instant, no imports.
+    2. Slow path — ``langdetect`` for pure-ASCII foreign text (e.g. German
+       without umlauts).  Requires ≥20 chars and ≥80% confidence.
+    """
     # Skip non-text message types
     payload_type = msg.get("payload_type", 0)
     if payload_type in _SKIP_PAYLOAD_TYPES:
@@ -148,18 +159,35 @@ def _needs_translation(msg: dict) -> bool:
     if not content or len(content.strip()) == 0:
         return False
 
-    # Check source_language hint from protocol
+    # Protocol source_language hint — trust it if present
     src_lang = msg.get("source_language", "")
-    if src_lang and src_lang.lower() not in ("", "en", "english"):
+    if src_lang:
+        lower = src_lang.lower()
+        if lower in ("en", "english"):
+            return False
+        if lower:
+            return True
+
+    # Fast path: any non-ASCII script character → definitely non-English
+    if _NON_ASCII_RE.search(content):
         return True
 
-    # Unicode heuristic: count non-ASCII script chars
-    non_ascii_count = len(_NON_ASCII_RE.findall(content))
-    total = len(content.replace(" ", ""))
-    if total == 0:
-        return False
-    ratio = non_ascii_count / total
-    return ratio > _NON_ASCII_THRESHOLD
+    # Slow path: pure-ASCII text — use langdetect for languages like
+    # German/Dutch/etc. that can be written without diacritics.
+    # Require 20+ chars and ≥80% confidence to avoid false positives
+    # on short English (e.g. "Hello friends" → Norwegian at 99%).
+    if len(content.strip()) >= 20:
+        try:
+            from langdetect import detect_langs
+            results = detect_langs(content)
+            if results:
+                top = results[0]
+                if top.lang != "en" and top.prob >= 0.8:
+                    return True
+        except Exception:
+            pass
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +226,7 @@ def _translate_single(content: str) -> str:
         result = response.content[0].text.strip()
         return result
     except Exception:
-        log.debug("Translation API error", exc_info=True)
+        log.warning("Translation API error", exc_info=True)
         return ""
 
 
@@ -212,6 +240,7 @@ def _translate_batch(items: List[dict]) -> None:
         content = items[0].get("content", "")
         translation = _translate_single(content)
         items[0]["translated"] = translation
+        log.info("Translated: %r → %r", content[:60], translation[:60] if translation else "")
         return
 
     # Build numbered batch prompt
@@ -220,8 +249,10 @@ def _translate_batch(items: List[dict]) -> None:
         lines.append(f"{i}. {msg.get('content', '')}")
     batch_text = "\n".join(lines)
 
+    log.debug("_translate_batch: %d items, getting client (api_key set: %s)", len(items), bool(_api_key))
     client = _get_client()
     if client is None:
+        log.warning("_translate_batch: client is None — api_key=%s", "set" if _api_key else "EMPTY")
         for msg in items:
             msg["translated"] = ""
         return
@@ -251,8 +282,11 @@ def _translate_batch(items: List[dict]) -> None:
                 msg["translated"] = line
             else:
                 msg["translated"] = ""
+        log.info("Batch translated %d messages: %s",
+                 len(items),
+                 "; ".join(f"{m.get('content','')[:30]}→{m.get('translated','')[:30]}" for m in items))
     except Exception:
-        log.debug("Batch translation API error", exc_info=True)
+        log.warning("Batch translation API error", exc_info=True)
         for msg in items:
             msg["translated"] = ""
 
@@ -285,10 +319,11 @@ def _worker_loop() -> None:
         if _stop_event.is_set():
             break
 
+        log.debug("Worker processing batch of %d messages", len(batch))
         try:
             _translate_batch(batch)
         except Exception:
-            log.debug("Translation worker error", exc_info=True)
+            log.warning("Translation worker error", exc_info=True)
 
     log.debug("Translation worker stopped")
 

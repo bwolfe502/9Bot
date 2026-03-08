@@ -132,7 +132,7 @@ def load_settings():
         merged, warnings = validate_settings(merged, DEFAULTS)
         for w in warnings:
             _log.warning("Settings: %s", w)
-        _log.info("Settings loaded (%d keys, %d from file)", len(merged), len(saved))
+        _log.debug("Settings loaded (%d keys, %d from file)", len(merged), len(saved))
         return merged
     except FileNotFoundError:
         _log.info("No settings file found, using defaults (%d keys)", len(DEFAULTS))
