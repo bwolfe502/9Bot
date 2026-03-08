@@ -30,6 +30,7 @@ DEVICE_OVERRIDABLE_KEYS = {
     "protocol_enabled", "home_x", "home_z", "max_reinforce_distance",
     "variation", "titan_interval", "groot_interval", "reinforce_interval",
     "pass_interval", "pass_mode",
+    "shield_expiry", "reinforced_allies", "active_reinforce_coords",
 }
 
 # ── Default territory zone data ──

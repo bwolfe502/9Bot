@@ -432,9 +432,8 @@ def validate_settings(settings, defaults):
                 clean_overrides = {}
                 for key, value in overrides.items():
                     if key in _ACCESS_CONTROL_KEYS:
-                        # Pass through access control lists without validation
-                        if isinstance(value, list):
-                            clean_overrides[key] = value
+                        # Pass through without validation (state/access keys)
+                        clean_overrides[key] = value
                         continue
                     if key not in DEVICE_OVERRIDABLE_KEYS:
                         warnings.append(f"device_settings[{dev_id}].{key}: not overridable — skipped")
@@ -512,6 +511,9 @@ _SETTINGS_TO_CONFIG = {
     "reinforce_interval":    "REINFORCE_INTERVAL",
     "pass_interval":         "PASS_INTERVAL",
     "pass_mode":             "PASS_MODE",
+    "shield_expiry":         None,
+    "reinforced_allies":     None,
+    "active_reinforce_coords": None,
 }
 
 _DEVICE_CONFIG = {}  # {device_id: {setting_key: value}}
@@ -522,10 +524,12 @@ def get_device_config(device, key):
     dev = _DEVICE_CONFIG.get(device)
     if dev and key in dev:
         return dev[key]
-    global_name = _SETTINGS_TO_CONFIG.get(key)
+    if key not in _SETTINGS_TO_CONFIG:
+        raise KeyError(f"Unknown device config key: {key}")
+    global_name = _SETTINGS_TO_CONFIG[key]
     if global_name is not None:
         return globals()[global_name]
-    raise KeyError(f"Unknown device config key: {key}")
+    return None
 
 
 def get_device_enemy_teams(device):
