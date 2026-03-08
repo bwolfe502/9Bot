@@ -80,9 +80,10 @@ log = logging.getLogger(__name__)
 
 _CHAT_MAXLEN = 200
 _BATTLE_MAXLEN = 50
-_TERRITORY_CACHE_DIR = os.path.join(
+_DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data"
 )
+_TERRITORY_CACHE_DIR = _DATA_DIR
 _AP_ASSET_ID = 11171002  # AssetNtf recover ID for Action Points
 
 # Categories for freshness tracking.
@@ -352,6 +353,14 @@ class GameState:
         self._lineup_states: Dict[int, NewLineupStateInfo] = {}  # lineupID -> state
         self._union_entities: Dict[Any, dict] = {}           # entity_id -> raw dict (ally PLAYER_CITY only)
         self._own_union_id: int = get_cached_union_id()        # from disk cache, updated by UnionNtf
+
+        # -- ally locations cache (persisted across restarts) ---------- #
+        import hashlib
+        _dhash2 = hashlib.sha256(device_id.encode()).hexdigest()[:8]
+        self._ally_locations_file = os.path.join(
+            _DATA_DIR, f"ally_locations_{_dhash2}.json"
+        )
+        self._load_ally_locations()
         self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id, cur_legion_id)
         self._kvk_tower_troops: Dict[Tuple[int, int], int] = {}  # (row, col) -> troop count from KvkBuilding entity
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
@@ -626,11 +635,17 @@ class GameState:
             return (avg_x, avg_z)
 
     def set_ally_monitoring(self, enabled: bool) -> None:
-        """Enable or disable ally city tracking.  Called by run_auto_reinforce_ally."""
+        """Enable or disable ally city tracking.  Called by run_auto_reinforce_ally.
+
+        Locations are preserved when disabled — they persist for future use.
+        """
         with self._lock:
             self._ally_monitoring = enabled
             if not enabled:
-                self._union_entities.clear()
+                # Save locations to disk when monitoring stops.
+                pass
+        if not enabled:
+            self._save_ally_locations()
 
     def is_fresh(self, category: str, max_age_s: float = 30.0) -> bool:
         """True if *category* was updated within *max_age_s* seconds."""
@@ -650,7 +665,8 @@ class GameState:
     # ============================================================== #
 
     def shutdown(self) -> None:
-        """Unregister all handlers from the EventBus."""
+        """Unregister all handlers from the EventBus and persist state."""
+        self._save_ally_locations()
         for event_name, handler in self._handlers:
             self._bus.off(event_name, handler)
         self._handlers.clear()
@@ -690,6 +706,8 @@ class GameState:
         self._sub("msg:ChatSendMsgNtf", self._on_chat_send_ntf)
         self._sub("msg:UnionEntitiesNtf", self._on_union_entities)
         self._sub("msg:UnionDelEntitiesNtf", self._on_del_union_entities)
+        self._sub("msg:TeleportCityInNtf", self._on_teleport_city_in)
+        self._sub("msg:TeleportCityOutNtf", self._on_teleport_city_out)
         self._sub("msg:KvkTerritoryInfoAck", self._on_territory_info)
         self._sub("msg:KvkTerritoryInfoNtf", self._on_territory_ntf)
         self._sub("msg:GetShieldInfoAck", self._on_shield_info)
@@ -1100,8 +1118,10 @@ class GameState:
     def _on_attack_incoming(self, msg: Any) -> None:
         """EVT_ATTACK_INCOMING — payload is an IntelligencesNtf.
 
-        Also cross-references incoming attack targets against known ally
-        castles and emits EVT_ALLY_UNDER_ATTACK when a match is found.
+        Cross-references incoming attack targets against known ally castles
+        and emits EVT_ALLY_UNDER_ATTACK when a match is found.
+        Also updates ally coords from the intelligence 'to' field — this
+        confirms their current location even if they're offline.
         """
         if not isinstance(msg, IntelligencesNtf):
             return
@@ -1110,7 +1130,7 @@ class GameState:
             self._attacks = list(msg.intelligences)
             self._touch("attacks")
 
-            if self._ally_monitoring and self._union_entities:
+            if self._union_entities:
                 # Build coord → entity lookup from known ally castles.
                 ally_by_coord = {}
                 for eid, ent in self._union_entities.items():
@@ -1132,6 +1152,8 @@ class GameState:
                             continue
                         ent = ally_by_coord.get((tx, tz))
                         if ent:
+                            # Confirms ally is still at this location.
+                            ent.pop("_stale", None)
                             attacked_allies.append(ent)
 
         for ent in attacked_allies:
@@ -1255,6 +1277,7 @@ class GameState:
                         shielded = self._is_shielded(ent)
                         if shielded:
                             log.info("Ally %s has shield", name)
+                        ent.pop("_stale", None)  # fresh data clears stale flag
                         self._union_entities[eid] = ent
                         x, z = self._entity_coords(ent)
                         if x or z:
@@ -1272,8 +1295,16 @@ class GameState:
             if ent:
                 self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
 
+        # Persist updated ally locations.
+        if new_city_ids:
+            self._save_ally_locations()
+
     def _on_del_entities(self, msg: Any) -> None:
-        """msg:DelEntitiesNtf — remove entities by ID."""
+        """msg:DelEntitiesNtf — remove viewport entities by ID.
+
+        _union_entities are preserved (ally locations persist even when
+        the entity leaves the viewport).
+        """
         if isinstance(msg, DelEntitiesNtf):
             ids = msg.ids
         elif isinstance(msg, dict):
@@ -1284,7 +1315,9 @@ class GameState:
             return
         with self._lock:
             for eid in ids:
-                self._entities.pop(eid, None)
+                # Keep ally locations — only remove from viewport entities.
+                if eid not in self._union_entities:
+                    self._entities.pop(eid, None)
             self._touch("entities")
 
     def _on_position(self, msg: Any) -> None:
@@ -1307,6 +1340,7 @@ class GameState:
                         if pi.ID in self._union_entities:
                             had_coords = bool(self._union_entities[pi.ID].get("X") or
                                               self._union_entities[pi.ID].get("Z"))
+                            ent.pop("_stale", None)  # position update clears stale
                             self._union_entities[pi.ID] = ent
                             # Emit spotted event if this is the first time coords are available.
                             if not had_coords and (ent.get("X") or ent.get("Z")):
@@ -1465,6 +1499,7 @@ class GameState:
                     shielded = self._is_shielded(ent_dict)
                     if shielded:
                         log.info("Ally %s has shield", name)
+                    ent_dict.pop("_stale", None)  # fresh data clears stale flag
                     self._union_entities[eid] = ent_dict
                     # Also store in _entities so PositionNtf can update coords.
                     self._entities[eid] = ent_dict
@@ -1491,6 +1526,10 @@ class GameState:
             ent = self._union_entities.get(eid)
             if ent:
                 self._bus.emit(EVT_ALLY_CITY_SPOTTED, ent)
+
+        # Persist updated locations to disk.
+        if new_city_ids:
+            self._save_ally_locations()
 
     def _load_territory_cache(self) -> None:
         """Load territory grid from disk cache, if available."""
@@ -1525,6 +1564,49 @@ class GameState:
             log.info("Territory cache saved: %d squares", len(data))
         except Exception as e:
             log.warning("Failed to save territory cache: %s", e)
+
+    def _load_ally_locations(self) -> None:
+        """Load persisted ally locations from disk into _union_entities."""
+        try:
+            with open(self._ally_locations_file) as f:
+                data = json.load(f)
+            loaded = 0
+            with self._lock:
+                for eid_str, ent in data.items():
+                    eid = int(eid_str) if eid_str.isdigit() else eid_str
+                    self._union_entities[eid] = ent
+                    loaded += 1
+            if loaded:
+                log.info("Ally locations loaded: %d entries from %s",
+                         loaded, self._ally_locations_file)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("Failed to load ally locations: %s", e)
+
+    def _save_ally_locations(self) -> None:
+        """Persist _union_entities to disk so ally locations survive restarts."""
+        try:
+            os.makedirs(_DATA_DIR, exist_ok=True)
+            with self._lock:
+                data = {}
+                for eid, ent in self._union_entities.items():
+                    # Only persist entries with known coordinates.
+                    if ent.get("X") or ent.get("Z"):
+                        data[str(eid)] = {
+                            "X": ent.get("X", 0),
+                            "Z": ent.get("Z", 0),
+                            "field_1": ent.get("field_1"),
+                            "field_2": ent.get("field_2"),
+                            "field_3": ent.get("field_3"),
+                            "_power": ent.get("_power", 0),
+                            "_stale": ent.get("_stale", False),
+                        }
+            with open(self._ally_locations_file, "w") as f:
+                json.dump(data, f)
+            log.debug("Ally locations saved: %d entries", len(data))
+        except Exception as e:
+            log.warning("Failed to save ally locations: %s", e)
 
     def _on_territory_info(self, msg: Any) -> None:
         """msg:KvkTerritoryInfoAck — full territory grid snapshot."""
@@ -1569,7 +1651,11 @@ class GameState:
                       row, col, land.FactionId, land.curFactionId, land.legionId, land.curLegionId)
 
     def _on_del_union_entities(self, msg: Any) -> None:
-        """msg:UnionDelEntitiesNtf — remove ally entities by ID."""
+        """msg:UnionDelEntitiesNtf — ally went offline or left viewport.
+
+        Keep the entry with last-known coords so auto reinforce can still
+        target them.  Do NOT delete from _union_entities.
+        """
         ids = getattr(msg, "ids", None)
         if ids is None and isinstance(msg, dict):
             ids = msg.get("ids", [])
@@ -1577,8 +1663,58 @@ class GameState:
             return
         with self._lock:
             for eid in ids:
-                self._union_entities.pop(eid, None)
+                ent = self._union_entities.get(eid)
+                if ent:
+                    owner = ent.get("field_3") or ent.get("owner") or {}
+                    name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                    log.debug("UnionDelEntitiesNtf: keeping %s (last known x=%s z=%s)",
+                              name, ent.get("X", 0), ent.get("Z", 0))
+
+    def _on_teleport_city_in(self, msg: Any) -> None:
+        """msg:TeleportCityInNtf — ally teleported into viewport with new coords.
+
+        Updates _union_entities with new position and clears stale flag.
+        """
+        entities = msg.get("cities", []) if isinstance(msg, dict) else getattr(msg, "cities", [])
+        if not entities:
+            return
+        with self._lock:
+            for ent in entities:
+                ent_dict = ent if isinstance(ent, dict) else vars(ent)
+                eid = self._entity_id(ent_dict) or id(ent_dict)
+                if not self._is_ally_city(ent_dict):
+                    continue
+                x, z = self._entity_coords(ent_dict)
+                if x or z:
+                    ent_dict["X"] = x
+                    ent_dict["Z"] = z
+                ent_dict.pop("_stale", None)
+                self._union_entities[eid] = ent_dict
+                self._entities[eid] = ent_dict
+                owner = ent_dict.get("field_3") or ent_dict.get("owner") or {}
+                name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                log.info("TeleportCityInNtf: ally %s teleported to (%s, %s)",
+                         name, x, z)
             self._touch("entities")
+        self._save_ally_locations()
+
+    def _on_teleport_city_out(self, msg: Any) -> None:
+        """msg:TeleportCityOutNtf — ally teleported away (new location unknown).
+
+        Marks the entry as stale but keeps last-known coords.
+        """
+        ids = msg.get("ids", []) if isinstance(msg, dict) else getattr(msg, "ids", [])
+        if not ids:
+            return
+        with self._lock:
+            for eid in ids:
+                ent = self._union_entities.get(eid)
+                if ent:
+                    ent["_stale"] = True
+                    owner = ent.get("field_3") or ent.get("owner") or {}
+                    name = owner.get("name", "?") if isinstance(owner, dict) else "?"
+                    log.info("TeleportCityOutNtf: ally %s teleported away (coords stale)",
+                             name)
 
     def _on_shield_info(self, msg: Any) -> None:
         """msg:GetShieldInfoAck — capture shield end timestamp.
