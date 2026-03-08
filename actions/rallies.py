@@ -19,7 +19,7 @@ from botlog import get_logger, timed_action, stats
 from vision import (tap_image, wait_for_image_and_tap, timed_wait,
                     load_screenshot, find_image, get_last_best,
                     find_all_matches, get_template,
-                    adb_tap, adb_swipe, logged_tap,
+                    adb_tap, adb_swipe, adb_keyevent, logged_tap,
                     save_failure_screenshot)
 from navigation import navigate, check_screen, DEBUG_DIR
 from troops import (troops_avail, heal_all, read_panel_statuses,
@@ -289,8 +289,11 @@ def join_rally(rally_types, device, skip_heal=False, stop_check=None):
                 log.debug("Backed out to td_screen, re-entering war_screen")
                 return navigate(Screen.WAR, device)
 
-            # Still in popup — try back arrow
-            tap_image("back_arrow.png", device, threshold=0.7)
+            # Still in popup — use Android BACK (blind tap at back_arrow
+            # position can land on the wrong element and break navigation)
+            adb_keyevent(device, 4)
+            timed_wait(device, lambda: check_screen(device) == Screen.WAR,
+                       2.0, "jr_backout_android_back")
             if _on_war_screen(device):
                 return True
 
