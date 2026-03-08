@@ -103,9 +103,10 @@ def setup_logging(verbose=False):
     root.setLevel(logging.DEBUG)
 
     # Prevent duplicate handlers if called multiple times.
-    # Check for our file handler specifically — third-party libraries may
-    # add their own handlers before setup_logging() is called.
-    if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
+    # Check for our specific file handler (by filename), not any RotatingFileHandler —
+    # third-party libraries (e.g. PaddleOCR) may add their own before we run.
+    if any(isinstance(h, logging.handlers.RotatingFileHandler)
+           and getattr(h, 'baseFilename', '').endswith('9bot.log') for h in root.handlers):
         return
 
     # Console handler — clean format matching current output style

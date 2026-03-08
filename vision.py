@@ -5,6 +5,7 @@ import random
 import os
 import re
 import platform
+import logging
 import numpy as np
 from datetime import datetime
 
@@ -62,6 +63,10 @@ def _get_ocr_reader():
     reader = getattr(_ocr_local, 'reader', None)
     if reader is None:
         from paddleocr import PaddleOCR
+        # `import paddle` resets root logger to WARNING — restore immediately.
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.getLogger("paddle").setLevel(logging.WARNING)
+        logging.getLogger("ppocr").setLevel(logging.WARNING)
         _log = get_logger("vision")
         _log.info("Initializing PaddleOCR for thread %s...", threading.current_thread().name)
         reader = PaddleOCR(
@@ -143,6 +148,12 @@ def warmup_ocr():
         # Each device thread will create its own instance later, but
         # models are cached on disk so subsequent inits are fast.
         _get_ocr_reader()
+        # PaddleOCR's `import paddle` resets root logger level to WARNING,
+        # which silences all our INFO/DEBUG logging. Restore root to DEBUG
+        # and suppress paddle's own loggers to keep our log clean.
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.getLogger("paddle").setLevel(logging.WARNING)
+        logging.getLogger("ppocr").setLevel(logging.WARNING)
         _log.info("PaddleOCR ready.")
 
 
