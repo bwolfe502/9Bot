@@ -546,7 +546,7 @@ def run_auto_reinforce_ally(device, stop_event):
     pending = _queue.PriorityQueue()  # (-power, arrival_time, entity)
 
     try:
-        from startup import get_protocol_event_bus, set_protocol_ally_monitoring
+        from startup import get_protocol_event_bus, set_protocol_ally_monitoring, _get_device_state
         from protocol.events import EVT_ALLY_CITY_SPOTTED, EVT_ALLY_UNDER_ATTACK
     except ImportError:
         dlog.error("Protocol not available — Auto Reinforce Ally requires protocol enabled")
@@ -568,9 +568,18 @@ def run_auto_reinforce_ally(device, stop_event):
         _save_home_coords(device, home_x, home_z)
         dlog.info("Home coordinates set: X=%d Y=%d", home_x, home_z)
     else:
-        dlog.warning("Failed to capture home coordinates — using last saved or disabling filter")
-        home_x = config.get_device_config(device, "home_x")
-        home_z = config.get_device_config(device, "home_z")
+        dlog.warning("Failed to capture home coordinates — trying protocol then saved coords")
+        home_x, home_z = None, None
+        # Try protocol home castle position (from CityUpdateNtf).
+        gs = _get_device_state(device)
+        if gs and gs.home_coord:
+            hx, hz = gs.home_coord
+            home_x, home_z = hx // 1000, hz // 1000
+            _save_home_coords(device, home_x, home_z)
+            dlog.info("Home coordinates from protocol: X=%d Y=%d", home_x, home_z)
+        if not home_x or not home_z:
+            home_x = config.get_device_config(device, "home_x")
+            home_z = config.get_device_config(device, "home_z")
 
     if stop_check():
         config.clear_device_status(device)
@@ -598,23 +607,95 @@ def run_auto_reinforce_ally(device, stop_event):
         pending.put((_PRIO_ATTACK, -power, time.monotonic(), entity))
 
     set_protocol_ally_monitoring(device, True)
+
     bus.on(EVT_ALLY_CITY_SPOTTED, _on_spotted)
     bus.on(EVT_ALLY_UNDER_ATTACK, _on_under_attack)
     dlog.info("Ally monitoring enabled (home X=%d Y=%d)", home_x, home_z)
     config.set_device_status(device, "Watching for Allies...")
     _HEAL_INTERVAL = 10  # seconds between idle heal checks
+    _NEARBY_SCAN_INTERVAL = 10  # seconds idle before scanning known allies
     _last_idle_heal = 0.0
+    _last_event_time = time.monotonic()
+    _last_nearby_scan = 0.0
+
+    def _check_home_moved():
+        """Update home coords if own castle has teleported (via CityUpdateNtf)."""
+        nonlocal home_x, home_z
+        gs = _get_device_state(device)
+        if gs is None or gs.home_coord is None:
+            return
+        hx, hz = gs.home_coord
+        new_x, new_z = hx // 1000, hz // 1000
+        if new_x != home_x or new_z != home_z:
+            home_x, home_z = new_x, new_z
+            _save_home_coords(device, home_x, home_z)
+            dlog.info("Home coords updated via protocol: X=%d Y=%d", home_x, home_z)
+
+    def _scan_nearby_allies():
+        """Queue known nearby unshielded allies that haven't been reinforced."""
+        gs = _get_device_state(device)
+        if gs is None:
+            return 0
+        allies = gs.ally_city_entities
+        now_t = time.time()
+        queued = 0
+        for ent in allies:
+            eid = ent.get("field_1") or ent.get("id") or ent.get("ID")
+            if not eid:
+                continue
+            x = ent.get("X", 0)
+            z = ent.get("Z", 0)
+            if not x and not z:
+                continue
+            # Skip shielded allies.
+            from protocol.game_state import GameState
+            if GameState._is_shielded(ent):
+                continue
+            # Skip already reinforced (on cooldown at same position).
+            last_t, last_x, last_z = reinforced.get(eid, (0, None, None))
+            same_pos = (last_x == x and last_z == z)
+            if same_pos and now_t - last_t < _ALLY_REINFORCE_COOLDOWN_S:
+                continue
+            # Skip coords we already have a troop at.
+            display_coord = (x // 1000, z // 1000)
+            if display_coord in active_coords:
+                continue
+            # Distance filter.
+            if home_x and home_z:
+                dist = math.sqrt((x / 1000 - home_x) ** 2 + (z / 1000 - home_z) ** 2)
+                if dist < 2:
+                    continue  # own castle
+                max_dist = config.get_device_config(device, "max_reinforce_distance")
+                if max_dist and dist > max_dist:
+                    continue
+            owner = ent.get("field_3") or ent.get("owner") or {}
+            pid = owner.get("ID", 0) if isinstance(owner, dict) else 0
+            from protocol.game_state import lookup_player_power
+            power = lookup_player_power(pid)
+            ent["_power"] = power
+            pending.put((_PRIO_NORMAL, -power, time.monotonic(), ent))
+            queued += 1
+        return queued
 
     try:
         while not stop_check():
             try:
                 prio, _neg_power, _arrival, entity = pending.get(timeout=1.0)
+                _last_event_time = time.monotonic()
             except _queue.Empty:
                 now = time.monotonic()
                 if now - _last_idle_heal >= _HEAL_INTERVAL:
                     _last_idle_heal = now
+                    _check_home_moved()
                     with lock:
                         heal_all(device)
+                # After idle period, scan known allies for nearby unshielded ones.
+                if now - _last_event_time >= _NEARBY_SCAN_INTERVAL and now - _last_nearby_scan >= _NEARBY_SCAN_INTERVAL:
+                    _last_nearby_scan = now
+                    _check_home_moved()
+                    queued = _scan_nearby_allies()
+                    if queued:
+                        dlog.info("Nearby scan: queued %d allies for reinforcement", queued)
                 continue
 
             if stop_check():
