@@ -14,7 +14,7 @@ from vision import (load_screenshot, tap_image, wait_for_image_and_tap,
                     save_failure_screenshot)
 from navigation import navigate
 from troops import troops_avail, all_troops_home, heal_all
-from actions import teleport, teleport_to_tower, navigate_to_coord
+from actions import teleport, teleport_to_tower, navigate_to_coord, move_camera_to
 from botlog import get_logger, timed_action
 
 _log = get_logger("territory")
@@ -284,12 +284,13 @@ def scan_targets(device):
         proto_grid = None
 
     if proto_grid is not None:
-        # proto_grid: {(row,col): (owner_team, contester_team, has_defender)}
+        # proto_grid: {(row,col): (owner_team, contester_team, has_defender, bld_type, cfg_id)}
         empty_enemy_squares = set()    # no defending troop — walk straight in
         empty_friendly_squares = set() # own squares with no defender
         contested_by_us = set()        # our troop already contesting — skip
         grid = {}
-        for (row, col), (owner_team, contester_team, has_defender) in proto_grid.items():
+        for (row, col), val in proto_grid.items():
+            owner_team, contester_team, has_defender = val[0], val[1], val[2]
             if owner_team:
                 grid[(row, col)] = owner_team
             if not has_defender and owner_team in enemy_teams:
@@ -642,7 +643,8 @@ def _pick_frontline_target_from_protocol(device, mode, my_team, enemy_teams):
     candidates = []
     skip_team = skip_defender = skip_adj = 0
 
-    for (row, col), (owner_team, contester_team, has_defender) in proto_grid.items():
+    for (row, col), val in proto_grid.items():
+        owner_team, contester_team, has_defender = val[0], val[1], val[2]
         if (row, col) in config.THRONE_SQUARES:
             continue
         if (row, col) in config.MANUAL_IGNORE_SQUARES:
@@ -798,30 +800,13 @@ def frontline_occupy_loop(device, stop_check):
                 config.set_device_status(device, f"Targeting ({target_row},{target_col})...")
                 config.LAST_ATTACKED_SQUARE[device] = (target_row, target_col)
 
-                # Pan camera directly to tower via map search — no territory screen
+                # Pan camera directly to tower — IL2CPP fast path or map search fallback
                 config.set_device_status(device, "Navigating to Tower...")
-                if not navigate_to_coord(device, world_x, world_z, stop_check):
-                    log.warning("navigate_to_coord failed — skipping cycle")
+                if not move_camera_to(device, world_x, world_z, stop_check):
+                    log.warning("move_camera_to failed — skipping cycle")
                     if _interruptible_sleep(5, stop_check):
                         break
                     continue
-
-                # Wait briefly for the game to send entity data for the now-visible tower.
-                if _interruptible_sleep(2, stop_check):
-                    break
-                import startup as _startup
-                tower_troops = _startup.get_protocol_kvk_tower_troops(device)
-                if tower_troops is not None:
-                    troop_count = tower_troops.get((target_row, target_col), -1)
-                    if troop_count > 0:
-                        log.info("Tower (%d,%d) has %d troop(s) per entity feed — skipping",
-                                 target_row, target_col, troop_count)
-                        if _interruptible_sleep(5, stop_check):
-                            break
-                        continue
-                    elif troop_count == -1:
-                        log.debug("Tower (%d,%d) not yet seen in entity feed — proceeding",
-                                  target_row, target_col)
 
             else:
                 # --- Vision fallback: territory grid scan + tap ---
@@ -852,21 +837,38 @@ def frontline_occupy_loop(device, stop_check):
             if stop_check():
                 break
 
-            # --- Check for alliance occupation before teleporting ---
-            # Camera is centered on the tower — alliance_occupied.png (white hammer)
-            # is visible if an alliance member is already defending it.
-            _screen = load_screenshot(device)
-            if _screen is not None:
-                _occ_match = find_image(_screen, "alliance_occupied.png", threshold=0.0)
-                _occ_score = round(_occ_match[0], 3) if _occ_match else 0.0
-                log.info("Tower (%d,%d) alliance_occupied score=%.3f", target_row, target_col, _occ_score)
-            if _screen is not None and find_image(_screen, "alliance_occupied.png", threshold=0.92):
-                log.info("Tower (%d,%d) is alliance-occupied (visual) — skipping",
-                         target_row, target_col)
-                config.set_device_status(device, "Scanning Territory...")
-                if _interruptible_sleep(5, stop_check):
+            # --- Wait for entity data, then check for troops in the tower ---
+            # Camera move triggers WildMapViewReq → server sends KvkBuilding
+            # entities. Poll until data arrives or timeout (3s).
+            if device in config.PROTOCOL_ACTIVE_DEVICES:
+                import startup as _startup
+                _poll_deadline = time.time() + 3.0
+                troop_count = -1
+                while time.time() < _poll_deadline:
+                    if stop_check():
+                        break
+                    tower_troops = _startup.get_protocol_kvk_tower_troops(device)
+                    if tower_troops is not None:
+                        troop_count = tower_troops.get((target_row, target_col), -1)
+                        if troop_count >= 0:
+                            break
+                    time.sleep(0.2)
+                if stop_check():
                     break
-                continue
+                if troop_count > 0:
+                    log.info("Tower (%d,%d) has %d troop(s) — skipping",
+                             target_row, target_col, troop_count)
+                    config.set_device_status(device, "Scanning Territory...")
+                    delay = random.uniform(2.5, 5.0)
+                    log.debug("Occupied tower delay: %.1fs", delay)
+                    if _interruptible_sleep(delay, stop_check):
+                        break
+                    continue
+                elif troop_count == 0:
+                    log.info("Tower (%d,%d) confirmed empty — proceeding", target_row, target_col)
+                else:
+                    log.debug("Tower (%d,%d) entity data not received — proceeding anyway",
+                              target_row, target_col)
 
             # --- Teleport adjacent to the target tower ---
             # teleport_to_tower navigates to coordinate positions around the tower
@@ -877,14 +879,8 @@ def frontline_occupy_loop(device, stop_check):
                 world_z = target_row * 300000 + 150000
             config.set_device_status(device, "Teleporting...")
             if not teleport_to_tower(device, world_x, world_z, stop_check):
-                # If alliance-occupied was the reason, skip silently to next target.
-                _s = load_screenshot(device)
-                if _s is not None and find_image(_s, "alliance_occupied.png", threshold=0.92):
-                    log.info("Tower (%d,%d) occupied — moving to next target",
-                             target_row, target_col)
-                    if _interruptible_sleep(2, stop_check):
-                        break
-                    continue
+                # teleport_to_tower already checks entity troop data and returns
+                # False if occupied. Just count the failure.
                 consecutive_tp_fails += 1
                 log.warning("Teleport failed (%d consecutive)", consecutive_tp_fails)
                 if consecutive_tp_fails >= _MAX_CONSECUTIVE_TP_FAILS:
@@ -917,7 +913,7 @@ def frontline_occupy_loop(device, stop_check):
             label = "Attacking" if action_type == "attack" else "Reinforcing"
             config.set_device_status(device, f"{label} Tower...")
 
-            if not navigate_to_coord(device, world_x, world_z, stop_check):
+            if not move_camera_to(device, world_x, world_z, stop_check):
                 log.warning("Cannot recenter on tower (%d,%d) — skipping cycle",
                             target_row, target_col)
                 if _interruptible_sleep(10, stop_check):

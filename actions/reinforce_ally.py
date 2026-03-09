@@ -365,6 +365,40 @@ def navigate_to_coord(device, x: int, z: int, stop_check=None) -> bool:
     return True
 
 
+def move_camera_to(device, x: int, z: int, stop_check=None) -> bool:
+    """Move the game camera to world coordinates (x, z).
+
+    When protocol is active for the device, calls MapCameraMgr.MoveCameraToTargetInstantly
+    via IL2CPP — instant, no UI interaction needed.  Falls back to navigate_to_coord
+    (search UI + OCR) when protocol is unavailable or the IL2CPP call fails.
+
+    Args:
+        x: raw world X coordinate (protocol scale, e.g. col * 300000 + 150000)
+        z: raw world Z coordinate (protocol scale)
+
+    Returns True on success, False on failure.
+    """
+    log = get_logger("actions", device)
+
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
+        try:
+            import startup
+            # MoveCameraToTargetInstantly takes display-scale floats
+            disp_x = x / 1000.0
+            disp_z = z / 1000.0
+            result = startup.move_game_camera(device, disp_x, disp_z)
+            if result.get("ok"):
+                log.debug("move_camera_to (%.0f, %.0f) via IL2CPP OK", disp_x, disp_z)
+                time.sleep(0.5)  # brief settle time for entities to load
+                return True
+            log.warning("move_camera_to IL2CPP failed: %s — falling back to search UI",
+                        result.get("error", "unknown"))
+        except Exception as e:
+            log.warning("move_camera_to IL2CPP error: %s — falling back to search UI", e)
+
+    return navigate_to_coord(device, x, z, stop_check)
+
+
 @timed_action("reinforce_ally_castle")
 def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
                            stop_check=None) -> bool:
@@ -396,7 +430,7 @@ def reinforce_ally_castle(device, x: int, z: int, player_name: str = "",
                     label, troops, min_troops)
         return False
 
-    if not navigate_to_coord(device, x, z, stop_check):
+    if not move_camera_to(device, x, z, stop_check):
         log.warning("Failed to navigate to ally %s coordinates (%d, %d)", label, x, z)
         return False
 
@@ -502,7 +536,7 @@ def recall_defending_troops(device, count=2, coords=None, stop_check=None) -> in
     if coords is not None:
         rx, rz = coords
         log.info("Recalling troop from coords (%d, %d)", rx // 1000, rz // 1000)
-        if not navigate_to_coord(device, rx, rz, stop_check):
+        if not move_camera_to(device, rx, rz, stop_check):
             log.warning("recall_defending: failed to navigate to (%d, %d)", rx, rz)
             return 0
         # Tap center to select the castle.

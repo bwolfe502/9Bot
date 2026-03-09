@@ -341,6 +341,7 @@ class GameState:
         self._quests: Dict[int, dict] = {}                  # cfgID -> info dict
         self._resources: Dict[int, Asset] = {}              # Asset.ID -> Asset
         self._entities: Dict[Any, dict] = {}                # entity id -> raw dict
+        self._entity_snapshot: Dict[Any, dict] = {}          # persists after DelEntitiesNtf
         self._attacks: List[Intelligence] = []
         self._chat: Deque[Any] = collections.deque(maxlen=_CHAT_MAXLEN)
         self._chat_seen_ids: set = set()  # historyId dedup for ChatPullMsgAck
@@ -361,7 +362,7 @@ class GameState:
             _DATA_DIR, f"ally_locations_{_dhash2}.json"
         )
         self._load_ally_locations()
-        self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id, cur_legion_id)
+        self._territory_grid: Dict[Tuple[int, int], Tuple[int, int, int, int, int, int]] = {}  # (row, col) -> (faction_id, cur_faction_id, legion_id, cur_legion_id, type, cfgId)
         self._kvk_tower_troops: Dict[Tuple[int, int], int] = {}  # (row, col) -> troop count from KvkBuilding entity
         self._ally_monitoring: bool = False                  # set True only while auto_reinforce_ally runs
         self._shield_end_ts: int = 0                          # ShieldEndTs (ms) from GetShieldInfoAck
@@ -373,6 +374,11 @@ class GameState:
         self._territory_cache_file = os.path.join(
             _TERRITORY_CACHE_DIR, f"territory_grid_{_dhash}.json"
         )
+        self._buildings_file = os.path.join(
+            _TERRITORY_CACHE_DIR, f"territory_buildings_{_dhash}.json"
+        )
+        self._building_types: Dict[Tuple[int, int], Tuple[int, int]] = {}  # (row, col) -> (type, cfgId)
+        self._load_building_types()
 
         # -- connection metadata ----------------------------------- #
         self.protocol_connected: bool = False
@@ -505,6 +511,11 @@ class GameState:
             return dict(self._territory_grid)
 
     @property
+    def building_types(self) -> Dict[Tuple[int, int], Tuple[int, int]]:
+        """Persistent building type map: (row, col) -> (type, cfgId). Never cleared."""
+        return dict(self._building_types)
+
+    @property
     def kvk_tower_troops(self) -> Dict[Tuple[int, int], int]:
         """KvkBuilding troop counts observed from entity packets: (row,col) -> troop count.
 
@@ -513,6 +524,37 @@ class GameState:
         """
         with self._lock:
             return dict(self._kvk_tower_troops)
+
+    def get_entities_near(self, center_x: int, center_z: int,
+                          radius: int = 20000,
+                          max_age_s: float = 60.0) -> List[dict]:
+        """Return entities within *radius* of (center_x, center_z).
+
+        Uses the entity snapshot (survives DelEntitiesNtf) with a freshness
+        filter — entries older than *max_age_s* are ignored since monsters move.
+        Coordinates are protocol scale (display * 1000).  Each returned dict
+        includes ``_dist`` (distance), ``_type`` (MapUnitType), ``_x``, ``_z``.
+        """
+        results = []
+        now = time.time()
+        with self._lock:
+            for eid, snap in self._entity_snapshot.items():
+                if now - snap.get("_ts", 0) > max_age_s:
+                    continue
+                x = snap["_x"]
+                z = snap["_z"]
+                dx = x - center_x
+                dz = z - center_z
+                dist = (dx * dx + dz * dz) ** 0.5
+                if dist <= radius:
+                    results.append({
+                        "_id": eid,
+                        "_type": snap["_type"],
+                        "_x": x,
+                        "_z": z,
+                        "_dist": int(dist),
+                    })
+        return results
 
     def get_own_shield(self) -> Optional[float]:
         """Return seconds remaining on own castle shield, or None if unknown.
@@ -1256,6 +1298,14 @@ class GameState:
                 try:
                     eid = self._entity_id(ent) or id(ent)
                     self._entities[eid] = ent
+                    # Snapshot: preserve entity data even after DelEntitiesNtf
+                    x_s, z_s = self._entity_coords(ent)
+                    if x_s or z_s:
+                        etype_s = ent.get("field_2", ent.get("type", -1))
+                        self._entity_snapshot[eid] = {
+                            "_type": etype_s, "_x": x_s, "_z": z_s,
+                            "_ts": time.time(),
+                        }
 
                     # Extract KvkBuilding.troops for territory towers (MapUnitType.TOWER = 11).
                     etype = ent.get("field_2", ent.get("type", -1))
@@ -1536,12 +1586,15 @@ class GameState:
         try:
             with open(self._territory_cache_file) as f:
                 data = json.load(f)
-            grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}
+            grid: Dict[Tuple[int, int], Tuple[int, int, int, int, int, int]] = {}
             for key, val in data.items():
                 row, col = map(int, key.split(","))
-                # Support both old 3-element caches and new 4-element format.
-                grid[(row, col)] = (int(val[0]), int(val[1]), int(val[2]),
-                                    int(val[3]) if len(val) > 3 else 0)
+                # Support old 3/4-element caches and new 6-element format.
+                grid[(row, col)] = (int(val[0]), int(val[1]),
+                                    int(val[2]) if len(val) > 2 else 0,
+                                    int(val[3]) if len(val) > 3 else 0,
+                                    int(val[4]) if len(val) > 4 else 0,
+                                    int(val[5]) if len(val) > 5 else 0)
             with self._lock:
                 self._territory_grid = grid
                 self._touch("territory")
@@ -1564,6 +1617,44 @@ class GameState:
             log.info("Territory cache saved: %d squares", len(data))
         except Exception as e:
             log.warning("Failed to save territory cache: %s", e)
+        self._save_building_types(grid)
+
+    def _load_building_types(self) -> None:
+        """Load persistent building type map (never deleted — buildings don't change)."""
+        try:
+            with open(self._buildings_file) as f:
+                data = json.load(f)
+            for key, val in data.items():
+                row, col = map(int, key.split(","))
+                self._building_types[(row, col)] = (int(val[0]), int(val[1]))
+            log.info("Building types loaded: %d entries from %s",
+                     len(self._building_types), self._buildings_file)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            log.warning("Failed to load building types: %s", e)
+
+    def _save_building_types(self, grid=None) -> None:
+        """Merge new building type data and save. Only adds — never removes entries."""
+        try:
+            if grid is None:
+                with self._lock:
+                    grid = dict(self._territory_grid)
+            new_entries = 0
+            for (row, col), val in grid.items():
+                bld_type = val[4] if len(val) > 4 else 0
+                cfg_id = val[5] if len(val) > 5 else 0
+                if (bld_type or cfg_id) and (row, col) not in self._building_types:
+                    self._building_types[(row, col)] = (bld_type, cfg_id)
+                    new_entries += 1
+            if new_entries:
+                os.makedirs(_TERRITORY_CACHE_DIR, exist_ok=True)
+                data = {f"{r},{c}": list(v) for (r, c), v in self._building_types.items()}
+                with open(self._buildings_file, "w") as f:
+                    json.dump(data, f)
+                log.info("Building types saved: %d total (%d new)", len(self._building_types), new_entries)
+        except Exception as e:
+            log.warning("Failed to save building types: %s", e)
 
     def _load_ally_locations(self) -> None:
         """Load persisted ally locations from disk into _union_entities."""
@@ -1614,7 +1705,7 @@ class GameState:
         if not lands:
             log.info("KvkTerritoryInfoAck: no lands")
             return
-        new_grid: Dict[Tuple[int, int], Tuple[int, int, int, int]] = {}
+        new_grid: Dict[Tuple[int, int], Tuple[int, int, int, int, int, int]] = {}
         for raw_land in lands:
             land = LandInfo.from_dict(raw_land) if isinstance(raw_land, dict) else raw_land
             if land.coord is None:
@@ -1622,7 +1713,7 @@ class GameState:
             row = land.coord.Z // 300000
             col = land.coord.X // 300000
             if 0 <= row < 24 and 0 <= col < 24:
-                new_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId, land.curLegionId)
+                new_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId, land.curLegionId, land.type, land.cfgId)
         with self._lock:
             self._territory_grid = new_grid
             self._touch("territory")
@@ -1645,10 +1736,10 @@ class GameState:
         col = land.coord.X // 300000
         if 0 <= row < 24 and 0 <= col < 24:
             with self._lock:
-                self._territory_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId, land.curLegionId)
+                self._territory_grid[(row, col)] = (land.FactionId, land.curFactionId, land.legionId, land.curLegionId, land.type, land.cfgId)
                 self._touch("territory")
-            log.debug("KvkTerritoryInfoNtf: (%d,%d) → faction=%d cur=%d legion=%d curlegion=%d",
-                      row, col, land.FactionId, land.curFactionId, land.legionId, land.curLegionId)
+            log.debug("KvkTerritoryInfoNtf: (%d,%d) → faction=%d cur=%d legion=%d curlegion=%d type=%d cfgId=%d",
+                      row, col, land.FactionId, land.curFactionId, land.legionId, land.curLegionId, land.type, land.cfgId)
 
     def _on_del_union_entities(self, msg: Any) -> None:
         """msg:UnionDelEntitiesNtf — ally went offline or left viewport.

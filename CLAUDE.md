@@ -7,6 +7,9 @@ Runs on Windows with BlueStacks or MuMu Player emulators. GUI built with tkinter
 > Claude can't easily find by reading code: which file handles what, non-obvious
 > conventions/gotchas, cross-cutting patterns, and behavioral rules. Don't duplicate
 > function internals, enum values, or step-by-step logic that lives in the source.
+>
+> **Research reference**: See `docs/master-research.md` for protocol analysis, success rates,
+> known issues, performance data, and priority list. Read it when working on related features.
 
 ## Module Map
 

@@ -323,6 +323,73 @@ def get_protocol_message_type_counts_by_direction(device=None, direction: str = 
     return thread.message_type_counts
 
 
+def inject_protocol_send(device, msg_id, payload):
+    """Inject an outgoing protocol message via Frida RPC. Returns result dict."""
+    if device is None:
+        return {"ok": False, "error": "No device"}
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return {"ok": False, "error": "Protocol not active for device"}
+    return info["thread"].inject_send(msg_id, payload)
+
+
+def search_il2cpp_classes(device, keyword):
+    """Search IL2CPP classes on device matching keyword. Returns result dict."""
+    if device is None:
+        return {"error": "No device"}
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return {"error": "Protocol not active for device"}
+    return info["thread"].search_classes(keyword)
+
+
+def get_il2cpp_method_signatures(device, namespace, class_name):
+    """Get method signatures for an IL2CPP class. Returns result dict."""
+    if device is None:
+        return {"error": "No device"}
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return {"error": "Protocol not active for device"}
+    return info["thread"].get_method_signatures(namespace, class_name)
+
+
+def get_il2cpp_class_info(device, namespace, class_name):
+    """Inspect an IL2CPP class: parent chain, fields, static values."""
+    if device is None:
+        return {"error": "No device"}
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return {"error": "Protocol not active for device"}
+    return info["thread"].get_class_info(namespace, class_name)
+
+
+def move_game_camera(device, x, z):
+    """Move the game camera to (x, z) via IL2CPP MapCameraMgr call."""
+    if device is None:
+        return {"error": "No device"}
+    with _device_protocol_lock:
+        info = _device_protocol.get(device)
+    if info is None:
+        return {"error": "Protocol not active for device"}
+    return info["thread"].move_camera(x, z)
+
+
+def get_protocol_entities_near(device, center_x, center_z, radius=20000):
+    """Return entities near (center_x, center_z) from protocol viewport data.
+
+    Coordinates are protocol scale (display * 1000). Returns list of dicts
+    with _id, _type, _x, _z, _dist — or empty list if unavailable.
+    """
+    state = _get_device_state(device)
+    if state is None:
+        return []
+    return state.get_entities_near(center_x, center_z, radius)
+
+
 def get_protocol_ap(device=None):
     """Return (current, max) AP from protocol, or None if unavailable/stale."""
     state = _get_device_state(device)
@@ -581,10 +648,12 @@ def get_protocol_territory_grid(device=None):
 
     Returns None when protocol is off, data not yet received, or data is stale.
 
-    Returns dict mapping (row, col) -> (owner_team, contester_team, has_defender):
+    Returns dict mapping (row, col) -> (owner_team, contester_team, has_defender, bld_type, cfg_id):
         owner_team:     team string ("red"/"blue"/"green"/"yellow") or None if unowned
         contester_team: team currently attacking this tower, or None
         has_defender:   True if a troop is occupying/defending this tower
+        bld_type:       building type int (from LandInfo.type)
+        cfg_id:         building config ID (from LandInfo.cfgId)
     Only towers with at least an owner or a contester are included.
     """
     try:
@@ -600,11 +669,13 @@ def get_protocol_territory_grid(device=None):
         for (row, col), val in raw_grid.items():
             faction_id, cur_faction_id, legion_id = val[0], val[1], val[2]
             cur_legion_id = val[3] if len(val) > 3 else 0
+            bld_type = val[4] if len(val) > 4 else 0
+            cfg_id = val[5] if len(val) > 5 else 0
             owner_team = _FACTION_TO_TEAM.get(faction_id)
             contester_team = _FACTION_TO_TEAM.get(cur_faction_id) if cur_faction_id else None
             has_defender = bool(legion_id) or bool(cur_legion_id)
             if owner_team or contester_team:
-                result[(row, col)] = (owner_team, contester_team, has_defender)
+                result[(row, col)] = (owner_team, contester_team, has_defender, bld_type, cfg_id)
         return result
     except Exception:
         return None

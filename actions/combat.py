@@ -508,7 +508,7 @@ def teleport_to_tower(device, tower_x, tower_z, stop_check=None):
 
     Returns True if teleport confirmed, False on failure.
     """
-    from actions.reinforce_ally import navigate_to_coord as _nav_coord
+    from actions.reinforce_ally import move_camera_to as _nav_coord
 
     log = get_logger("actions", device)
 
@@ -528,31 +528,84 @@ def teleport_to_tower(device, tower_x, tower_z, stop_check=None):
     tx = tower_x // 1000
     tz = tower_z // 1000
 
-    # Camera is already on the tower from the caller — check for alliance occupation.
-    _screen = load_screenshot(device)
-    if _screen is not None and find_image(_screen, "alliance_occupied.png", threshold=0.92):
-        log.info("teleport_to_tower: alliance_occupied.png detected at (%d,%d) — aborting", tx, tz)
-        return False
+    # Check entity data for troops in this tower (populated after camera move).
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
+        try:
+            from startup import get_protocol_kvk_tower_troops
+            tower_troops = get_protocol_kvk_tower_troops(device)
+            if tower_troops is not None:
+                row, col = tower_z // 300000, tower_x // 300000
+                troop_count = tower_troops.get((row, col), -1)
+                if troop_count > 0:
+                    log.info("teleport_to_tower: tower (%d,%d) has %d troop(s) — aborting",
+                             row, col, troop_count)
+                    return False
+        except Exception as ex:
+            log.debug("teleport_to_tower: troop check unavailable: %s", ex)
 
     # 8 positions around the tower at 45° intervals, starting above (angle -90° = Y-r).
     # Cardinals (above/right/below/left) use base radius; diagonals use radius+2
     # to avoid corners that sit too close to the tower edges.
     # Screen Y increases downward so -90° maps to (tx, tz-r) = directly above.
-    num_points = 8
+    num_points = 15
 
-    for radius in (15, 20, 25):
+    # --- Protocol pre-filter: skip positions blocked by nearby entities ---
+    # Castle placement radius = 12 display coords. Each entity type has its own
+    # radius. Exclusion = castle_r + entity_r (in protocol units = display * 1000).
+    # MapUnitType → entity radius (proto units), measured from fully-zoomed screenshots:
+    _ENTITY_RADII = {
+        11: 10500,   # TOWER (r=10.5 display coords)
+        27: 6000,    # EVIL / EG+priests (r=6.0)
+        # Mines/resources — type TBD, use conservative default
+    }
+    _CASTLE_R = 12000    # castle placement radius (proto units)
+    _DEFAULT_ENTITY_R = 3500  # fallback for unknown types (covers mines r=3.4, titans r=1.9, monsters r=1.6)
+    blocked_entities = []
+    if device in config.PROTOCOL_ACTIVE_DEVICES:
+        try:
+            from startup import get_protocol_entities_near
+            # Search wide enough to cover ring 3 (r=63) + castle footprint (r=12)
+            blocked_entities = get_protocol_entities_near(
+                device, tower_x, tower_z, radius=85000)
+            if blocked_entities:
+                log.info("teleport_to_tower: %d entities near tower — will pre-filter",
+                         len(blocked_entities))
+                for e in blocked_entities:
+                    log.debug("  entity type=%d at (%d,%d) dist=%d",
+                              e["_type"], e["_x"] // 1000, e["_z"] // 1000, e["_dist"])
+        except Exception as ex:
+            log.debug("teleport_to_tower: entity pre-filter unavailable: %s", ex)
+
+    for radius in (22, 46, 70):
         log.debug("teleport_to_tower: trying radius=%d display-coords", radius)
 
         for i in range(num_points):
             if stop_check and stop_check():
                 return False
 
-            angle_deg = -90 + i * (360 // num_points)
+            angle_deg = -90 + i * (360.0 / num_points)
             angle_rad = math.radians(angle_deg)
-            # Odd indices are diagonals — push them out by 2 extra coords
-            r = radius + (2 if i % 2 == 1 else 0)
-            cx = tx + int(round(r * math.cos(angle_rad)))
-            cz = tz + int(round(r * math.sin(angle_rad)))
+            cx = tx + int(round(radius * math.cos(angle_rad)))
+            cz = tz + int(round(radius * math.sin(angle_rad)))
+
+            # Pre-filter: skip if any entity is within castle footprint of this candidate
+            if blocked_entities:
+                cx_proto = cx * 1000
+                cz_proto = cz * 1000
+                blocked = False
+                for ent in blocked_entities:
+                    edx = ent["_x"] - cx_proto
+                    edz = ent["_z"] - cz_proto
+                    edist = (edx * edx + edz * edz) ** 0.5
+                    entity_r = _ENTITY_RADII.get(ent["_type"], _DEFAULT_ENTITY_R)
+                    exclusion = _CASTLE_R + entity_r
+                    if edist < exclusion:
+                        log.debug("teleport_to_tower: (%d,%d) blocked by entity type=%d at dist=%.0f (excl=%.0f) — skipping",
+                                  cx, cz, ent["_type"], edist, exclusion)
+                        blocked = True
+                        break
+                if blocked:
+                    continue
 
             log.debug("teleport_to_tower: candidate coord (%d,%d) r=%d angle=%d°",
                       cx, cz, radius, angle_deg)

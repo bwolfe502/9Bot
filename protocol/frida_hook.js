@@ -96,6 +96,11 @@ var rateLimiter = {
 var resolvedFromByte = null;
 var resolvedMakeByte = null;
 
+// Injection support: substitute next matching outgoing message
+// pendingInject = {triggerMsgId, replaceMsgId, payload: [bytes], once: bool}
+var pendingInject = null;
+var injectApplyCount = 0;
+
 // ------------------------------------------------------------------ //
 //  IL2CPP helper functions
 // ------------------------------------------------------------------ //
@@ -413,14 +418,55 @@ function installHooks(mod) {
     Interceptor.attach(addrMakeByte, {
         onEnter: function (args) {
             try {
-                if (!rateLimiter.allow()) {
-                    return;
-                }
-
                 var msgId = args[1].toUInt32();
                 var rawData = args[2];
                 var offset = args[3].toInt32();
                 var len = args[4].toInt32();
+
+                // ---- Injection: rewrite this call's args in-place ----
+                if (pendingInject !== null) {
+                    var inj = pendingInject;
+                    if (inj.once) {
+                        pendingInject = null;
+                    }
+
+                    var injPayload = inj.payload;
+                    var injLen = injPayload.length;
+                    var arrMaxLen = rawData.add(0x18).readU32();
+
+                    if (injLen <= arrMaxLen) {
+                        // Overwrite msgId arg
+                        args[1] = ptr(inj.replaceMsgId >>> 0);
+
+                        // Write injection payload into existing byte array at offset 0
+                        var dataPtr = rawData.add(0x20);
+                        for (var i = 0; i < injLen; i++) {
+                            dataPtr.add(i).writeU8(injPayload[i]);
+                        }
+
+                        // Fix offset and len args
+                        args[3] = ptr(0);
+                        args[4] = ptr(injLen);
+
+                        injectApplyCount++;
+                        console.log("[frida_hook] INJECTED: replaced msgId=0x" +
+                                    msgId.toString(16) + " with 0x" +
+                                    inj.replaceMsgId.toString(16) +
+                                    " (" + injLen + " bytes)");
+
+                        // Report the injected message (not the original)
+                        msgId = inj.replaceMsgId;
+                        offset = 0;
+                        len = injLen;
+                    } else {
+                        console.log("[frida_hook] INJECT SKIP: payload " + injLen +
+                                    " > array capacity " + arrMaxLen);
+                    }
+                }
+
+                if (!rateLimiter.allow()) {
+                    return;
+                }
 
                 var payload = null;
                 if (len > 0 && !rawData.isNull()) {
@@ -483,6 +529,394 @@ rpc.exports = {
                 currentWindowCount: rateLimiter.count
             }
         };
+    },
+
+    /**
+     * Queue a message substitution on the next outgoing MakeByte call.
+     *
+     * The next outgoing message will have its msgId and payload replaced
+     * in-place, reusing the game's own Stream and byte array.
+     *
+     * @param {number} replaceMsgId - Wire msg_id for the injected message.
+     * @param {number[]} payloadBytes - Protobuf payload as byte array.
+     * @param {boolean} once - If true (default), clear after one use.
+     * @returns {{ok: boolean, queued: boolean}}
+     */
+    injectSend: function (replaceMsgId, payloadBytes, once) {
+        if (once === undefined) once = true;
+        pendingInject = {
+            replaceMsgId: replaceMsgId,
+            payload: payloadBytes,
+            once: once
+        };
+        console.log("[frida_hook] Queued inject: msgId=0x" +
+                    replaceMsgId.toString(16) + " (" +
+                    payloadBytes.length + " bytes), once=" + once);
+        return { ok: true, queued: true };
+    },
+
+    /**
+     * Clear any pending injection.
+     */
+    clearInject: function () {
+        pendingInject = null;
+        return { ok: true };
+    },
+
+    /**
+     * Get detailed method signatures for a specific class.
+     * Returns method names with parameter counts and types.
+     */
+    getMethodSignatures: function (namespace, className) {
+        var mod = Process.findModuleByName(MODULE_NAME);
+        if (!mod) return { error: "module not found" };
+
+        var getDomain = new NativeFunction(mod.findExportByName("il2cpp_domain_get"), "pointer", []);
+        var getAssemblies = new NativeFunction(mod.findExportByName("il2cpp_domain_get_assemblies"), "pointer", ["pointer", "pointer"]);
+        var getImage = new NativeFunction(mod.findExportByName("il2cpp_assembly_get_image"), "pointer", ["pointer"]);
+        var classFromName = new NativeFunction(mod.findExportByName("il2cpp_class_from_name"), "pointer", ["pointer", "pointer", "pointer"]);
+        var getMethods = new NativeFunction(mod.findExportByName("il2cpp_class_get_methods"), "pointer", ["pointer", "pointer"]);
+        var getMethodName = new NativeFunction(mod.findExportByName("il2cpp_method_get_name"), "pointer", ["pointer"]);
+        var getMethodParamCount = new NativeFunction(mod.findExportByName("il2cpp_method_get_param_count"), "uint32", ["pointer"]);
+        var getMethodParamName = new NativeFunction(mod.findExportByName("il2cpp_method_get_param_name"), "pointer", ["pointer", "uint32"]);
+        var getMethodParam = new NativeFunction(mod.findExportByName("il2cpp_method_get_param"), "pointer", ["pointer", "uint32"]);
+        var getTypeName = new NativeFunction(mod.findExportByName("il2cpp_type_get_name"), "pointer", ["pointer"]);
+        var getMethodReturnType = new NativeFunction(mod.findExportByName("il2cpp_method_get_return_type"), "pointer", ["pointer"]);
+
+        var domain = getDomain();
+        var sizeOut = Memory.alloc(8);
+        var assemblies = getAssemblies(domain, sizeOut);
+        var asmCount = sizeOut.readU32();
+
+        var nsPtr = Memory.allocUtf8String(namespace);
+        var clsPtr = Memory.allocUtf8String(className);
+        var foundClass = null;
+
+        for (var a = 0; a < asmCount; a++) {
+            var assembly = assemblies.add(a * Process.pointerSize).readPointer();
+            var image = getImage(assembly);
+            var klass = classFromName(image, nsPtr, clsPtr);
+            if (!klass.isNull()) { foundClass = klass; break; }
+        }
+
+        if (!foundClass) return { error: "Class not found: " + namespace + "." + className };
+
+        var methods = [];
+        var iter = Memory.alloc(Process.pointerSize);
+        iter.writePointer(ptr(0));
+        var mi;
+        while (!(mi = getMethods(foundClass, iter)).isNull()) {
+            var mnP = getMethodName(mi);
+            if (mnP.isNull()) continue;
+            var name = mnP.readUtf8String();
+
+            var paramCount = getMethodParamCount(mi);
+            var params = [];
+            for (var p = 0; p < paramCount; p++) {
+                var pnP = getMethodParamName(mi, p);
+                var pName = pnP.isNull() ? "?" : pnP.readUtf8String();
+                var pType = getMethodParam(mi, p);
+                var tName = "?";
+                if (!pType.isNull()) {
+                    var tnP = getTypeName(pType);
+                    if (!tnP.isNull()) tName = tnP.readUtf8String();
+                }
+                params.push(tName + " " + pName);
+            }
+
+            var retType = getMethodReturnType(mi);
+            var retName = "void";
+            if (!retType.isNull()) {
+                var rtP = getTypeName(retType);
+                if (!rtP.isNull()) retName = rtP.readUtf8String();
+            }
+
+            var funcPtr = mi.readPointer();
+            methods.push({
+                name: name,
+                returnType: retName,
+                params: params,
+                paramCount: paramCount,
+                address: funcPtr.toString()
+            });
+        }
+
+        return { className: namespace + "." + className, methods: methods };
+    },
+
+    /**
+     * Inspect a class: parent chain, fields (including static), and field values.
+     * Useful for finding singleton instances and understanding object layout.
+     */
+    getClassInfo: function (namespace, className) {
+        var mod = Process.findModuleByName(MODULE_NAME);
+        if (!mod) return { error: "module not found" };
+
+        var getDomain = new NativeFunction(mod.findExportByName("il2cpp_domain_get"), "pointer", []);
+        var getAssemblies = new NativeFunction(mod.findExportByName("il2cpp_domain_get_assemblies"), "pointer", ["pointer", "pointer"]);
+        var getImage = new NativeFunction(mod.findExportByName("il2cpp_assembly_get_image"), "pointer", ["pointer"]);
+        var classFromName = new NativeFunction(mod.findExportByName("il2cpp_class_from_name"), "pointer", ["pointer", "pointer", "pointer"]);
+        var getParent = new NativeFunction(mod.findExportByName("il2cpp_class_get_parent"), "pointer", ["pointer"]);
+        var getClassNameFn = new NativeFunction(mod.findExportByName("il2cpp_class_get_name"), "pointer", ["pointer"]);
+        var getClassNamespace = new NativeFunction(mod.findExportByName("il2cpp_class_get_namespace"), "pointer", ["pointer"]);
+        var getFields = new NativeFunction(mod.findExportByName("il2cpp_class_get_fields"), "pointer", ["pointer", "pointer"]);
+        var getFieldName = new NativeFunction(mod.findExportByName("il2cpp_field_get_name"), "pointer", ["pointer"]);
+        var getFieldType = new NativeFunction(mod.findExportByName("il2cpp_field_get_type"), "pointer", ["pointer"]);
+        var getTypeName = new NativeFunction(mod.findExportByName("il2cpp_type_get_name"), "pointer", ["pointer"]);
+        var getFieldOffset = new NativeFunction(mod.findExportByName("il2cpp_field_get_offset"), "int32", ["pointer"]);
+        var fieldStaticGetValue = new NativeFunction(mod.findExportByName("il2cpp_field_static_get_value"), "void", ["pointer", "pointer"]);
+        var typeGetAttrs = new NativeFunction(mod.findExportByName("il2cpp_type_get_attrs"), "uint32", ["pointer"]);
+
+        var domain = getDomain();
+        var sizeOut = Memory.alloc(8);
+        var assemblies = getAssemblies(domain, sizeOut);
+        var asmCount = sizeOut.readU32();
+
+        var nsPtr = Memory.allocUtf8String(namespace);
+        var clsPtr = Memory.allocUtf8String(className);
+        var foundClass = null;
+
+        for (var a = 0; a < asmCount; a++) {
+            var assembly = assemblies.add(a * Process.pointerSize).readPointer();
+            var image = getImage(assembly);
+            var klass = classFromName(image, nsPtr, clsPtr);
+            if (!klass.isNull()) { foundClass = klass; break; }
+        }
+
+        if (!foundClass) return { error: "Class not found: " + namespace + "." + className };
+
+        // Walk parent chain
+        var parents = [];
+        var p = getParent(foundClass);
+        while (!p.isNull()) {
+            var pnP = getClassNameFn(p);
+            var pnsP = getClassNamespace(p);
+            var pName = pnP.isNull() ? "?" : pnP.readUtf8String();
+            var pNs = pnsP.isNull() ? "" : pnsP.readUtf8String();
+            parents.push(pNs ? pNs + "." + pName : pName);
+            p = getParent(p);
+        }
+
+        // Get fields
+        var fields = [];
+        var iter = Memory.alloc(Process.pointerSize);
+        iter.writePointer(ptr(0));
+        var fi;
+        while (!(fi = getFields(foundClass, iter)).isNull()) {
+            var fnP = getFieldName(fi);
+            if (fnP.isNull()) continue;
+            var fName = fnP.readUtf8String();
+
+            var ft = getFieldType(fi);
+            var fTypeName = "?";
+            if (!ft.isNull()) {
+                var tnP = getTypeName(ft);
+                if (!tnP.isNull()) fTypeName = tnP.readUtf8String();
+            }
+
+            var offset = getFieldOffset(fi);
+            // Check if static: FieldAttributes.Static = 0x10
+            var attrs = ft.isNull() ? 0 : typeGetAttrs(ft);
+            var isStatic = (attrs & 0x10) !== 0;
+
+            var fieldInfo = {
+                name: fName,
+                type: fTypeName,
+                offset: offset,
+                isStatic: isStatic
+            };
+
+            // Try to read static pointer fields
+            if (isStatic) {
+                try {
+                    var valBuf = Memory.alloc(8);
+                    fieldStaticGetValue(fi, valBuf);
+                    var ptrVal = valBuf.readPointer();
+                    fieldInfo.staticValue = ptrVal.toString();
+                    fieldInfo.isNull = ptrVal.isNull();
+                } catch (e) {
+                    fieldInfo.staticReadError = e.message;
+                }
+            }
+
+            fields.push(fieldInfo);
+        }
+
+        return {
+            className: namespace + "." + className,
+            parents: parents,
+            fields: fields
+        };
+    },
+
+    /**
+     * Move the game camera to target coordinates using MapCameraMgr.MoveCameraToTargetInstantly.
+     * MapCameraMgr is a fully static class (all fields static, parent = System.Object),
+     * so MoveCameraToTargetInstantly is called as a static method.
+     *
+     * @param {number} x - World coordinate X
+     * @param {number} z - World coordinate Z
+     * @returns {{ok: boolean, ...}}
+     */
+    moveCamera: function (x, z) {
+        var mod = Process.findModuleByName(MODULE_NAME);
+        if (!mod) return { error: "module not found" };
+
+        var getDomain = new NativeFunction(mod.findExportByName("il2cpp_domain_get"), "pointer", []);
+        var getAssemblies = new NativeFunction(mod.findExportByName("il2cpp_domain_get_assemblies"), "pointer", ["pointer", "pointer"]);
+        var getImage = new NativeFunction(mod.findExportByName("il2cpp_assembly_get_image"), "pointer", ["pointer"]);
+        var classFromName = new NativeFunction(mod.findExportByName("il2cpp_class_from_name"), "pointer", ["pointer", "pointer", "pointer"]);
+        var getMethods = new NativeFunction(mod.findExportByName("il2cpp_class_get_methods"), "pointer", ["pointer", "pointer"]);
+        var getMethodName = new NativeFunction(mod.findExportByName("il2cpp_method_get_name"), "pointer", ["pointer"]);
+        var getMethodParamCount = new NativeFunction(mod.findExportByName("il2cpp_method_get_param_count"), "uint32", ["pointer"]);
+        var getMethodFlags = new NativeFunction(mod.findExportByName("il2cpp_method_get_flags"), "uint32", ["pointer", "pointer"]);
+
+        var domain = getDomain();
+        var sizeOut = Memory.alloc(8);
+        var assemblies = getAssemblies(domain, sizeOut);
+        var asmCount = sizeOut.readU32();
+
+        // Find MapCameraMgr class
+        var nsPtr = Memory.allocUtf8String("TFW.Map");
+        var clsPtr = Memory.allocUtf8String("MapCameraMgr");
+        var cameraMgrClass = null;
+
+        for (var a = 0; a < asmCount; a++) {
+            var assembly = assemblies.add(a * Process.pointerSize).readPointer();
+            var image = getImage(assembly);
+            var klass = classFromName(image, nsPtr, clsPtr);
+            if (!klass.isNull()) { cameraMgrClass = klass; break; }
+        }
+
+        if (!cameraMgrClass) return { error: "MapCameraMgr class not found" };
+
+        // Find MoveCameraToTargetInstantly method
+        var moveMethod = null;
+        var iter = Memory.alloc(Process.pointerSize);
+        iter.writePointer(ptr(0));
+        var mi;
+        while (!(mi = getMethods(cameraMgrClass, iter)).isNull()) {
+            var mnP = getMethodName(mi);
+            if (mnP.isNull()) continue;
+            var name = mnP.readUtf8String();
+            if (name === "MoveCameraToTargetInstantly") {
+                var pc = getMethodParamCount(mi);
+                if (pc === 3) { // float x, float z, Action callback
+                    moveMethod = mi;
+                    break;
+                }
+            }
+        }
+
+        if (!moveMethod) return { error: "MoveCameraToTargetInstantly method not found" };
+
+        var funcAddr = moveMethod.readPointer();
+
+        // Check if static: MethodAttributes.Static = 0x0010
+        var iflags = Memory.alloc(4);
+        var flags = getMethodFlags(moveMethod, iflags);
+        var isStatic = (flags & 0x10) !== 0;
+
+        console.log("[frida_hook] MoveCameraToTargetInstantly at " + funcAddr +
+                    " static=" + isStatic + " flags=0x" + flags.toString(16));
+
+        var xFloat = x;
+        var zFloat = z;
+
+        try {
+            if (isStatic) {
+                // Static: (float x, float z, Action callback, MethodInfo*)
+                var moveFunc = new NativeFunction(funcAddr, "void", ["float", "float", "pointer", "pointer"]);
+                moveFunc(xFloat, zFloat, ptr(0), moveMethod);
+            } else {
+                // Instance: (this, float x, float z, Action callback, MethodInfo*)
+                // Pass NULL for this — all state is static anyway
+                var moveFunc = new NativeFunction(funcAddr, "void", ["pointer", "float", "float", "pointer", "pointer"]);
+                moveFunc(ptr(0), xFloat, zFloat, ptr(0), moveMethod);
+            }
+            console.log("[frida_hook] MoveCameraToTargetInstantly(" + xFloat + ", " + zFloat + ") called OK");
+            return {
+                ok: true,
+                address: funcAddr.toString(),
+                isStatic: isStatic,
+                x: xFloat,
+                z: zFloat
+            };
+        } catch (e) {
+            return {
+                error: "Call failed: " + e.message,
+                address: funcAddr.toString(),
+                isStatic: isStatic
+            };
+        }
+    },
+
+    /**
+     * Search IL2CPP classes for names matching a keyword (case-insensitive).
+     * Returns class names + their methods.
+     */
+    searchClasses: function (keyword) {
+        var mod = Process.findModuleByName(MODULE_NAME);
+        if (!mod) return { error: "module not found" };
+
+        var getDomain = new NativeFunction(mod.findExportByName("il2cpp_domain_get"), "pointer", []);
+        var getAssemblies = new NativeFunction(mod.findExportByName("il2cpp_domain_get_assemblies"), "pointer", ["pointer", "pointer"]);
+        var getImage = new NativeFunction(mod.findExportByName("il2cpp_assembly_get_image"), "pointer", ["pointer"]);
+        var getImageName = new NativeFunction(mod.findExportByName("il2cpp_image_get_name"), "pointer", ["pointer"]);
+        var getClassCount = new NativeFunction(mod.findExportByName("il2cpp_image_get_class_count"), "uint32", ["pointer"]);
+        var getClass = new NativeFunction(mod.findExportByName("il2cpp_image_get_class"), "pointer", ["pointer", "uint32"]);
+        var getClassName = new NativeFunction(mod.findExportByName("il2cpp_class_get_name"), "pointer", ["pointer"]);
+        var getClassNamespace = new NativeFunction(mod.findExportByName("il2cpp_class_get_namespace"), "pointer", ["pointer"]);
+        var getMethods = new NativeFunction(mod.findExportByName("il2cpp_class_get_methods"), "pointer", ["pointer", "pointer"]);
+        var getMethodName = new NativeFunction(mod.findExportByName("il2cpp_method_get_name"), "pointer", ["pointer"]);
+
+        var domain = getDomain();
+        var sizeOut = Memory.alloc(8);
+        var assemblies = getAssemblies(domain, sizeOut);
+        var asmCount = sizeOut.readU32();
+
+        var kw = keyword.toLowerCase();
+        var results = [];
+
+        for (var a = 0; a < asmCount && results.length < 50; a++) {
+            var assembly = assemblies.add(a * Process.pointerSize).readPointer();
+            var image = getImage(assembly);
+            var classCount = getClassCount(image);
+
+            for (var c = 0; c < classCount && results.length < 50; c++) {
+                var klass = getClass(image, c);
+                if (klass.isNull()) continue;
+
+                var nameP = getClassName(klass);
+                if (nameP.isNull()) continue;
+                var name = nameP.readUtf8String();
+
+                if (name.toLowerCase().indexOf(kw) === -1) continue;
+
+                var nsP = getClassNamespace(klass);
+                var ns = nsP.isNull() ? "" : nsP.readUtf8String();
+
+                // Get methods
+                var methods = [];
+                var iter = Memory.alloc(Process.pointerSize);
+                iter.writePointer(ptr(0));
+                var mi;
+                while (!(mi = getMethods(klass, iter)).isNull()) {
+                    var mnP = getMethodName(mi);
+                    if (!mnP.isNull()) {
+                        methods.push(mnP.readUtf8String());
+                    }
+                }
+
+                results.push({
+                    namespace: ns,
+                    name: name,
+                    methods: methods
+                });
+            }
+        }
+
+        return { count: results.length, classes: results };
     }
 };
 

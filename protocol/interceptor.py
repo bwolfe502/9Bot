@@ -327,6 +327,69 @@ class ProtocolInterceptor:
         with self._stats_lock:
             return dict(self._msg_type_counts_send)
 
+    def inject_send(self, msg_id: int, payload: bytes) -> dict:
+        """Queue a message substitution on the next outgoing MakeByte call.
+
+        The next outgoing message will have its msgId and payload replaced
+        in-place, reusing the game's own Stream and byte array.
+
+        Returns dict with ``ok`` and ``queued`` keys.
+        """
+        if self._frida_script is None:
+            return {"ok": False, "error": "No Frida script loaded"}
+        try:
+            result = self._frida_script.exports_sync.inject_send(
+                msg_id, list(payload), True
+            )
+            return result
+        except Exception as e:
+            log.exception("inject_send failed")
+            return {"ok": False, "error": str(e)}
+
+    def search_classes(self, keyword: str) -> dict:
+        """Search IL2CPP classes matching keyword. Returns dict with results."""
+        if self._frida_script is None:
+            return {"error": "No Frida script loaded"}
+        try:
+            return self._frida_script.exports_sync.search_classes(keyword)
+        except Exception as e:
+            log.exception("search_classes failed")
+            return {"error": str(e)}
+
+    def get_method_signatures(self, namespace: str, class_name: str) -> dict:
+        """Get detailed method signatures for an IL2CPP class."""
+        if self._frida_script is None:
+            return {"error": "No Frida script loaded"}
+        try:
+            return self._frida_script.exports_sync.get_method_signatures(
+                namespace, class_name
+            )
+        except Exception as e:
+            log.exception("get_method_signatures failed")
+            return {"error": str(e)}
+
+    def get_class_info(self, namespace: str, class_name: str) -> dict:
+        """Inspect an IL2CPP class: parent chain, fields, static values."""
+        if self._frida_script is None:
+            return {"error": "No Frida script loaded"}
+        try:
+            return self._frida_script.exports_sync.get_class_info(
+                namespace, class_name
+            )
+        except Exception as e:
+            log.exception("get_class_info failed")
+            return {"error": str(e)}
+
+    def move_camera(self, x: float, z: float) -> dict:
+        """Move the game camera to (x, z) via MapCameraMgr."""
+        if self._frida_script is None:
+            return {"error": "No Frida script loaded"}
+        try:
+            return self._frida_script.exports_sync.move_camera(x, z)
+        except Exception as e:
+            log.exception("move_camera failed")
+            return {"error": str(e)}
+
     def on_message(self, msg_name: str, handler: Callable[..., Any]) -> None:
         """Register *handler* for a specific decoded message type."""
         self._bus.on_message(msg_name, handler)
@@ -814,3 +877,33 @@ class InterceptorThread(threading.Thread):
         if self._interceptor is not None:
             return self._interceptor.message_type_counts_send
         return None
+
+    def inject_send(self, msg_id: int, payload: bytes) -> dict:
+        """Proxy inject_send to the underlying interceptor."""
+        if self._interceptor is not None:
+            return self._interceptor.inject_send(msg_id, payload)
+        return {"ok": False, "error": "No active interceptor"}
+
+    def search_classes(self, keyword: str) -> dict:
+        """Proxy search_classes to the underlying interceptor."""
+        if self._interceptor is not None:
+            return self._interceptor.search_classes(keyword)
+        return {"error": "No active interceptor"}
+
+    def get_method_signatures(self, namespace: str, class_name: str) -> dict:
+        """Proxy get_method_signatures to the underlying interceptor."""
+        if self._interceptor is not None:
+            return self._interceptor.get_method_signatures(namespace, class_name)
+        return {"error": "No active interceptor"}
+
+    def get_class_info(self, namespace: str, class_name: str) -> dict:
+        """Proxy get_class_info to the underlying interceptor."""
+        if self._interceptor is not None:
+            return self._interceptor.get_class_info(namespace, class_name)
+        return {"error": "No active interceptor"}
+
+    def move_camera(self, x: float, z: float) -> dict:
+        """Proxy move_camera to the underlying interceptor."""
+        if self._interceptor is not None:
+            return self._interceptor.move_camera(x, z)
+        return {"error": "No active interceptor"}

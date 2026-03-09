@@ -1266,6 +1266,126 @@ def create_app():
             "counts": counts,
         })
 
+    @app.route("/api/territory-buildings", methods=["GET"])
+    def api_territory_buildings():
+        """Dump all territory buildings with type and cfgId."""
+        device_id = request.args.get("device_id")
+        if not device_id:
+            device_id = _cached_devices()[0][0] if _cached_devices()[0] else None
+        if not device_id:
+            return jsonify({"error": "no device"}), 400
+        from startup import get_protocol_territory_grid, _get_device_state
+        grid = get_protocol_territory_grid(device_id)
+        # Also try persistent building types even if live grid is stale
+        state = _get_device_state(device_id)
+        persistent = state.building_types if state else {}
+        if grid is None and not persistent:
+            return jsonify({"error": "no territory data — open territory screen to fetch"}), 404
+        buildings = []
+        if grid:
+            for (row, col), val in sorted(grid.items()):
+                buildings.append({
+                    "row": row, "col": col,
+                    "owner": val[0], "contester": val[1],
+                    "has_defender": val[2],
+                    "type": val[3] if len(val) > 3 else 0,
+                    "cfgId": val[4] if len(val) > 4 else 0,
+                })
+        # Summary of unique types from persistent data
+        from collections import Counter
+        type_counts = Counter(v for v in persistent.values())
+        return jsonify({
+            "device_id": device_id,
+            "total_live": len(buildings),
+            "total_persistent": len(persistent),
+            "type_summary": [{"type": t, "cfgId": c, "count": n}
+                             for (t, c), n in type_counts.most_common()],
+            "buildings": buildings,
+            "persistent": {f"{r},{c}": {"type": t, "cfgId": c}
+                          for (r, c), (t, c) in sorted(persistent.items())},
+        })
+
+    @app.route("/api/search-classes", methods=["GET"])
+    def api_search_classes():
+        """Search IL2CPP classes by keyword."""
+        device_id = request.args.get("device_id")
+        keyword = request.args.get("q", "")
+        if not device_id or not keyword:
+            return jsonify({"error": "device_id and q required"}), 400
+        from startup import search_il2cpp_classes
+        return jsonify(search_il2cpp_classes(device_id, keyword))
+
+    @app.route("/api/method-signatures", methods=["GET"])
+    def api_method_signatures():
+        """Get method signatures for an IL2CPP class."""
+        device_id = request.args.get("device_id")
+        namespace = request.args.get("namespace", "")
+        class_name = request.args.get("class", "")
+        if not device_id or not class_name:
+            return jsonify({"error": "device_id and class required"}), 400
+        from startup import get_il2cpp_method_signatures
+        return jsonify(get_il2cpp_method_signatures(device_id, namespace, class_name))
+
+    @app.route("/api/inject-view", methods=["POST"])
+    def api_inject_view():
+        """Inject a WildMapViewReq to move camera to coordinates."""
+        device_id = request.json.get("device_id")
+        display_x = request.json.get("x")
+        display_z = request.json.get("z")
+        if not device_id or display_x is None or display_z is None:
+            return jsonify({"error": "device_id, x, z required"}), 400
+
+        x = int(display_x) * 1000
+        z = int(display_z) * 1000
+
+        # Build WildMapViewReq protobuf
+        def _varint(v):
+            r = bytearray()
+            if v < 0:
+                v += (1 << 32)
+            while v > 127:
+                r.append((v & 0x7F) | 0x80)
+                v >>= 7
+            r.append(v & 0x7F)
+            return bytes(r)
+
+        coord = b'\x08' + _varint(x) + b'\x10' + _varint(z)
+        payload = (b'\x0a' + _varint(len(coord)) + coord +
+                   b'\x10' + _varint(15) +   # xSpan
+                   b'\x18' + _varint(15) +   # zSpan
+                   b'\x20' + _varint(0))     # lod
+
+        from protocol.registry import wire_id
+        msg_id = wire_id("WildMapViewReq")
+
+        from startup import inject_protocol_send
+        result = inject_protocol_send(device_id, msg_id, payload)
+        return jsonify({"coords": {"x": x, "z": z}, "result": result})
+
+    @app.route("/api/move-camera", methods=["POST"])
+    def api_move_camera():
+        """Move the game camera to coordinates via IL2CPP MapCameraMgr call."""
+        device_id = request.json.get("device_id")
+        x = request.json.get("x")
+        z = request.json.get("z")
+        if not device_id or x is None or z is None:
+            return jsonify({"error": "device_id, x, z required"}), 400
+        from startup import move_game_camera
+        result = move_game_camera(device_id, float(x), float(z))
+        return jsonify(result)
+
+    @app.route("/api/class-info")
+    def api_class_info():
+        """Inspect an IL2CPP class: parent chain, fields, static values."""
+        device_id = request.args.get("device_id")
+        namespace = request.args.get("namespace", "")
+        class_name = request.args.get("class")
+        if not device_id or not class_name:
+            return jsonify({"error": "device_id and class required"}), 400
+        from startup import get_il2cpp_class_info
+        result = get_il2cpp_class_info(device_id, namespace, class_name)
+        return jsonify(result)
+
     @app.route("/api/patch-apk", methods=["POST"])
     def api_patch_apk():
         """Start APK patching for a device."""
