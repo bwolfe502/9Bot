@@ -530,9 +530,10 @@ Current version: see `version.txt`
 
 | Branch | Purpose | Rules |
 |--------|---------|-------|
-| `master` | Release branch — tagged releases only | Never commit directly. Only receives merges from `dev`. |
-| `dev` | Integration branch — always working | Day-to-day commits go here. Must stay buildable. |
-| `feature/*` | Experimental/risky work | Optional. Use when a change might be thrown away. Merge or delete when done. |
+| `master` | Release branch — tagged releases only | Never commit directly. Only receives merges from `stable`. |
+| `stable` | Integration branch — tested, release-ready work | Cherry-pick proven features here. Must stay buildable. |
+| `dev` | Shoda's experimental branch — cutting-edge, untested | Good work but not release-ready. Cherry-pick into `stable` when proven. |
+| `feature/*` | WIP work | Optional. Merge into `stable` when tested and ready. |
 
 ### Commits
 
@@ -545,31 +546,31 @@ Current version: see `version.txt`
 ### Releasing to master
 
 ```bash
-# 1. On dev: bump version and commit
+# 1. On stable: bump version and commit
 #    Edit version.txt → X.Y.Z
 git add version.txt
 git commit -m "chore: bump version to X.Y.Z"
 
 # 2. Merge into master with a release message
 git checkout master
-git merge --no-ff dev -m "release: vX.Y.Z"
+git merge --no-ff stable -m "release: vX.Y.Z"
 
 # 3. Tag and push
 git tag vX.Y.Z
 git push origin master --tags
 
-# 4. Return to dev
-git checkout dev
+# 4. Return to stable
+git checkout stable
 ```
 
 Master log should read like a changelog — one `release: vX.Y.Z` entry per release.
 
 ### Rules
 
-- **No hotfixes on master.** Fix on `dev`, then release.
-- **No `Merge branch 'dev'` messages.** Always use `--no-ff` with an explicit `release:` message.
+- **No hotfixes on master.** Fix on `stable`, then release.
+- **No bare `Merge branch` messages.** Always use `--no-ff` with an explicit `release:` message.
 - **Delete stale branches** after merging. Don't let old `feature/*` branches accumulate.
-- **Don't rewrite published history.** No force-push to `master` or `dev`.
+- **Don't rewrite published history.** No force-push to `master` or `stable`.
 
 ### Claude Enforcement (MANDATORY)
 
@@ -579,10 +580,10 @@ needs Claude to be the gatekeeper.
 **Before any commit:**
 - If the working tree has unrelated staged changes, STOP and ask the user to separate them.
 - If a commit message bundles multiple unrelated changes, refuse and suggest splitting it.
-- If on `master`, refuse the commit entirely — redirect to `dev`.
+- If on `master`, refuse the commit entirely — redirect to `stable`.
 
 **When the user says "release", "push to master", "merge to master", or similar:**
-1. Run `git status` and `git log --oneline dev` to audit what's on dev.
+1. Run `git status` and `git log --oneline stable` to audit what's on stable.
 2. Present a clear list of ALL uncommitted changes AND all commits since the last release.
 3. Ask the user to explicitly confirm which changes are release-ready vs. not ready.
 4. If anything is WIP/experimental (e.g. protocol features, phantom clash), flag it and
