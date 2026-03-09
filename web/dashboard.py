@@ -35,7 +35,7 @@ from navigation import check_screen
 from vision import load_screenshot, restart_game, adb_tap
 from troops import troops_avail, heal_all, get_troop_status
 from actions import (attack, phantom_clash_attack, reinforce_throne, target,
-                     check_quests, teleport, teleport_benchmark,
+                     check_quests, teleport,
                      rally_titan, rally_eg,
                      search_eg_reset, join_rally, join_war_rallies,
                      reset_quest_tracking, reset_rally_blacklist,
@@ -86,7 +86,6 @@ TASK_FUNCTIONS = {
     "Diagnose Grid": diagnose_grid,
     "Scan Corner Coords": scan_test_squares,
     "Test Teleport": lambda dev: teleport(dev, dry_run=True),
-    "Teleport Benchmark": teleport_benchmark,
     "Mine Mithril": mine_mithril,
     "Gather Gold": gather_gold,
     "Reinforce Tower": occupy_tower,
