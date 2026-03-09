@@ -35,7 +35,7 @@ from navigation import check_screen
 from vision import load_screenshot, restart_game, adb_tap
 from troops import troops_avail, heal_all, get_troop_status
 from actions import (attack, phantom_clash_attack, reinforce_throne, target,
-                     check_quests, teleport, teleport_benchmark,
+                     check_quests, teleport,
                      rally_titan, rally_eg,
                      search_eg_reset, join_rally, join_war_rallies,
                      reset_quest_tracking, reset_rally_blacklist,
@@ -86,7 +86,6 @@ TASK_FUNCTIONS = {
     "Diagnose Grid": diagnose_grid,
     "Scan Corner Coords": scan_test_squares,
     "Test Teleport": lambda dev: teleport(dev, dry_run=True),
-    "Teleport Benchmark": teleport_benchmark,
     "Mine Mithril": mine_mithril,
     "Gather Gold": gather_gold,
     "Reinforce Tower": occupy_tower,
@@ -103,8 +102,12 @@ AUTO_MODES_BL = [
          "help": "Scans the territory grid for enemy towers adjacent to your territory, teleports to them, and attacks. Owned passes must be set on the Territory Grid page or unreachable zones will be skipped. Configure your team and enemies in Settings."},
         {"key": "auto_reinforce",      "label": "Reinforce Throne",
          "help": "Periodically sends a troop to reinforce your alliance throne in territory war. The throne must be centered on screen before starting."},
+        {"key": "auto_reinforce_target", "label": "Reinforce Target",
+         "help": "Navigates to the enemy-marked target and reinforces it. If the enemy owns it, joins war rallies instead. Set a single Enemy marker on the pass or tower."},
         {"key": "auto_reinforce_ally", "label": "Reinforce Ally",
          "help": "Automatically reinforces nearby alliance castles in order of power level. Requires protocol to be enabled. Max distance can be changed in Settings."},
+        {"key": "auto_war_rallies",  "label": "War Rallies",
+         "help": "Continuously joins castle, pass, and tower rallies on the war screen. Uses the same join logic as Auto Quest rally joining."},
     ]},
     {"group": "Farming", "modes": [
         {"key": "auto_quest",     "label": "Auto Quest",
@@ -153,7 +156,8 @@ ONESHOT_DEBUG = ["Check Screen", "Check Troops", "Diagnose Grid",
 
 from runners import (run_auto_quest, run_auto_titan, run_auto_groot,
                      run_auto_pass, run_auto_occupy, run_auto_reinforce,
-                     run_auto_reinforce_ally,
+                     run_auto_reinforce_target, run_auto_reinforce_ally,
+                     run_auto_war_rallies,
                      run_auto_mithril, run_auto_gold, run_auto_esb,
                      run_debug_occupy,
                      run_once, run_repeat,
@@ -177,12 +181,14 @@ AUTO_RUNNERS = {
     "auto_quest":     lambda dev, se, s: run_auto_quest(dev, se),
     "auto_titan":     lambda dev, se, s: run_auto_titan(dev, se, s.get("titan_interval", 30), s.get("variation", 0)),
     "auto_groot":     lambda dev, se, s: run_auto_groot(dev, se, s.get("groot_interval", 30), s.get("variation", 0)),
-    "auto_pass":      lambda dev, se, s: run_auto_pass(dev, se, s.get("pass_mode", "Rally Joiner"), s.get("pass_interval", 30), s.get("variation", 0)),
+    "auto_pass":      lambda dev, se, s: run_auto_pass(dev, se, s.get("pass_mode", "Rally Joiner"), s.get("reinforce_interval", 30), s.get("variation", 0)),
     "auto_occupy":    lambda dev, se, s: run_auto_occupy(dev, se),
-    "auto_reinforce":      lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
-    "auto_reinforce_ally": lambda dev, se, s: run_auto_reinforce_ally(dev, se),
+    "auto_reinforce":        lambda dev, se, s: run_auto_reinforce(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
+    "auto_reinforce_target": lambda dev, se, s: run_auto_reinforce_target(dev, se, s.get("reinforce_interval", 30), s.get("variation", 0)),
+    "auto_reinforce_ally":   lambda dev, se, s: run_auto_reinforce_ally(dev, se),
     "auto_mithril":        lambda dev, se, s: run_auto_mithril(dev, se),
     "auto_gold":      lambda dev, se, s: run_auto_gold(dev, se),
+    "auto_war_rallies": lambda dev, se, s: run_auto_war_rallies(dev, se, s.get("war_rally_interval", 10), s.get("variation", 0)),
     "auto_esb":       lambda dev, se, s: run_auto_esb(dev, se, 5, s.get("variation", 0)),
     "debug_occupy":   lambda dev, se, s: run_debug_occupy(dev, se),
 }
@@ -502,8 +508,6 @@ def create_app():
                                task_count=len(active_tasks),
                                auto_groups=auto_groups,
                                mode=mode,
-                               oneshot_farm=ONESHOT_FARM,
-                               oneshot_war=ONESHOT_WAR,
                                active_tasks=active_tasks,
                                local_ip=get_local_ip(),
                                relay_url=relay_url,
@@ -564,6 +568,8 @@ def create_app():
                                devices=device_info,
                                tasks=active_tasks,
                                debug_actions=ONESHOT_DEBUG,
+                               oneshot_farm=ONESHOT_FARM,
+                               oneshot_war=ONESHOT_WAR,
                                log_lines=lines,
                                training_stats=training_stats,
                                protocol_enabled=settings.get("protocol_enabled", False),
@@ -2217,7 +2223,6 @@ def create_app():
         # Filter by shared permissions
         dev_settings = settings.get("device_settings", {}).get(device, {})
         allowed_modes = dev_settings.get("shared_modes")  # None = all
-        allowed_actions = dev_settings.get("shared_actions")  # None = all
 
         if allowed_modes is not None:
             allowed_set = set(allowed_modes)
@@ -2227,21 +2232,12 @@ def create_app():
                 if filtered:
                     auto_groups.append({"group": grp["group"], "modes": filtered})
 
-        farm = list(ONESHOT_FARM)
-        war = list(ONESHOT_WAR)
-        if allowed_actions is not None:
-            allowed_act = set(allowed_actions)
-            farm = [a for a in farm if a in allowed_act]
-            war = [a for a in war if a in allowed_act]
-
         return render_template("index.html",
                                devices=device_info,
                                tasks=active_tasks,
                                task_count=len(active_tasks),
                                auto_groups=auto_groups,
                                mode=mode,
-                               oneshot_farm=farm,
-                               oneshot_war=war,
                                active_tasks=active_tasks,
                                local_ip=get_local_ip(),
                                relay_url=None,

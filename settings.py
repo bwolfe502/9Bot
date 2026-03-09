@@ -27,7 +27,7 @@ DEVICE_OVERRIDABLE_KEYS = {
     "tower_quest_enabled", "eg_rally_own", "titan_rally_own", "mithril_interval",
     "protocol_enabled", "home_x", "home_z", "max_reinforce_distance",
     "variation", "titan_interval", "groot_interval", "reinforce_interval",
-    "pass_interval", "pass_mode",
+    "pass_mode",
 }
 
 # ── Default territory zone data ──
@@ -76,7 +76,6 @@ DEFAULTS = {
     "titan_interval": 30,
     "groot_interval": 30,
     "reinforce_interval": 30,
-    "pass_interval": 30,
     "pass_mode": "Rally Joiner",
     "my_team": "red",
     "enemy_teams": [],
@@ -124,10 +123,15 @@ def load_settings():
         # Strip unknown keys
         unknown = set(saved.keys()) - set(DEFAULTS.keys()) - _EXTRA_ALLOWED
         if unknown:
-            _log.warning("Removing %d unknown settings key(s): %s",
-                         len(unknown), ", ".join(sorted(unknown)))
+            _log.info("Removing %d unknown settings key(s): %s",
+                      len(unknown), ", ".join(sorted(unknown)))
             for k in unknown:
                 del saved[k]
+            # Persist the cleanup so the warning doesn't repeat every load
+            try:
+                save_settings(saved)
+            except Exception:
+                pass  # best-effort — will retry next startup
         merged = {**DEFAULTS, **saved}
         merged, warnings = validate_settings(merged, DEFAULTS)
         for w in warnings:

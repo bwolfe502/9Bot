@@ -59,6 +59,8 @@ _bots: dict[str, web.WebSocketResponse] = {}
 _pending: dict[str, dict[str, asyncio.Future]] = {}
 # {bot_name: {request_id: asyncio.Queue}}  — per-bot active streams
 _streams: dict[str, dict[str, asyncio.Queue]] = {}
+# {bot_name: [{"hash": str, "name": str, "online": bool}, ...]}  — last reported device list
+_bot_devices: dict[str, list[dict]] = {}
 
 # ---------------------------------------------------------------------------
 # HTML pages (inline, no external files needed)
@@ -204,6 +206,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     finally:
         if _bots.get(bot_name) is ws:
             del _bots[bot_name]
+        _bot_devices.pop(bot_name, None)
         _cancel_pending(bot_name, "Bot disconnected")
         _cancel_all_streams(bot_name)
         log.info("Bot '%s' disconnected", bot_name)
@@ -258,6 +261,12 @@ async def _handle_device_list(bot_name: str, data: dict) -> None:
         import portal_db
         devices = data.get("devices", [])
         reported_hashes = set()
+        # Store full device list in memory for portal dashboard
+        _bot_devices[bot_name] = [
+            {"hash": d.get("hash", "").strip(), "name": d.get("name", ""),
+             "online": d.get("online", True)}
+            for d in devices if d.get("hash", "").strip()
+        ]
         for dev in devices:
             dh = dev.get("hash", "").strip()
             if not dh:
@@ -831,7 +840,7 @@ def create_app() -> web.Application:
         import portal_db
         import portal_routes
         portal_db.init_db()
-        portal_routes.setup_portal_routes(app, _bots)
+        portal_routes.setup_portal_routes(app, _bots, _bot_devices)
         log.info("Portal enabled (db: %s)", portal_db.DB_PATH)
     except ImportError as e:
         log.warning("Portal disabled (missing dependency: %s)", e)

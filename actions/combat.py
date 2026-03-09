@@ -7,19 +7,14 @@ Key exports:
     phantom_clash_attack — Phantom Clash mode attack
     reinforce_throne    — reinforce the throne
     target              — target menu sequence
-    teleport            — teleport to random location
-    teleport_benchmark  — A/B test harness for teleport strategies
+    teleport            — teleport with guided + random fallback
     _detect_player_at_eg — player detection near EG positions
 """
 
 import cv2
-import json
 import numpy as np
-import os
 import time
 import random
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
 
 import config
 from config import Screen
@@ -194,6 +189,71 @@ def reinforce_throne(device):
         tap_image("depart.png", device)
     else:
         log.warning("Not enough troops available (have %d, need more than %d)", troops, min_troops)
+
+@timed_action("reinforce_target")
+def reinforce_target(device):
+    """Tap the target (pass/tower) after navigation and reinforce or detect enemy ownership.
+
+    Assumes the camera is already centered on the target (called after target()).
+    Returns 'reinforce' if we owned and departed, 'attack' if enemy owns it, False on failure.
+
+    Handles the stacked-entity picker: when multiple entities overlap the tap
+    point, the game shows a vertical list instead of the action menu. If neither
+    reinforce nor attack is found within 3s, we save a debug screenshot, dismiss
+    the picker by tapping off-center, and re-tap the target.
+    """
+    log = get_logger("actions", device)
+
+    if config.get_device_config(device, "auto_heal"):
+        heal_all(device)
+    troops = troops_avail(device)
+    if troops <= config.get_device_config(device, "min_troops"):
+        log.warning("Not enough troops for reinforce target")
+        return False
+
+    _MAX_RETAPS = 3
+    for attempt in range(_MAX_RETAPS):
+        adb_tap(device, 560, 675)
+        time.sleep(1)
+
+        start_time = time.time()
+        timeout = 3 if attempt < _MAX_RETAPS - 1 else 10  # short poll, long on last try
+        while time.time() - start_time < timeout:
+            screen = load_screenshot(device)
+            if screen is None:
+                time.sleep(0.5)
+                continue
+
+            if find_image(screen, "reinforce_button.png", threshold=0.5):
+                log.info("Found reinforce button — reinforcing target")
+                tap_image("reinforce_button.png", device, threshold=0.5)
+                time.sleep(1)
+                tap_image("depart.png", device)
+                return "reinforce"
+
+            if find_image(screen, "attack_button.png", threshold=0.7):
+                log.info("Found attack button — enemy owns target, closing menu")
+                adb_tap(device, 560, 675)
+                time.sleep(0.5)
+                return "attack"
+
+            time.sleep(0.5)
+
+        if attempt < _MAX_RETAPS - 1:
+            # Likely stacked-entity picker — save screenshot for diagnosis, dismiss and retry
+            save_failure_screenshot(device, "reinforce_target_picker")
+            log.info("No action button after %ds (attempt %d/%d) — dismissing picker and retrying",
+                     timeout, attempt + 1, _MAX_RETAPS)
+            adb_tap(device, 200, 400)  # tap off-center to dismiss picker
+            time.sleep(1)
+
+    log.warning("Neither reinforce nor attack button found after %d attempts, closing menu",
+                _MAX_RETAPS)
+    save_failure_screenshot(device, "reinforce_target_no_button")
+    adb_tap(device, 560, 675)
+    time.sleep(0.5)
+    return False
+
 
 @timed_action("target")
 def target(device):
@@ -372,48 +432,22 @@ def _detect_player_at_eg(screen, x, y, box_size=200, tolerance=25):
 
     return blue_matches >= 5 and gold_matches >= 3
 
-@timed_action("teleport")
-def teleport(device, dry_run=False):
-    """Teleport to a random location on the map.
+def _teleport_random(device, dry_run=False, stop_check=None):
+    """Random camera panning teleport (original algorithm).
 
-    Pans camera randomly, long-presses to open context menu, taps TELEPORT,
-    then checks for a green boundary circle (valid location). Repeats up to
-    15 attempts or 90 seconds.
-
-    If dry_run=True, finds a valid green spot but does NOT tap USE — saves a
-    screenshot and cancels instead.  Use for testing without consuming a teleport.
+    Assumes troop/heal/screen checks already done by teleport().
     """
     log = get_logger("actions", device)
-    if not dry_run:
-        log.debug("Checking if all troops are home before teleporting...")
-        if not all_troops_home(device):
-            log.warning("Troops are not home! Cannot teleport. Aborting.")
-            return False
-        if config.get_device_config(device, "auto_heal"):
-            heal_all(device)
-    else:
-        log.info("Teleport DRY RUN — skipping troop check and heal")
-
-    if check_screen(device) != Screen.MAP:
-        log.warning("Not on map_screen, can't teleport")
-        return False
-
-    log.debug("Starting teleport sequence...")
 
     # When called from auto-occupy, the camera is centered on the tower we
     # just attacked.  Tapping it opens its info dialog, which auto-pans the
     # camera so the tower moves up and the view centers on the empty area
     # below — a spot more likely to be valid for teleporting.
-    # In other contexts this tap may hit nothing (harmless) or an unrelated
-    # building (the dialog is dismissed next).  Future: make setup
-    # context-aware.
     logged_tap(device, 540, 960, "tp_start")
     time.sleep(2)
 
-    # Load dead image once for reuse
     dead_img = get_template("elements/dead.png")
 
-    # Check for dead before continuing
     screen = load_screenshot(device)
     if _check_dead(screen, dead_img, device):
         return False
@@ -428,9 +462,10 @@ def teleport(device, dry_run=False):
     max_attempts = 15
 
     while time.time() - start_time < 90 and attempt_count < max_attempts:
+        if stop_check and stop_check():
+            return False
         attempt_count += 1
 
-        # Pan camera randomly (horizontal + vertical)
         distance = random.randint(200, 400)
         dir_x = random.choice([-1, 1])
         dir_y = random.choice([-1, 0, 1])
@@ -443,10 +478,9 @@ def teleport(device, dry_run=False):
         time.sleep(1)
 
         result, ss_path, elapsed = _check_green_at_current_position(
-            device, dead_img)
+            device, dead_img, stop_check=stop_check)
 
         if result is None:
-            # Dead detected — abort
             return False
 
         if result:
@@ -474,347 +508,164 @@ def teleport(device, dry_run=False):
     return False
 
 
-# ============================================================
-# TELEPORT BENCHMARK — A/B Test Harness
-# ============================================================
+def _teleport_guided(device, target_square, territory_grid, dry_run=False,
+                     stop_check=None):
+    """Grid-guided teleport — use territory grid to position camera deterministically.
 
-@dataclass
-class TeleportAttempt:
-    """Single attempt within a trial."""
-    strategy: str
-    attempt_num: int
-    success: bool
-    elapsed_s: float
-    screenshot_path: str = None
+    Tries known-good positions from memory first, then own-team squares
+    sorted by Manhattan distance from the target.
 
-
-@dataclass
-class TeleportTrial:
-    """One complete trial (up to max_attempts or timeout)."""
-    strategy: str
-    trial_num: int
-    success: bool
-    total_attempts: int
-    total_time_s: float
-    timestamp: str = ""
-    attempts: list = field(default_factory=list)
-
-
-# -- Strategy functions -----------------------------------------------
-# Each takes (device, attempt_num) and positions the camera for a check.
-# They must NOT call _check_green_at_current_position — that's done by
-# _run_trial after the strategy returns.
-
-def _strategy_random_pan(device, attempt_num):
-    """Baseline: random 200-400px swipe (current teleport behavior)."""
-    distance = random.randint(200, 400)
-    dir_x = random.choice([-1, 1])
-    dir_y = random.choice([-1, 0, 1])
-    end_x = max(100, min(980, 540 + distance * dir_x))
-    end_y = max(500, min(1400, 960 + distance * dir_y))
-    adb_swipe(device, 540, 960, end_x, end_y, 300)
-    time.sleep(1)
-
-
-def _strategy_big_pan(device, attempt_num):
-    """Larger random swipe: 400-700px to cover more ground per attempt."""
-    distance = random.randint(400, 700)
-    dir_x = random.choice([-1, 1])
-    dir_y = random.choice([-1, 0, 1])
-    end_x = max(100, min(980, 540 + distance * dir_x))
-    end_y = max(300, min(1600, 960 + distance * dir_y))
-    adb_swipe(device, 540, 960, end_x, end_y, 300)
-    time.sleep(1)
-
-
-# 8 compass directions for edge_pan
-_COMPASS_DIRS = [
-    (0, -1),    # N
-    (1, -1),    # NE
-    (1, 0),     # E
-    (1, 1),     # SE
-    (0, 1),     # S
-    (-1, 1),    # SW
-    (-1, 0),    # W
-    (-1, -1),   # NW
-]
-
-def _strategy_edge_pan(device, attempt_num):
-    """Cycle through 8 compass directions with 350-600px swipe."""
-    dx, dy = _COMPASS_DIRS[attempt_num % len(_COMPASS_DIRS)]
-    distance = random.randint(350, 600)
-    end_x = max(100, min(980, 540 + distance * dx))
-    end_y = max(300, min(1600, 960 + distance * dy))
-    adb_swipe(device, 540, 960, end_x, end_y, 300)
-    time.sleep(1)
-
-
-def _strategy_territory_guided(device, attempt_num):
-    """Navigate to TERRITORY, tap a random own/neutral square, return to MAP.
-
-    The tap moves the camera to that tower's location — an area likely to
-    be own territory with open space for teleporting.
+    Returns True on success, False if all candidates exhausted (caller
+    falls through to random).
     """
     log = get_logger("actions", device)
-    from config import GRID_WIDTH, GRID_HEIGHT, THRONE_SQUARES
-
-    if not navigate(Screen.TERRITORY, device):
-        log.warning("territory_guided: failed to navigate to TERRITORY, "
-                    "falling back to random pan")
-        if navigate(Screen.MAP, device):
-            _strategy_random_pan(device, attempt_num)
-        return
-
-    # Pick a random non-throne square
-    row = random.randint(0, GRID_HEIGHT - 1)
-    col = random.randint(0, GRID_WIDTH - 1)
-    while (row, col) in THRONE_SQUARES:
-        row = random.randint(0, GRID_HEIGHT - 1)
-        col = random.randint(0, GRID_WIDTH - 1)
-
-    # Import here to avoid circular import at module level
     from territory import _get_square_center
-    sx, sy = _get_square_center(row, col)
-    log.debug("territory_guided: tapping square (%d, %d) at pixel (%d, %d)",
-              row, col, sx, sy)
-    adb_tap(device, sx, sy)
-    time.sleep(2)
+    from teleport_memory import get_candidates, record_result
 
-    # Return to MAP (the tap should have moved camera to tower area)
-    if not navigate(Screen.MAP, device):
-        log.warning("territory_guided: failed to return to MAP")
-        return
-    time.sleep(1)
+    target_row, target_col = target_square
+    candidates = get_candidates(target_row, target_col, grid=territory_grid)
 
-
-# Strategy registry
-_STRATEGIES = {
-    "random_pan": _strategy_random_pan,
-    "big_pan": _strategy_big_pan,
-    "edge_pan": _strategy_edge_pan,
-    "territory_guided": _strategy_territory_guided,
-}
-
-_DEFAULT_STRATEGIES = ["random_pan", "big_pan", "edge_pan", "territory_guided"]
-
-
-def _run_trial(device, strategy_name, strategy_fn, trial_num,
-               max_attempts=15, timeout_s=90, stop_check=None):
-    """Run a single benchmark trial for the given strategy.
-
-    Always dry_run: cancels on green, never confirms USE.
-    Returns a TeleportTrial.
-    """
-    log = get_logger("actions", device)
-    log.info("=== Trial %d: %s ===", trial_num, strategy_name)
-
-    # Navigate to MAP and do setup tap (same as teleport())
-    if not navigate(Screen.MAP, device):
-        log.warning("Trial %d: failed to navigate to MAP", trial_num)
-        return TeleportTrial(
-            strategy=strategy_name, trial_num=trial_num, success=False,
-            total_attempts=0, total_time_s=0,
-            timestamp=datetime.now().isoformat())
-
-    logged_tap(device, 540, 960, "tp_start")
-    time.sleep(2)
+    if not candidates:
+        log.debug("No guided candidates for (%d, %d) — skipping to random",
+                  target_row, target_col)
+        return False
 
     dead_img = get_template("elements/dead.png")
-
-    # Check for dead before continuing
-    screen = load_screenshot(device)
-    if _check_dead(screen, dead_img, device):
-        return TeleportTrial(
-            strategy=strategy_name, trial_num=trial_num, success=False,
-            total_attempts=0, total_time_s=0,
-            timestamp=datetime.now().isoformat())
-
-    # Dismiss any dialog
-    logged_tap(device, 540, 500, "tp_dismiss_dialog")
-    time.sleep(2)
-
     start_time = time.time()
-    attempts = []
-    attempt_count = 0
 
-    while time.time() - start_time < timeout_s and attempt_count < max_attempts:
-        if stop_check and stop_check():
-            log.info("Trial %d: stopped by signal", trial_num)
+    log.info("Guided teleport: %d candidates for target (%d, %d)",
+             len(candidates), target_row, target_col)
+
+    for i, (cand_row, cand_col) in enumerate(candidates):
+        if time.time() - start_time > 75:
+            log.debug("Guided teleport budget exceeded (75s), falling through")
             break
+        if stop_check and stop_check():
+            return False
 
-        attempt_count += 1
-        attempt_start = time.time()
+        log.debug("Guided attempt %d/%d: square (%d, %d)",
+                  i + 1, len(candidates), cand_row, cand_col)
 
-        log.debug("Trial %d attempt #%d/%d (%s)",
-                  trial_num, attempt_count, max_attempts, strategy_name)
+        # Position camera via territory grid tap
+        if not navigate(Screen.TERRITORY, device):
+            log.warning("Failed to navigate to TERRITORY for guided teleport")
+            continue
+        cx, cy = _get_square_center(cand_row, cand_col)
+        adb_tap(device, cx, cy)
+        time.sleep(2)  # Camera settles on MAP after grid tap
 
-        # Position camera using strategy
-        strategy_fn(device, attempt_count - 1)
+        if stop_check and stop_check():
+            return False
 
-        # Check for green at current position
-        result, ss_path, check_elapsed = _check_green_at_current_position(
+        # Check green at this position
+        result, ss_path, elapsed = _check_green_at_current_position(
             device, dead_img, stop_check=stop_check)
 
-        if result is None:
-            # Dead detected — abort trial
-            total_time = time.time() - start_time
-            log.warning("Trial %d: dead detected, aborting", trial_num)
-            return TeleportTrial(
-                strategy=strategy_name, trial_num=trial_num, success=False,
-                total_attempts=attempt_count,
-                total_time_s=round(total_time, 2),
-                timestamp=datetime.now().isoformat(),
-                attempts=attempts)
+        # Log entity observations (Phase 2 data collection)
+        _log_nearby_entities(device, cand_row, cand_col, bool(result))
 
-        attempt_elapsed = time.time() - attempt_start
-        attempt = TeleportAttempt(
-            strategy=strategy_name,
-            attempt_num=attempt_count,
-            success=bool(result),
-            elapsed_s=round(attempt_elapsed, 2),
-            screenshot_path=ss_path,
-        )
-        attempts.append(attempt)
-
+        if result is None:  # dead
+            record_result(target_row, target_col, cand_row, cand_col, False)
+            return False
         if result:
-            total_time = time.time() - start_time
-            log.info("Trial %d SUCCESS on attempt #%d (%.1fs total)",
-                     trial_num, attempt_count, total_time)
-            # Cancel — always dry run in benchmark
-            tap_image("cancel.png", device)
-            time.sleep(1)
-            return TeleportTrial(
-                strategy=strategy_name, trial_num=trial_num, success=True,
-                total_attempts=attempt_count,
-                total_time_s=round(total_time, 2),
-                timestamp=datetime.now().isoformat(),
-                attempts=attempts)
+            record_result(target_row, target_col, cand_row, cand_col, True)
+            if dry_run:
+                log.info("Guided teleport GREEN (dry run) at (%d, %d)",
+                         cand_row, cand_col)
+                tap_image("cancel.png", device)
+                return True
+            log.info("Guided teleport GREEN at (%d, %d) — confirming",
+                     cand_row, cand_col)
+            logged_tap(device, 760, 1700, "tp_confirm")
+            time.sleep(2)
+            log.info("Guided teleport confirmed in %.1fs",
+                     time.time() - start_time)
+            return True
+        else:
+            record_result(target_row, target_col, cand_row, cand_col, False)
+            log.debug("No green at (%d, %d)", cand_row, cand_col)
 
-        log.debug("Trial %d elapsed: %.1fs / %ds",
-                  trial_num, time.time() - start_time, timeout_s)
-
-    total_time = time.time() - start_time
-    log.info("Trial %d FAILED after %d attempts (%.1fs)",
-             trial_num, attempt_count, total_time)
-
-    return TeleportTrial(
-        strategy=strategy_name, trial_num=trial_num, success=False,
-        total_attempts=attempt_count,
-        total_time_s=round(total_time, 2),
-        timestamp=datetime.now().isoformat(),
-        attempts=attempts)
+    log.info("All %d guided candidates exhausted — falling through to random",
+             len(candidates))
+    return False
 
 
-def _print_benchmark_summary(all_trials):
-    """Print a formatted comparison table of benchmark results."""
-    log = get_logger("actions")
-    strategies = {}
-    for trial in all_trials:
-        strategies.setdefault(trial.strategy, []).append(trial)
+def _log_nearby_entities(device, cand_row, cand_col, success):
+    """Log entity observations from protocol GameState (Phase 2 data collection).
 
-    header = (f"{'Strategy':<22} {'Wins':>6}  {'Win%':>5}  "
-              f"{'Avg Time':>9}  {'Avg Atts':>9}  {'Med Atts':>9}")
-    separator = "-" * len(header)
-
-    lines = ["\nTeleport Benchmark Results", separator, header, separator]
-
-    for name in _DEFAULT_STRATEGIES:
-        if name not in strategies:
-            continue
-        trials = strategies[name]
-        wins = sum(1 for t in trials if t.success)
-        total = len(trials)
-        win_pct = (wins / total * 100) if total else 0
-
-        successful = [t for t in trials if t.success]
-        avg_time = (sum(t.total_time_s for t in successful) /
-                    len(successful)) if successful else 0
-        avg_atts = (sum(t.total_attempts for t in successful) /
-                    len(successful)) if successful else 0
-
-        atts_sorted = sorted(t.total_attempts for t in successful)
-        med_atts = (atts_sorted[len(atts_sorted) // 2]
-                    if atts_sorted else 0)
-
-        lines.append(
-            f"{name:<22} {wins}/{total:>2}    {win_pct:>4.0f}%  "
-            f"{avg_time:>8.1f}s  {avg_atts:>9.1f}  {med_atts:>9}")
-
-    lines.append(separator)
-
-    summary = "\n".join(lines)
-    log.info(summary)
-    print(summary)
+    No-op when protocol is not active for this device.
+    """
+    if device not in config.PROTOCOL_ACTIVE_DEVICES:
+        return
+    try:
+        from startup import get_protocol_game_state
+        gs = get_protocol_game_state(device)
+        if gs is None:
+            return
+        entities = getattr(gs, "entity_history", {})
+        if not entities:
+            return
+        from teleport_memory import log_observation
+        for eid, info in list(entities.items()):
+            x = info.get("X", 0)
+            z = info.get("Z", 0)
+            if not x or not z:
+                continue
+            etype = info.get("type", "unknown")
+            level = info.get("level", 0)
+            # Rough distance estimate using grid square size
+            dist_r = abs(info.get("grid_row", cand_row) - cand_row)
+            dist_c = abs(info.get("grid_col", cand_col) - cand_col)
+            dist = (dist_r ** 2 + dist_c ** 2) ** 0.5
+            log_observation(x, z, etype, level, dist, success)
+    except Exception:
+        pass  # Best-effort logging
 
 
-def teleport_benchmark(device, trials_per_strategy=3, strategies=None):
-    """Run A/B test across teleport camera-positioning strategies.
+@timed_action("teleport")
+def teleport(device, dry_run=False, target_square=None, territory_grid=None,
+             stop_check=None):
+    """Teleport to a valid location on the map.
 
-    Always dry_run — finds valid green spots but never confirms USE.
-    Saves structured results to stats/teleport_benchmark_{timestamp}.json.
+    If target_square and territory_grid are provided (from auto_occupy),
+    tries grid-guided positioning first, then falls through to random panning.
 
     Args:
         device: ADB device ID string
-        trials_per_strategy: Number of trials per strategy (default 3)
-        strategies: List of strategy names to test, or None for all 4
+        dry_run: If True, find green spot but cancel instead of confirming
+        target_square: (row, col) tuple of the territory target being attacked
+        territory_grid: {(row, col): team_string} dict from scan_targets
+        stop_check: Callable returning True when task should stop
     """
     log = get_logger("actions", device)
-    strategy_names = strategies or list(_DEFAULT_STRATEGIES)
+    if not dry_run:
+        log.debug("Checking if all troops are home before teleporting...")
+        if not all_troops_home(device):
+            log.warning("Troops are not home! Cannot teleport. Aborting.")
+            return False
+        if config.get_device_config(device, "auto_heal"):
+            heal_all(device)
+    else:
+        log.info("Teleport DRY RUN — skipping troop check and heal")
 
-    # Discover stop event from running_tasks (works for GUI + webapp)
-    stop_check = None
-    for key, info in list(config.running_tasks.items()):
-        if device in key and "Teleport Benchmark" in key:
-            if isinstance(info, dict) and info.get("stop_event"):
-                stop_check = info["stop_event"].is_set
-                break
+    if check_screen(device) != Screen.MAP:
+        log.warning("Not on map_screen, can't teleport")
+        return False
 
-    # Validate strategy names
-    invalid = [s for s in strategy_names if s not in _STRATEGIES]
-    if invalid:
-        log.error("Unknown strategies: %s (valid: %s)",
-                  invalid, list(_STRATEGIES.keys()))
-        return
+    log.debug("Starting teleport sequence...")
 
-    log.info("Starting teleport benchmark: %d strategies × %d trials",
-             len(strategy_names), trials_per_strategy)
-
-    all_trials = []
-    stopped = False
-
-    for strategy_name in strategy_names:
+    # Try guided teleport first when we have grid context
+    if target_square and territory_grid:
+        result = _teleport_guided(device, target_square, territory_grid,
+                                  dry_run=dry_run, stop_check=stop_check)
+        if result:
+            return True
         if stop_check and stop_check():
-            stopped = True
-            break
-        strategy_fn = _STRATEGIES[strategy_name]
-        log.info("--- Strategy: %s (%d trials) ---",
-                 strategy_name, trials_per_strategy)
+            return False
+        # Guided exhausted — ensure we're on MAP for random fallback
+        if check_screen(device) != Screen.MAP:
+            if not navigate(Screen.MAP, device):
+                log.warning("Cannot reach MAP for random fallback")
+                return False
 
-        for trial_num in range(1, trials_per_strategy + 1):
-            if stop_check and stop_check():
-                stopped = True
-                break
-            trial = _run_trial(device, strategy_name, strategy_fn,
-                               trial_num, stop_check=stop_check)
-            all_trials.append(trial)
-        if stopped:
-            break
-
-    # Save results to JSON
-    os.makedirs("stats", exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_path = f"stats/teleport_benchmark_{timestamp}.json"
-
-    results = {
-        "device": device,
-        "trials_per_strategy": trials_per_strategy,
-        "strategies": strategy_names,
-        "timestamp": datetime.now().isoformat(),
-        "trials": [asdict(t) for t in all_trials],
-    }
-
-    with open(result_path, "w") as f:
-        json.dump(results, f, indent=2)
-    log.info("Results saved to %s", result_path)
-
-    _print_benchmark_summary(all_trials)
+    return _teleport_random(device, dry_run=dry_run, stop_check=stop_check)
