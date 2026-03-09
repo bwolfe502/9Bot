@@ -1600,7 +1600,8 @@ async def _page_dashboard_admin(
     auto_modes = [
         {"group": "Combat", "modes": [
             ("auto_pass", "Pass Battle"), ("auto_occupy", "Occupy Towers"),
-            ("auto_reinforce", "Reinforce Throne"), ("auto_reinforce_ally", "Reinforce Ally"),
+            ("auto_reinforce", "Reinforce Throne"), ("auto_reinforce_target", "Reinforce Target"),
+            ("auto_reinforce_ally", "Reinforce Ally"), ("auto_war_rallies", "War Rallies"),
         ]},
         {"group": "Farming", "modes": [
             ("auto_quest", "Auto Quest"), ("auto_titan", "Rally Titans"),
