@@ -201,6 +201,11 @@ def reinforce_target(device):
 
     Assumes the camera is already centered on the target (called after target()).
     Returns 'reinforce' if we owned and departed, 'attack' if enemy owns it, False on failure.
+
+    Handles the stacked-entity picker: when multiple entities overlap the tap
+    point, the game shows a vertical list instead of the action menu. If neither
+    reinforce nor attack is found within 3s, we save a debug screenshot, dismiss
+    the picker by tapping off-center, and re-tap the target.
     """
     log = get_logger("actions", device)
 
@@ -211,32 +216,45 @@ def reinforce_target(device):
         log.warning("Not enough troops for reinforce target")
         return False
 
-    adb_tap(device, 560, 675)
-    time.sleep(1)
+    _MAX_RETAPS = 3
+    for attempt in range(_MAX_RETAPS):
+        adb_tap(device, 560, 675)
+        time.sleep(1)
 
-    start_time = time.time()
-    while time.time() - start_time < 10:
-        screen = load_screenshot(device)
-        if screen is None:
+        start_time = time.time()
+        timeout = 3 if attempt < _MAX_RETAPS - 1 else 10  # short poll, long on last try
+        while time.time() - start_time < timeout:
+            screen = load_screenshot(device)
+            if screen is None:
+                time.sleep(0.5)
+                continue
+
+            if find_image(screen, "reinforce_button.png", threshold=0.5):
+                log.info("Found reinforce button — reinforcing target")
+                tap_image("reinforce_button.png", device, threshold=0.5)
+                time.sleep(1)
+                tap_image("depart.png", device)
+                return "reinforce"
+
+            if find_image(screen, "attack_button.png", threshold=0.7):
+                log.info("Found attack button — enemy owns target, closing menu")
+                adb_tap(device, 560, 675)
+                time.sleep(0.5)
+                return "attack"
+
             time.sleep(0.5)
-            continue
 
-        if find_image(screen, "reinforce_button.png", threshold=0.5):
-            log.info("Found reinforce button — reinforcing target")
-            tap_image("reinforce_button.png", device, threshold=0.5)
+        if attempt < _MAX_RETAPS - 1:
+            # Likely stacked-entity picker — save screenshot for diagnosis, dismiss and retry
+            save_failure_screenshot(device, "reinforce_target_picker")
+            log.info("No action button after %ds (attempt %d/%d) — dismissing picker and retrying",
+                     timeout, attempt + 1, _MAX_RETAPS)
+            adb_tap(device, 200, 400)  # tap off-center to dismiss picker
             time.sleep(1)
-            tap_image("depart.png", device)
-            return "reinforce"
 
-        if find_image(screen, "attack_button.png", threshold=0.7):
-            log.info("Found attack button — enemy owns target, closing menu")
-            adb_tap(device, 560, 675)
-            time.sleep(0.5)
-            return "attack"
-
-        time.sleep(0.5)
-
-    log.warning("Neither reinforce nor attack button found, closing menu")
+    log.warning("Neither reinforce nor attack button found after %d attempts, closing menu",
+                _MAX_RETAPS)
+    save_failure_screenshot(device, "reinforce_target_no_button")
     adb_tap(device, 560, 675)
     time.sleep(0.5)
     return False

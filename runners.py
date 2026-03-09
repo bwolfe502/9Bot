@@ -494,7 +494,13 @@ def run_auto_reinforce_target(device, stop_event, interval, variation):
                 if stop_check():
                     break
                 if not result:
-                    break
+                    dlog.warning("Target sequence failed — retrying in 10s")
+                    config.set_device_status(device, "Target Failed, Retrying...")
+                    for _ in range(10):
+                        if stop_check():
+                            break
+                        time.sleep(1)
+                    continue
 
                 action = reinforce_target(device)
             if stop_check():
