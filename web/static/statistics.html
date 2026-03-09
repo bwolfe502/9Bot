@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#1a1a2e">
+    <title>9Bot — Statistics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,wght@1,700&text=9&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css?v=97">
+</head>
+<body>
+    <nav>
+        <a href="https://1453.life" target="_blank" class="nav-brand">
+            <span class="logo-line"></span>
+            <span class="logo-group">
+                <span class="logo-main"><span class="logo-nine">9</span><span class="logo-text">BOT</span></span>
+                <span class="logo-sub">SYSTEM v2.0</span>
+            </span>
+        </a>
+        <div class="nav-links"></div>
+    </nav>
+    <main>
+
+<div class="stats-page">
+
+  <!-- Season Header -->
+  <div class="stats-header">
+    <div class="stats-season-info">
+      <span class="stats-season-label" id="season-label">Season 28</span>
+      <span class="stats-season-week" id="season-week">Week 3 · Day 6</span>
+    </div>
+    <div class="stats-header-right">
+      <span class="stats-credit">by <span class="stats-credit-name">Ziggy</span></span>
+      <span class="stats-last-updated">Last updated: <span id="last-updated-time">—</span></span>
+    </div>
+  </div>
+
+  <!-- Sub-tab Navigation -->
+  <div class="stats-tabs">
+    <button class="stats-tab active" data-tab="roster">Master Roster</button>
+    <button class="stats-tab" data-tab="daily">Daily PvP</button>
+    <button class="stats-tab" data-tab="season">Season Leaderboard</button>
+    <button class="stats-tab" data-tab="previous">Previous Season</button>
+  </div>
+
+  <!-- Tab: Master Roster -->
+  <div class="stats-panel active" id="tab-roster">
+    <div class="stats-panel-header">
+      <h2 id="roster-title">Season 28 Master Roster</h2>
+      <span class="stats-refresh-note">Refreshes daily</span>
+    </div>
+    <div class="stats-table-wrap">
+      <table class="stats-table" id="roster-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Rank</th>
+            <th>Player</th>
+            <th>Power (B)</th>
+          </tr>
+        </thead>
+        <tbody id="roster-body">
+          <tr class="stats-loading-row"><td colspan="4">Loading roster…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Tab: Daily PvP -->
+  <div class="stats-panel" id="tab-daily">
+    <div class="stats-panel-header">
+      <h2 id="daily-title">Daily PvP</h2>
+      <span class="stats-refresh-note">Refreshes every ~10 minutes</span>
+    </div>
+    <div class="stats-table-wrap">
+      <table class="stats-table" id="daily-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Rank</th>
+            <th>Player</th>
+            <th>Power (B)</th>
+            <th>Score (Damage)</th>
+          </tr>
+        </thead>
+        <tbody id="daily-body">
+          <tr class="stats-loading-row"><td colspan="5">Loading daily PvP…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Tab: Current Season Leaderboard -->
+  <div class="stats-panel" id="tab-season">
+    <div class="stats-panel-header">
+      <h2 id="season-title">Season 28 Leaderboard</h2>
+      <span class="stats-refresh-note">Refreshes daily</span>
+    </div>
+    <div class="stats-table-wrap">
+      <table class="stats-table" id="season-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Rank</th>
+            <th>Player</th>
+            <th>Power (B)</th>
+            <th>Total Score (Damage)</th>
+          </tr>
+        </thead>
+        <tbody id="season-body">
+          <tr class="stats-loading-row"><td colspan="5">Loading season leaderboard…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Tab: Previous Season -->
+  <div class="stats-panel" id="tab-previous">
+    <div class="stats-panel-header">
+      <h2 id="previous-title">Season 27 Leaderboard</h2>
+      <span class="stats-refresh-note">Updates at season rollover</span>
+    </div>
+    <div class="stats-table-wrap">
+      <table class="stats-table" id="previous-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Rank</th>
+            <th>Player</th>
+            <th>Power (B)</th>
+            <th>Total Score (Damage)</th>
+          </tr>
+        </thead>
+        <tbody id="previous-body">
+          <tr class="stats-loading-row"><td colspan="5">Loading previous season…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+    </main>
+    <style>
+/* ── Statistics Page ─────────────────────────────────────── */
+.stats-page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.stats-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.stats-season-label {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #e8e0d0;
+  letter-spacing: 0.04em;
+}
+
+.stats-season-week {
+  font-size: 0.85rem;
+  color: #8a8090;
+  margin-left: 10px;
+}
+
+.stats-header-right {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.stats-last-updated {
+  font-size: 0.78rem;
+  color: #555566;
+}
+
+.stats-credit {
+  font-size: 0.72rem;
+  color: #3a3a4a;
+  letter-spacing: 0.06em;
+  text-transform: lowercase;
+}
+
+.stats-credit-name {
+  color: #5a5a7a;
+  font-weight: 600;
+}
+
+/* Sub-tabs */
+.stats-tabs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #2a2a3a;
+  padding-bottom: 0;
+}
+
+.stats-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #7070a0;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  margin-bottom: -1px;
+}
+
+.stats-tab:hover {
+  color: #b0a8c8;
+}
+
+.stats-tab.active {
+  color: #d4c8f0;
+  border-bottom-color: #8060c0;
+}
+
+/* Panels */
+.stats-panel {
+  display: none;
+}
+
+.stats-panel.active {
+  display: block;
+}
+
+.stats-panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.stats-panel-header h2 {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #c8bce8;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 0;
+}
+
+.stats-refresh-note {
+  font-size: 0.72rem;
+  color: #484858;
+  font-style: italic;
+}
+
+/* Table */
+.stats-table-wrap {
+  overflow-x: auto;
+  border-radius: 8px;
+  border: 1px solid #22223a;
+  background: #0e0e1a;
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.stats-table thead tr {
+  background: #141426;
+  border-bottom: 1px solid #2a2a3a;
+}
+
+.stats-table th {
+  color: #6060a0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.stats-table td {
+  padding: 10px 14px;
+  color: #b0a8c8;
+  border-bottom: 1px solid #1a1a2e;
+  vertical-align: middle;
+}
+
+.stats-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.stats-table tbody tr:hover td {
+  background: #14142a;
+  color: #d0c8e8;
+}
+
+/* Top 3 medal styles */
+.stats-table tbody tr.rank-1 td { color: #ffd700; }
+.stats-table tbody tr.rank-2 td { color: #c0c0c8; }
+.stats-table tbody tr.rank-3 td { color: #cd7f32; }
+
+.stats-table tbody tr.rank-1 td:first-child::before { content: "\01F947 "; }
+.stats-table tbody tr.rank-2 td:first-child::before { content: "\01F948 "; }
+.stats-table tbody tr.rank-3 td:first-child::before { content: "\01F949 "; }
+
+/* Rank badge */
+.rank-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #1e1e30;
+  color: #8080b0;
+}
+
+.rank-badge.r5 { background: #2a1a3a; color: #b060f0; }
+.rank-badge.r4 { background: #1a2a3a; color: #60a0f0; }
+.rank-badge.r3 { background: #1a2a1a; color: #60c060; }
+
+/* Score display */
+.score-value {
+  font-weight: 700;
+  color: #90d090;
+}
+
+.score-damage {
+  color: #6070a0;
+  font-size: 0.82rem;
+}
+
+/* Loading / error rows */
+.stats-loading-row td {
+  text-align: center;
+  color: #484858;
+  padding: 32px;
+  font-style: italic;
+}
+
+.stats-error-row td {
+  text-align: center;
+  color: #a04040;
+  padding: 20px;
+}
+</style>
+
+<script>
+(function () {
+
+  // ── Season calculation ─────────────────────────────────
+  var SEASON_28_START = new Date('2026-02-16T00:00:00Z');
+  var SEASON_LENGTH_DAYS = 28;
+
+  function getSeasonInfo() {
+    var now = new Date();
+    var msPerDay = 86400000;
+    var daysSinceS28 = (now - SEASON_28_START) / msPerDay;
+    var seasonOffset = Math.floor(daysSinceS28 / SEASON_LENGTH_DAYS);
+    var currentSeason = 28 + seasonOffset;
+    var dayInSeason = Math.floor(daysSinceS28 % SEASON_LENGTH_DAYS) + 1;
+    var weekInSeason = Math.ceil(dayInSeason / 7);
+    var dayInWeek = ((dayInSeason - 1) % 7) + 1;
+    return {
+      current: currentSeason,
+      previous: currentSeason - 1,
+      weekInSeason: weekInSeason,
+      dayInSeason: dayInSeason,
+      dayInWeek: dayInWeek
+    };
+  }
+
+  function updateSeasonDisplay() {
+    var info = getSeasonInfo();
+    document.getElementById('season-label').textContent = 'Season ' + info.current;
+    document.getElementById('season-week').textContent =
+      'Week ' + info.weekInSeason + ' \u00b7 Day ' + info.dayInWeek;
+    document.getElementById('roster-title').textContent =
+      'Season ' + info.current + ' Master Roster';
+    document.getElementById('daily-title').textContent =
+      'Season ' + info.current + ' \u2014 Week ' + info.weekInSeason + ' Day ' + info.dayInWeek + ' PvP';
+    document.getElementById('season-title').textContent =
+      'Season ' + info.current + ' Leaderboard';
+    document.getElementById('previous-title').textContent =
+      'Season ' + info.previous + ' Leaderboard';
+  }
+
+  // ── Tab switching ──────────────────────────────────────
+  var tabs = document.querySelectorAll('.stats-tab');
+  var panels = document.querySelectorAll('.stats-panel');
+
+  tabs.forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      tabs.forEach(function (t) { t.classList.remove('active'); });
+      panels.forEach(function (p) { p.classList.remove('active'); });
+      tab.classList.add('active');
+      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    });
+  });
+
+  // ── Rank badge helper ──────────────────────────────────
+  function rankBadge(rank) {
+    if (!rank) return '';
+    var cls = rank.toLowerCase();
+    return '<span class="rank-badge ' + cls + '">' + rank + '</span>';
+  }
+
+  // ── Render helpers ─────────────────────────────────────
+  function renderRoster(data) {
+    var tbody = document.getElementById('roster-body');
+    if (!data || !data.length) {
+      tbody.innerHTML = '<tr class="stats-loading-row"><td colspan="4">No roster data available.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(function (p, i) {
+      var rowClass = i < 3 ? ' rank-' + (i + 1) : '';
+      return '<tr class="' + rowClass + '">' +
+        '<td>' + (i + 1) + '</td>' +
+        '<td>' + rankBadge(p.rank) + '</td>' +
+        '<td>' + escHtml(p.name) + '</td>' +
+        '<td>' + (p.power || '\u2014') + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function renderDaily(data) {
+    var tbody = document.getElementById('daily-body');
+    if (!data || !data.length) {
+      tbody.innerHTML = '<tr class="stats-loading-row"><td colspan="5">No daily PvP data yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(function (p, i) {
+      var rowClass = i < 3 ? ' rank-' + (i + 1) : '';
+      var score = '<span class="score-value">' + (p.score || '0') + '</span>' +
+        ' <span class="score-damage">(' + (p.dailyDamage || '0') + ')</span>';
+      return '<tr class="' + rowClass + '">' +
+        '<td>' + (i + 1) + '</td>' +
+        '<td>' + rankBadge(p.rank) + '</td>' +
+        '<td>' + escHtml(p.name) + '</td>' +
+        '<td>' + (p.power || '\u2014') + '</td>' +
+        '<td>' + score + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function renderLeaderboard(data, tbodyId) {
+    var tbody = document.getElementById(tbodyId);
+    if (!data || !data.length) {
+      tbody.innerHTML = '<tr class="stats-loading-row"><td colspan="5">No leaderboard data available.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = data.map(function (p, i) {
+      var rowClass = i < 3 ? ' rank-' + (i + 1) : '';
+      var score = '<span class="score-value">' + (p.score || '0') + '</span>' +
+        ' <span class="score-damage">(' + (p.seasonDamage || '0') + ')</span>';
+      return '<tr class="' + rowClass + '">' +
+        '<td>' + (i + 1) + '</td>' +
+        '<td>' + rankBadge(p.rank) + '</td>' +
+        '<td>' + escHtml(p.name) + '</td>' +
+        '<td>' + (p.power || '\u2014') + '</td>' +
+        '<td>' + score + '</td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  // ── Data fetching ──────────────────────────────────────
+  function loadData(url, onSuccess, tbodyId, colspan) {
+    fetch(url)
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        onSuccess(data);
+        document.getElementById('last-updated-time').textContent =
+          data.updated || new Date().toLocaleTimeString();
+      })
+      .catch(function (err) {
+        var tbody = document.getElementById(tbodyId);
+        if (tbody) {
+          tbody.innerHTML = '<tr class="stats-error-row"><td colspan="' + colspan +
+            '">Could not load data. (' + err.message + ')</td></tr>';
+        }
+      });
+  }
+
+  function loadAll() {
+    loadData('/api/stats/roster',
+      function (d) { renderRoster(d.players || d); },
+      'roster-body', 4);
+
+    loadData('/api/stats/daily',
+      function (d) { renderDaily(d.players || d); },
+      'daily-body', 5);
+
+    loadData('/api/stats/season',
+      function (d) { renderLeaderboard(d.players || d, 'season-body'); },
+      'season-body', 5);
+
+    loadData('/api/stats/previous',
+      function (d) { renderLeaderboard(d.players || d, 'previous-body'); },
+      'previous-body', 5);
+  }
+
+  // ── Init ───────────────────────────────────────────────
+  updateSeasonDisplay();
+  loadAll();
+
+  // Auto-refresh daily tab every 10 minutes
+  setInterval(function () {
+    loadData('/api/stats/daily',
+      function (d) { renderDaily(d.players || d); },
+      'daily-body', 5);
+  }, 600000);
+
+}());
+</script>
+</body>
+</html>

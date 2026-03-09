@@ -63,6 +63,7 @@ def setup_portal_routes(app: web.Application, active_bots: dict) -> None:
     app.router.add_get("/portal/admin", page_admin)
     app.router.add_get("/portal/account", page_account)
     app.router.add_get("/portal/guide", page_guide)
+    app.router.add_get("/portal/statistics", page_statistics)
 
     # API
     app.router.add_post("/portal/api/login", api_login)
@@ -466,6 +467,7 @@ def _page(title: str, body: str, user: dict | None = None, csrf: str = "") -> st
             '<a href="/portal/billing">Billing</a>',
             '<a href="/portal/guide">Guide</a>',
             '<a href="/portal/account">Account</a>',
+            '<a href="/portal/statistics">Statistics</a>',
         ]
         if user.get("is_admin"):
             links.append('<a href="/portal/admin">Admin</a>')
@@ -586,6 +588,7 @@ def _page_dashboard_wrapper(title: str, body: str, user: dict | None = None, csr
             '<a href="/portal/billing">Billing</a>',
             '<a href="/portal/guide">Guide</a>',
             '<a href="/portal/account">Account</a>',
+            '<a href="/portal/statistics">Statistics</a>',
         ]
         if user.get("is_admin"):
             links.append('<a href="/portal/admin">Admin</a>')
@@ -3875,6 +3878,33 @@ async def api_stripe_webhook(request: web.Request) -> web.Response:
     except Exception as e:
         log.error("Webhook processing failed: %s", e)
         return web.json_response({"error": "Internal error"}, status=500)
+
+
+# ------------------------------------------------------------------
+# Statistics page (public, no login required)
+# ------------------------------------------------------------------
+
+async def page_statistics(request: web.Request) -> web.Response:
+    user = await _get_user(request)
+    csrf = _get_csrf(request) if user else ""
+
+    import os, re
+    stats_path = "/opt/9bot-repo/web/static/statistics.html"
+    if os.path.exists(stats_path):
+        with open(stats_path) as f:
+            raw = f.read()
+        # Extract <main> content, <style>, and <script> blocks
+        main_match = re.search(r"<main>(.*?)</main>", raw, re.DOTALL)
+        style_match = re.search(r"(<style>.*?</style>)", raw, re.DOTALL)
+        script_match = re.search(r"(<script>.*?</script>)", raw, re.DOTALL)
+        body = (main_match.group(1) if main_match else "")
+        body += (style_match.group(1) if style_match else "")
+        body += (script_match.group(1) if script_match else "")
+    else:
+        body = '<div style="padding:40px;text-align:center;color:#667">Statistics data not available yet.</div>'
+
+    return web.Response(text=_page("Statistics", body, user, csrf),
+                        content_type="text/html")
 
 
 # ------------------------------------------------------------------
